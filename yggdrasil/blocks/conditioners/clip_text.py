@@ -1,6 +1,6 @@
 import torch
-from diffusers import CLIPTextModel, CLIPTokenizer
 from omegaconf import DictConfig
+from transformers import CLIPTextModel, CLIPTokenizer
 
 from ...core.block.registry import register_block
 from ...core.model.conditioner import AbstractConditioner
