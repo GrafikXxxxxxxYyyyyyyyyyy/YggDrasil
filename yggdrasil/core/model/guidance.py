@@ -1,13 +1,13 @@
+# yggdrasil/core/model/guidance.py
 from __future__ import annotations
 
 import torch
 from abc import abstractmethod
 from typing import Optional, Dict, Any
+from omegaconf import DictConfig
 
-from ...core.block.base import AbstractBlock
-from ...core.block.registry import register_block
-
-from .modular import ModularDiffusionModel
+from yggdrasil.core.block.base import AbstractBlock
+from yggdrasil.core.block.registry import register_block
 
 
 @register_block("guidance/abstract")
@@ -24,11 +24,8 @@ class AbstractGuidance(AbstractBlock):
         self,
         model_output: torch.Tensor,
         condition: Optional[Dict[str, Any]] = None,
-        model: Optional[ModularDiffusionModel] = None,
+        model: Optional["ModularDiffusionModel"] = None,   # ← строка, без импорта
         **kwargs: Any
     ) -> torch.Tensor:
-        """Применить guidance к выходу backbone.
-        
-        Возвращает модифицированный model_output.
-        """
+        """Применить guidance к выходу backbone."""
         pass

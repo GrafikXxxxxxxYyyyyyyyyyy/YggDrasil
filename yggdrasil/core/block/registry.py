@@ -14,8 +14,8 @@ class BlockRegistry:
     def register(cls, block_type: str):
         """Декоратор: @register_block("model/modular")"""
         def decorator(block_cls: Type[AbstractBlock]):
-            full_key = f"{block_cls.block_type}:{block_type}" if hasattr(block_cls, 'block_type') else block_type
-            cls._registry[full_key] = block_cls
+            # Просто используем block_type как ключ
+            cls._registry[block_type] = block_cls
             block_cls.block_type = block_type
             return block_cls
         return decorator
@@ -51,3 +51,26 @@ class BlockRegistry:
 register_block = BlockRegistry.register
 get_block_class = BlockRegistry.get
 list_blocks = BlockRegistry.list_blocks
+
+
+def auto_discover():
+    """Автоматически импортирует все модули из core/ и blocks/, чтобы зарегистрировать блоки."""
+    packages = [
+        "yggdrasil.core.block",
+        "yggdrasil.core.model",
+        "yggdrasil.core.diffusion",
+        "yggdrasil.core.engine",
+        "yggdrasil.blocks.adapters",
+        "yggdrasil.blocks.backbones",
+        "yggdrasil.blocks.codecs",
+        "yggdrasil.blocks.conditioners",
+        "yggdrasil.blocks.guidances",
+    ]
+    
+    for pkg in packages:
+        try:
+            package = importlib.import_module(pkg)
+            for _, module_name, _ in pkgutil.iter_modules(package.__path__):
+                importlib.import_module(f"{pkg}.{module_name}")
+        except Exception as e:
+            print(f"Auto-discover skipped {pkg}: {e}")

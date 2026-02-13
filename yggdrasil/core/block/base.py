@@ -1,14 +1,12 @@
+# yggdrasil/core/block/base.py
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Type, List
+from typing import Any, Dict, Optional, List
 from omegaconf import DictConfig, OmegaConf
 from pathlib import Path
-
-from .slot import Slot
-from .builder import BlockBuilder
 
 
 class AbstractBlock(ABC, nn.Module):
@@ -22,7 +20,7 @@ class AbstractBlock(ABC, nn.Module):
     """
     
     # Метаданные блока (заполняются при регистрации)
-    block_type: str = "unknown"      # Например: "model/modular", "diffusion/process/ddpm"
+    block_type: str = "unknown"
     block_version: str = "1.0.0"
     
     def __init__(self, config: DictConfig | dict):
@@ -31,10 +29,10 @@ class AbstractBlock(ABC, nn.Module):
         self.block_id = self.config.get("id", f"{self.block_type}_{id(self)}")
         
         # Slots — это Lego-дырки, куда можно воткнуть другие блоки
-        self.slots: Dict[str, Slot] = self._define_slots()
+        self.slots: Dict[str, "Slot"] = self._define_slots()
         
         # Дети (подключённые блоки)
-        self.children: Dict[str, AbstractBlock] = {}
+        self.children: Dict[str, Any] = {}
         
         # Hooks (для кастомного поведения без наследования)
         self.pre_hooks: List[callable] = []
@@ -42,20 +40,23 @@ class AbstractBlock(ABC, nn.Module):
         
         self._build_slots()
     
-    @abstractmethod
-    def _define_slots(self) -> Dict[str, Slot]:
-        """Здесь потомок определяет, какие слоты у него есть."""
+    def _define_slots(self) -> Dict[str, "Slot"]:
+        """Здесь потомок определяет, какие слоты у него есть.
+        Импортируем Slot внутри метода, чтобы избежать circular import."""
+        from .slot import Slot
         return {}
     
     def _build_slots(self):
         """Автоматически собирает все слоты из конфига."""
+        from yggdrasil.core.block.builder import BlockBuilder
+        
         for slot_name, slot in self.slots.items():
             if slot_name in self.config:
                 child_config = self.config[slot_name]
                 child = BlockBuilder.build(child_config)
                 self.attach_slot(slot_name, child)
     
-    def attach_slot(self, slot_name: str, block: AbstractBlock):
+    def attach_slot(self, slot_name: str, block: "AbstractBlock"):
         """Подключить блок в слот (Lego-действие)."""
         if slot_name not in self.slots:
             raise KeyError(f"Слот {slot_name} не существует в {self.block_type}")
@@ -72,21 +73,25 @@ class AbstractBlock(ABC, nn.Module):
             self.children[slot_name] = block
         
         # Регистрируем в nn.Module для корректного .to(device)
-        if isinstance(self.children[slot_name], list):
-            for b in self.children[slot_name]:
-                self.add_module(f"{slot_name}_{id(b)}", b)
+        if isinstance(self.children.get(slot_name), list):
+            for i, b in enumerate(self.children[slot_name]):
+                self.add_module(f"{slot_name}_{i}", b)
         else:
             self.add_module(slot_name, block)
     
     def forward(self, *args, **kwargs) -> Any:
         """Базовый forward с хуками."""
         for hook in self.pre_hooks:
-            args, kwargs = hook(self, *args, **kwargs)
+            result = hook(self, *args, **kwargs)
+            if result is not None:
+                args, kwargs = result if isinstance(result, tuple) else (result, kwargs)
         
         output = self._forward_impl(*args, **kwargs)
         
         for hook in self.post_hooks:
-            output = hook(self, output, *args, **kwargs)
+            result = hook(self, output, *args, **kwargs)
+            if result is not None:
+                output = result
         
         return output
     
@@ -102,15 +107,13 @@ class AbstractBlock(ABC, nn.Module):
         self.post_hooks.append(hook)
     
     def save(self, path: Path | str):
-        """Сохранение блока + всех детей."""
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
         torch.save(self.state_dict(), path / "weights.pt")
         OmegaConf.save(self.config, path / "config.yaml")
-        # TODO: рекурсивное сохранение детей
     
     @classmethod
-    def load(cls, path: Path | str) -> AbstractBlock:
+    def load(cls, path: Path | str) -> "AbstractBlock":
         path = Path(path)
         config = OmegaConf.load(path / "config.yaml")
         instance = cls(config)

@@ -1,6 +1,6 @@
 import torch
-from ...core.block.base import AbstractBlock
-from ...core.block.registry import register_block
+from yggdrasil.core.block.base import AbstractBlock
+from yggdrasil.core.block.registry import register_block
 from .process import AbstractDiffusionProcess
 
 
