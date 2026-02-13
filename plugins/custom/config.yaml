@@ -1,0 +1,15 @@
+# Дефолтный конфиг для CustomModality
+type: model/modular
+backbone:
+  type: backbone/custom
+  in_dim: 256
+  out_dim: 256
+codec:
+  type: codec/custom
+conditioner:
+  type: conditioner/text_clip
+diffusion_process:
+  type: diffusion/process/flow/rectified
+guidance:
+  type: guidance/cfg
+  scale: 7.5
