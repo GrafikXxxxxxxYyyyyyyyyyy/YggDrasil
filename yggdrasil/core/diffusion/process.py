@@ -31,6 +31,10 @@ class AbstractDiffusionProcess(AbstractBlock):
             )
         }
     
+    def _forward_impl(self, x0: torch.Tensor, t: torch.Tensor, noise: Optional[torch.Tensor] = None, **kwargs) -> Dict[str, torch.Tensor]:
+        """Требуется AbstractBlock; делегирует в forward_process."""
+        return self.forward_process(x0, t, noise)
+
     @abstractmethod
     def forward_process(
         self,

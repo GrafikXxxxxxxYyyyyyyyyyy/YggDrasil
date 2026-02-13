@@ -19,12 +19,16 @@ class AbstractGuidance(AbstractBlock):
     def _define_slots(self):
         return {}
     
+    def _forward_impl(self, *args, **kwargs) -> torch.Tensor:
+        """Требуется AbstractBlock; делегирует в __call__."""
+        return self(*args, **kwargs)
+
     @abstractmethod
     def __call__(
         self,
         model_output: torch.Tensor,
         condition: Optional[Dict[str, Any]] = None,
-        model: Optional["ModularDiffusionModel"] = None,   # ← строка, без импорта
+        model: Optional["ModularDiffusionModel"] = None,
         **kwargs: Any
     ) -> torch.Tensor:
         """Применить guidance к выходу backbone."""

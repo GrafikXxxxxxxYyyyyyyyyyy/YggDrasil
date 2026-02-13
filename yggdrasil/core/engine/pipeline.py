@@ -56,14 +56,14 @@ class AbstractPipeline(AbstractBlock):
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
         OmegaConf.save(self.config, path / "pipeline_config.yaml")
-        self.children["model"].save(path / "model")
-        if "sampler" in self.children:
-            self.children["sampler"].save(path / "sampler")
+        self._slot_children["model"].save(path / "model")
+        if "sampler" in self._slot_children:
+            self._slot_children["sampler"].save(path / "sampler")
     
     @classmethod
     def load(cls, path: Path | str) -> AbstractPipeline:
         path = Path(path)
         config = OmegaConf.load(path / "pipeline_config.yaml")
         instance = cls(config)
-        instance.children["model"] = ModularDiffusionModel.load(path / "model")
+        instance._slot_children["model"] = ModularDiffusionModel.load(path / "model")
         return instance

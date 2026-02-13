@@ -40,8 +40,8 @@ class ClassifierFreeGuidance(AbstractGuidance):
             return model_output
         
         # Отключаем guidance на время uncond прохода
-        original_guidances = model.children.get("guidance", [])
-        model.children["guidance"] = []
+        original_guidances = model._slot_children.get("guidance", [])
+        model._slot_children["guidance"] = []
         
         try:
             null_condition = condition.copy()
@@ -60,4 +60,4 @@ class ClassifierFreeGuidance(AbstractGuidance):
             return guided
             
         finally:
-            model.children["guidance"] = original_guidances
+            model._slot_children["guidance"] = original_guidances

@@ -13,6 +13,8 @@ class AutoencoderKLCodec(AbstractLatentCodec):
     block_type = "codec/autoencoder_kl"
     is_trainable = False
     
+    latent_channels = 4  # SD 1.5 latent space
+
     def __init__(self, config: DictConfig):
         super().__init__(config)
         self.vae = AutoencoderKL.from_pretrained(
@@ -30,4 +32,6 @@ class AutoencoderKLCodec(AbstractLatentCodec):
     
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         z = z / self.scaling_factor
+        # Приводим к dtype VAE (латенты после солвера могут быть float32, а VAE — float16)
+        z = z.to(dtype=self.vae.dtype)
         return self.vae.decode(z).sample

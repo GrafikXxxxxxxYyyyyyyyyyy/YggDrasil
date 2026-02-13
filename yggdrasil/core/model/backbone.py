@@ -55,7 +55,7 @@ class AbstractBackbone(AbstractBlock, nn.Module):
         output = super().forward(*args, **kwargs)  # вызовет _forward_impl с хуками
         
         # Автоматически применяем все адаптеры (LoRA и т.д.)
-        for adapter in self.children.get("adapters", []):
+        for adapter in self._slot_children.get("adapters", []):
             if hasattr(adapter, "apply"):
                 output = adapter.apply(output, self)
         

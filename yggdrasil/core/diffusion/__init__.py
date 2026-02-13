@@ -7,6 +7,7 @@ from .noise.sampler import NoiseSampler
 from .solver.base import AbstractSolver
 from .flow import RectifiedFlowProcess
 from .consistency import ConsistencyProcess
+from .ddpm import DDPMProcess
 
 __all__ = [
     "AbstractDiffusionProcess",
@@ -15,4 +16,5 @@ __all__ = [
     "AbstractSolver",
     "RectifiedFlowProcess",
     "ConsistencyProcess",
+    "DDPMProcess",
 ]

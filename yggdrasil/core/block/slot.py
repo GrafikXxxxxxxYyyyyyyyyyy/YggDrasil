@@ -19,9 +19,11 @@ class Slot:
         from .base import AbstractBlock
         
         if isinstance(self.accepts, str):
-            # Если передана строка — проверяем по типу блока
-            return block.block_type.startswith(self.accepts)
+            return getattr(block, "block_type", "").startswith(self.accepts)
         
         if isinstance(self.accepts, tuple):
             return isinstance(block, self.accepts)
-        return isinstance(block, self.accepts)
+        if isinstance(block, type):
+            return False
+        cl = type(block)
+        return self.accepts in cl.__mro__

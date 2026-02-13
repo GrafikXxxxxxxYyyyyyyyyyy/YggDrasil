@@ -83,6 +83,10 @@ class DiffusionSampler(AbstractBlock):
             ),
         }
     
+    def _forward_impl(self, condition: Dict[str, Any], shape=None, **kwargs):
+        """Требуется AbstractBlock; делегирует в sample()."""
+        return self.sample(condition=condition, shape=shape, **kwargs)
+
     # ==================== ОСНОВНОЙ ИНТЕРФЕЙС ====================
     
     @torch.no_grad()
@@ -105,24 +109,26 @@ class DiffusionSampler(AbstractBlock):
         
         # 1. Инициализация латентов
         latents = self._initialize_latents(shape, generator)
-        
-        # 2. Получаем расписание таймстепов
-        timesteps = self._get_timesteps(steps)
-        
+        device = latents.device
+        dtype = latents.dtype
+
+        # 2. Получаем расписание таймстепов (целые числа на device модели)
+        timesteps = self._get_timesteps(steps).to(device=device).long()
+
         # 3. Основной цикл сэмплирования
         state = DiffusionState(latents=latents, timestep=timesteps[0])
         
-        for i, t in enumerate(tqdm(timesteps, disable=not self.show_progress, desc="Sampling")):
-            state.timestep = t
+        for i in tqdm(range(len(timesteps)), disable=not self.show_progress, desc="Sampling"):
+            state.timestep = timesteps[i]
+            next_t = timesteps[i + 1] if i + 1 < len(timesteps) else torch.tensor(0, device=device).long()
             
-            # Один шаг сэмплера
-            state = self.step(state, condition, guidance_scale=scale, **kwargs)
+            state = self.step(state, condition, guidance_scale=scale, next_timestep=next_t, **kwargs)
             
             if callback is not None:
                 callback(i, state.latents)
         
         # 4. Финальное декодирование
-        result = self.children["model"].decode(state.latents)
+        result = self._slot_children["model"].decode(state.latents)
         return result
     
     def step(
@@ -133,9 +139,9 @@ class DiffusionSampler(AbstractBlock):
         **kwargs
     ) -> DiffusionState:
         """Один шаг диффузии (используется и в цикле, и для streaming)."""
-        model = self.children["model"]
-        process = self.children.get("diffusion_process")
-        solver = self.children.get("solver")
+        model = self._slot_children["model"]
+        process = self._slot_children.get("diffusion_process")
+        solver = self._slot_children.get("solver")
         
         # 1. Forward модели (с guidance внутри модели)
         model_output = model(
@@ -174,19 +180,39 @@ class DiffusionSampler(AbstractBlock):
         """Создаём начальный шум."""
         if shape is None:
             # Берём shape из модели (codec)
-            codec = self.children["model"].children.get("codec")
+            codec = self._slot_children["model"]._slot_children.get("codec")
             shape = codec.get_latent_shape() if codec else (1, 4, 64, 64)  # fallback
         
-        noise = torch.randn(shape, device="cuda", generator=generator)
+        device = next(self._slot_children["model"].parameters(), torch.tensor(0)).device
+        # MPS: torch.randn(..., device=mps, generator=generator) даёт "Placeholder storage has not been allocated".
+        # Генерируем шум на CPU (с тем же seed при наличии generator) и переносим на device.
+        use_mps_workaround = (
+            getattr(device, "type", None) == "mps"
+            or (generator is not None and "mps" in str(getattr(generator, "device", "")))
+        )
+        if use_mps_workaround:
+            g = torch.Generator().manual_seed(generator.initial_seed()) if generator is not None else None
+            noise = torch.randn(shape, generator=g).to(device)
+        else:
+            noise = torch.randn(shape, device=device, generator=generator)
         return noise
     
     def _get_timesteps(self, num_steps: int) -> torch.Tensor:
-        """Расписание таймстепов (от scheduler)."""
-        schedule = self.children.get("noise_schedule")
+        """Расписание таймстепов (от scheduler или дефолтное для SD 1.5).
+        
+        Возвращает целочисленные шаги от 999 до ~0, равномерно распределённые.
+        UNet SD 1.5 ожидает int-таймстепы в диапазоне [0, 999].
+        """
+        schedule = self._slot_children.get("noise_schedule")
         if schedule is not None:
             return schedule.get_timesteps(num_steps)
-        # Fallback
-        return torch.linspace(1.0, 0.0, num_steps + 1)[:-1]
+        # Дефолтное расписание для SD 1.5: 999 → 0, num_steps шагов
+        process = self._slot_children.get("diffusion_process")
+        num_train = getattr(process, "num_train_timesteps", 1000) if process else 1000
+        step_ratio = num_train // num_steps
+        timesteps = torch.arange(num_steps) * step_ratio
+        timesteps = timesteps.flip(0)  # от большого шума к малому: 999, 964, ...
+        return timesteps
     
     # ==================== STREAMING И ПРОДОЛЖЕНИЕ ====================
     
@@ -205,7 +231,7 @@ class DiffusionSampler(AbstractBlock):
         for t in timesteps:
             state.timestep = t
             state = self.step(state, condition, **kwargs)
-            yield self.children["model"].decode(state.latents)  # промежуточный результат
+            yield self._slot_children["model"].decode(state.latents)  # промежуточный результат
     
     # ==================== СОХРАНЕНИЕ / ЗАГРУЗКА ====================
     

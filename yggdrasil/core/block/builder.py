@@ -20,10 +20,15 @@ class BlockBuilder:
         if not block_type:
             raise ValueError("В конфиге обязателен ключ 'type' или 'block_type'")
         
-        BlockClass = get_block_class(block_type)
+        block_type_str = str(block_type)
+        BlockClass = get_block_class(block_type_str)
         
-        # Рекурсивно собираем все вложенные блоки
-        resolved_config = cls._resolve_slots(config)
+        # Для model/modular не подставляем детей в конфиг (OmegaConf не хранит объекты),
+        # дети соберутся в _build_slots через BlockBuilder.build(child_config)
+        if block_type == "model/modular":
+            resolved_config = config
+        else:
+            resolved_config = cls._resolve_slots(config)
         
         return BlockClass(resolved_config)
     

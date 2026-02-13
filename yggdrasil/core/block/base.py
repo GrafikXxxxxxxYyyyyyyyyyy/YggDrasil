@@ -24,6 +24,8 @@ class AbstractBlock(ABC, nn.Module):
     block_version: str = "1.0.0"
     
     def __init__(self, config: DictConfig | dict):
+        # Сначала nn.Module, чтобы _modules существовал при attach_slot -> add_module в _build_slots
+        nn.Module.__init__(self)
         super().__init__()
         self.config = OmegaConf.create(config) if isinstance(config, dict) else config
         self.block_id = self.config.get("id", f"{self.block_type}_{id(self)}")
@@ -31,8 +33,8 @@ class AbstractBlock(ABC, nn.Module):
         # Slots — это Lego-дырки, куда можно воткнуть другие блоки
         self.slots: Dict[str, "Slot"] = self._define_slots()
         
-        # Дети (подключённые блоки)
-        self.children: Dict[str, Any] = {}
+        # Дети (подключённые блоки). Имя _slot_children, чтобы не перекрывать nn.Module.children()
+        self._slot_children: Dict[str, Any] = {}
         
         # Hooks (для кастомного поведения без наследования)
         self.pre_hooks: List[callable] = []
@@ -51,10 +53,15 @@ class AbstractBlock(ABC, nn.Module):
         from yggdrasil.core.block.builder import BlockBuilder
         
         for slot_name, slot in self.slots.items():
-            if slot_name in self.config:
-                child_config = self.config[slot_name]
+            if slot_name not in self.config:
+                continue
+            child_config = self.config[slot_name]
+            # Уже собранный блок (например, после BlockBuilder._resolve_slots)
+            if isinstance(child_config, AbstractBlock):
+                child = child_config
+            else:
                 child = BlockBuilder.build(child_config)
-                self.attach_slot(slot_name, child)
+            self.attach_slot(slot_name, child)
     
     def attach_slot(self, slot_name: str, block: "AbstractBlock"):
         """Подключить блок в слот (Lego-действие)."""
@@ -62,19 +69,26 @@ class AbstractBlock(ABC, nn.Module):
             raise KeyError(f"Слот {slot_name} не существует в {self.block_type}")
         
         slot = self.slots[slot_name]
-        if not slot.accepts(block):
+        if isinstance(block, type):
+            raise TypeError(f"Слот {slot_name}: передан класс {block.__name__}, нужен экземпляр.")
+        # Быстрая проверка по block_type без вызова slot.accepts (избегаем рекурсии/ABC)
+        block_cl = type(block)
+        ok = getattr(slot.accepts, "__mro__", None) and slot.accepts in block_cl.__mro__
+        if not ok and hasattr(block, "block_type"):
+            ok = getattr(slot.accepts, "block_type", None) and block.block_type == getattr(slot.accepts, "block_type", "")
+        if not ok:
             raise TypeError(f"Блок {block.block_type} не подходит для слота {slot_name}")
         
         if slot.multiple:
-            if slot_name not in self.children:
-                self.children[slot_name] = []
-            self.children[slot_name].append(block)
+            if slot_name not in self._slot_children:
+                self._slot_children[slot_name] = []
+            self._slot_children[slot_name].append(block)
         else:
-            self.children[slot_name] = block
+            self._slot_children[slot_name] = block
         
         # Регистрируем в nn.Module для корректного .to(device)
-        if isinstance(self.children.get(slot_name), list):
-            for i, b in enumerate(self.children[slot_name]):
+        if isinstance(self._slot_children.get(slot_name), list):
+            for i, b in enumerate(self._slot_children[slot_name]):
                 self.add_module(f"{slot_name}_{i}", b)
         else:
             self.add_module(slot_name, block)

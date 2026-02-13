@@ -23,10 +23,9 @@ class ModularDiffusionModel(AbstractBlock, nn.Module):
     block_version = "1.0.0"
     
     def __init__(self, config: DictConfig | dict):
-        # Инициализируем оба базовых класса
+        # AbstractBlock.__init__ теперь сам вызывает nn.Module.__init__ в начале — _modules готов для add_module
         AbstractBlock.__init__(self, config)
-        nn.Module.__init__(self)
-        
+
         # Кэш
         self._cached_timestep_emb = None
         self.is_training = False
@@ -98,18 +97,36 @@ class ModularDiffusionModel(AbstractBlock, nn.Module):
         return_dict: bool = True
     ) -> Dict[str, torch.Tensor] | torch.Tensor:
         """Основной forward — работает с ЛЮБОЙ модальностью."""
+        # Явно переносим на устройство и dtype модели (иначе часть вычислений может уйти на CPU)
+        backbone_param = next(self._slot_children["backbone"].parameters(), None)
+        if backbone_param is not None:
+            device, dtype = backbone_param.device, backbone_param.dtype
+            x = x.to(device=device, dtype=dtype)
+            t = t.to(device=device)  # dtype таймстепа не приводим — UNet сам делает embedding
+        else:
+            x = x.to(dtype=torch.float32)
+
+        # 1. Кодирование в латент только если вход в пиксельном пространстве (не латенты)
+        if self.has_slot("codec"):
+            codec = self._slot_children["codec"]
+            latent_ch = getattr(codec, "latent_channels", 4)
+            if x.shape[1] == latent_ch:
+                latents = x  # уже латенты (сэмплинг)
+            else:
+                latents = self._encode(x)
+        else:
+            latents = x
         
-        # 1. Кодирование в латент
-        latents = self._encode(x) if self.has_slot("codec") else x
-        
-        # 2. Позиционные эмбеддинги
-        pos_emb = self.children["position"](t, latents.shape) if self.has_slot("position") else None
+        # 2. Позиционные эмбеддинги (если слот заполнен)
+        pos_emb = None
+        if self._slot_children.get("position") is not None:
+            pos_emb = self._slot_children["position"](t, latents.shape)
         
         # 3. Обработка условий
         cond_emb = self._process_conditions(condition) if condition else None
         
         # 4. Прогон через backbone
-        backbone_output = self.children["backbone"](
+        backbone_output = self._slot_children["backbone"](
             latents,
             timestep=t,
             condition=cond_emb,
@@ -119,10 +136,7 @@ class ModularDiffusionModel(AbstractBlock, nn.Module):
         # 5. Применяем guidance (CFG и другие)
         model_output = self._apply_guidance(backbone_output, condition, latents, t)
         
-        # 6. Декодирование (только на инференсе)
-        if self.has_slot("codec") and not self.is_training:
-            model_output = self._decode_output(model_output)
-        
+        # Декодирование делается один раз в sampler после цикла, не по шагам
         if return_dict:
             return {
                 "noise_pred": model_output,
@@ -143,7 +157,7 @@ class ModularDiffusionModel(AbstractBlock, nn.Module):
     ) -> torch.Tensor:
         """Применяем все guidance блоки."""
         result = output
-        for guidance in self.children.get("guidance", []):
+        for guidance in self._slot_children.get("guidance", []):
             result = guidance(
                 result,
                 condition=condition,
@@ -156,32 +170,32 @@ class ModularDiffusionModel(AbstractBlock, nn.Module):
     # ==================== ВСПОМОГАТЕЛЬНЫЕ ====================
     
     def _encode(self, x: torch.Tensor) -> torch.Tensor:
-        if "codec" in self.children:
-            return self.children["codec"].encode(x)
+        if "codec" in self._slot_children:
+            return self._slot_children["codec"].encode(x)
         return x
     
     def _decode_output(self, output: torch.Tensor) -> torch.Tensor:
-        if "codec" in self.children:
-            return self.children["codec"].decode(output)
+        if "codec" in self._slot_children:
+            return self._slot_children["codec"].decode(output)
         return output
     
     def _process_conditions(self, condition: Dict[str, Any]) -> Dict[str, torch.Tensor]:
         cond_emb = {}
-        for conditioner in self.children.get("conditioner", []):
+        for conditioner in self._slot_children.get("conditioner", []):
             emb = conditioner(condition)
             cond_emb.update(emb)
         return cond_emb
     
     def _predict_x0(self, noise_pred: torch.Tensor, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        if "diffusion_process" in self.children:
-            return self.children["diffusion_process"].predict_x0(noise_pred, x, t)
+        if "diffusion_process" in self._slot_children:
+            return self._slot_children["diffusion_process"].predict_x0(noise_pred, x, t)
         # Fallback DDPM
         alpha = torch.cos(t * 0.5 * torch.pi) ** 2
         return (x - (1 - alpha).sqrt() * noise_pred) / alpha.sqrt()
     
     def _predict_velocity(self, noise_pred: torch.Tensor, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        if "diffusion_process" in self.children:
-            return self.children["diffusion_process"].predict_velocity(noise_pred, x, t)
+        if "diffusion_process" in self._slot_children:
+            return self._slot_children["diffusion_process"].predict_velocity(noise_pred, x, t)
         return noise_pred
     
     # ==================== LEGO-МЕТОДЫ ====================
@@ -192,7 +206,7 @@ class ModularDiffusionModel(AbstractBlock, nn.Module):
     def attach_adapter(self, adapter: AbstractBlock):
         self.attach_slot("adapters", adapter)
         if hasattr(adapter, "inject_into"):
-            adapter.inject_into(self.children["backbone"])
+            adapter.inject_into(self._slot_children["backbone"])
     
     def set_training_mode(self, mode: bool = True):
         self.is_training = mode
@@ -202,7 +216,7 @@ class ModularDiffusionModel(AbstractBlock, nn.Module):
         return self._encode(data)
     
     def decode(self, latents: torch.Tensor) -> torch.Tensor:
-        return self.children.get("codec", lambda x: x).decode(latents)
+        return self._slot_children.get("codec", lambda x: x).decode(latents)
     
     def forward_for_loss(self, x: torch.Tensor, t: torch.Tensor, condition: Dict | None = None) -> Dict[str, torch.Tensor]:
         self.set_training_mode(True)
@@ -214,5 +228,5 @@ class ModularDiffusionModel(AbstractBlock, nn.Module):
         return sampler.sample(condition=condition, **kwargs)
     
     def __repr__(self):
-        slots = [f"{k}={len(v) if isinstance(v, list) else 1}" for k, v in self.children.items()]
+        slots = [f"{k}={len(v) if isinstance(v, list) else 1}" for k, v in self._slot_children.items()]
         return f"<ModularDiffusionModel {self.block_id} | {' | '.join(slots)}>"

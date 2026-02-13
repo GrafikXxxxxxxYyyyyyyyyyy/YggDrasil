@@ -59,7 +59,7 @@ class SamplingLoop(AbstractBlock):
         **kwargs
     ) -> DiffusionState:
         """Запуск полного цикла."""
-        sampler = self.children["sampler"]
+        sampler = self._slot_children["sampler"]
         steps = num_steps or sampler.num_inference_steps
         
         # Инициализация состояния

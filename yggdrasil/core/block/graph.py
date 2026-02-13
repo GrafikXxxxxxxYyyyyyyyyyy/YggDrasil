@@ -13,7 +13,7 @@ class BlockGraph:
         
         def add_node(block: AbstractBlock):
             G.add_node(block.block_id, type=block.block_type)
-            for slot_name, child in block.children.items():
+            for slot_name, child in block._slot_children.items():
                 if isinstance(child, list):
                     for c in child:
                         G.add_edge(block.block_id, c.block_id, slot=slot_name)

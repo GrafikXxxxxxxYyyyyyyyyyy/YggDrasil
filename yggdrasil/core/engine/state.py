@@ -35,7 +35,11 @@ class DiffusionState(AbstractBlock):
     def __post_init__(self):
         # AbstractBlock.__init__ не нужен, т.к. это dataclass
         pass
-    
+
+    def _forward_impl(self, *args, **kwargs):
+        """State не преобразует вход — возвращаем себя (для совместимости с AbstractBlock)."""
+        return self
+
     def to(self, device: torch.device) -> DiffusionState:
         """Перемещение на устройство."""
         self.latents = self.latents.to(device)

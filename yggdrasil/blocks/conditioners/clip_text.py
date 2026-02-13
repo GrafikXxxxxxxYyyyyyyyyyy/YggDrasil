@@ -14,14 +14,17 @@ class CLIPTextConditioner(AbstractConditioner):
     
     def __init__(self, config: DictConfig):
         super().__init__(config)
-        self.tokenizer = CLIPTokenizer.from_pretrained(
-            config.get("pretrained", "openai/clip-vit-large-patch14"),
-            torch_dtype=torch.float16
-        )
-        self.text_encoder = CLIPTextModel.from_pretrained(
-            config.get("pretrained", "openai/clip-vit-large-patch14"),
-            torch_dtype=torch.float16
-        )
+        pretrained = config.get("pretrained", "openai/clip-vit-large-patch14")
+        tokenizer_sub = config.get("tokenizer_subfolder")
+        text_encoder_sub = config.get("text_encoder_subfolder")
+        kw_t = {"torch_dtype": torch.float16}
+        kw_m = {"torch_dtype": torch.float16}
+        if tokenizer_sub is not None:
+            kw_t["subfolder"] = tokenizer_sub
+        if text_encoder_sub is not None:
+            kw_m["subfolder"] = text_encoder_sub
+        self.tokenizer = CLIPTokenizer.from_pretrained(pretrained, **kw_t)
+        self.text_encoder = CLIPTextModel.from_pretrained(pretrained, **kw_m)
         self.max_length = config.get("max_length", 77)
     
     def __call__(self, condition: dict) -> dict:

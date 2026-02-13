@@ -18,6 +18,11 @@ class AbstractConditioner(AbstractBlock):
     def _define_slots(self):
         return {}
     
+    def _forward_impl(self, *args, **kwargs) -> Dict[str, torch.Tensor]:
+        """Требуется AbstractBlock; делегирует в __call__(condition)."""
+        condition = kwargs.get("condition", args[0] if args else {})
+        return self(condition)
+
     @abstractmethod
     def __call__(self, condition: Dict[str, Any]) -> Dict[str, torch.Tensor]:
         """condition → dict эмбеддингов.

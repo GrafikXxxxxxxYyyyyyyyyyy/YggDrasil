@@ -29,6 +29,10 @@ class AbstractLatentCodec(AbstractBlock):
         """latents → reconstructed data"""
         pass
     
+    def _forward_impl(self, x: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """Требуется AbstractBlock: делегирует в forward."""
+        return self.forward(x)
+
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """Для обучения: вернуть latents + kl_loss (если есть)."""
         z = self.encode(x)

@@ -15,6 +15,10 @@ class AbstractSolver(AbstractBlock):
     
     def _define_slots(self):
         return {}
+
+    def _forward_impl(self, *args, **kwargs):
+        """Требуется AbstractBlock; солвер вызывается через step(), не forward."""
+        return None
     
     @abstractmethod
     def step(
