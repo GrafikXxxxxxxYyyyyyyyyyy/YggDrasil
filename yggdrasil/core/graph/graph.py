@@ -194,7 +194,11 @@ class ComputeGraph:
         return self
     
     def _validate_edge(self, src: str, src_port: str, dst: str, dst_port: str):
-        """Validate port compatibility for an edge (warning-level, not blocking)."""
+        """Validate port compatibility for an edge.
+        
+        Raises ValueError if validation_mode='strict'.
+        Otherwise logs a warning.
+        """
         import logging
         _logger = logging.getLogger(__name__)
         
@@ -205,7 +209,7 @@ class ComputeGraph:
         dst_ports = getattr(dst_block, 'declare_io', lambda: {})()
         
         if not src_ports or not dst_ports:
-            return  # Can't validate without port declarations
+            return
         
         sp = src_ports.get(src_port)
         dp = dst_ports.get(dst_port)
@@ -217,7 +221,19 @@ class ComputeGraph:
                 getattr(dst_block, 'block_type', 'unknown'), dp,
             )
             if not valid:
+                if self.metadata.get("strict_validation", False):
+                    raise ValueError(f"Port incompatible: {msg}")
                 _logger.warning(f"Port compatibility warning: {msg}")
+        elif sp is None and src_ports:
+            msg = f"Output port '{src_port}' not declared on {src} ({getattr(src_block, 'block_type', '?')})"
+            if self.metadata.get("strict_validation", False):
+                raise ValueError(msg)
+            _logger.debug(msg)
+        elif dp is None and dst_ports:
+            msg = f"Input port '{dst_port}' not declared on {dst} ({getattr(dst_block, 'block_type', '?')})"
+            if self.metadata.get("strict_validation", False):
+                raise ValueError(msg)
+            _logger.debug(msg)
     
     def expose_input(
         self,
@@ -398,22 +414,33 @@ class ComputeGraph:
     
     # ==================== ВАЛИДАЦИЯ ====================
     
-    def validate(self) -> List[str]:
-        """Проверить корректность графа.
+    def validate(self, strict: bool = False) -> List[str]:
+        """Validate graph correctness.
         
+        Checks:
+        1. All edges reference existing nodes
+        2. All graph_inputs/graph_outputs reference existing nodes
+        3. Graph is acyclic (topological sort succeeds)
+        4. Port compatibility on all edges
+        5. Undeclared ports on edges (if blocks declare I/O)
+        
+        Args:
+            strict: If True, also raise ValueError on first error.
+            
         Returns:
-            Список ошибок (пустой = всё ок).
+            List of error strings (empty = all good).
         """
         errors = []
+        warnings = []
         
-        # 1. Проверяем, что все рёбра ссылаются на существующие узлы
+        # 1. All edges reference existing nodes
         for edge in self.edges:
             if edge.src_node not in self.nodes:
                 errors.append(f"Edge references non-existent source node '{edge.src_node}'")
             if edge.dst_node not in self.nodes:
                 errors.append(f"Edge references non-existent destination node '{edge.dst_node}'")
         
-        # 2. Проверяем graph_inputs / graph_outputs
+        # 2. graph_inputs / graph_outputs reference existing nodes
         for input_name, targets in self.graph_inputs.items():
             for node, port in targets:
                 if node not in self.nodes:
@@ -423,15 +450,13 @@ class ComputeGraph:
             if node not in self.nodes:
                 errors.append(f"Graph output '{output_name}' references non-existent node '{node}'")
         
-        # 3. Проверяем ацикличность
+        # 3. Acyclicity
         try:
             self.topological_sort()
         except ValueError as e:
             errors.append(str(e))
         
-        # 4. Проверяем порты (если блоки имеют declare_io)
-        from yggdrasil.core.block.port import PortValidator
-        
+        # 4+5. Port validation
         for edge in self.edges:
             src_block = self.nodes.get(edge.src_node)
             dst_block = self.nodes.get(edge.dst_node)
@@ -441,20 +466,45 @@ class ComputeGraph:
             src_ports = getattr(src_block, 'declare_io', lambda: {})()
             dst_ports = getattr(dst_block, 'declare_io', lambda: {})()
             
+            # Check undeclared ports
+            if src_ports and edge.src_port not in src_ports and edge.src_port != "output":
+                warnings.append(
+                    f"Edge {edge}: source port '{edge.src_port}' not declared by "
+                    f"{getattr(src_block, 'block_type', type(src_block).__name__)}"
+                )
+            if dst_ports and edge.dst_port not in dst_ports:
+                warnings.append(
+                    f"Edge {edge}: dest port '{edge.dst_port}' not declared by "
+                    f"{getattr(dst_block, 'block_type', type(dst_block).__name__)}"
+                )
+            
+            # Check port compatibility
             src_port = src_ports.get(edge.src_port)
             dst_port = dst_ports.get(edge.dst_port)
             
             if src_port and dst_port:
-                valid, msg = PortValidator.validate_connection(
-                    getattr(src_block, 'block_type', 'unknown'),
-                    src_port,
-                    getattr(dst_block, 'block_type', 'unknown'),
-                    dst_port,
-                )
-                if not valid:
-                    errors.append(msg)
+                try:
+                    from yggdrasil.core.block.port import PortValidator
+                    valid, msg = PortValidator.validate_connection(
+                        getattr(src_block, 'block_type', 'unknown'),
+                        src_port,
+                        getattr(dst_block, 'block_type', 'unknown'),
+                        dst_port,
+                    )
+                    if not valid:
+                        warnings.append(msg)
+                except Exception:
+                    pass  # PortValidator may not be available
         
-        return errors
+        all_issues = errors + warnings
+        
+        if strict and all_issues:
+            raise ValueError(
+                f"Graph '{self.name}' validation failed:\n" + 
+                "\n".join(f"  - {e}" for e in all_issues)
+            )
+        
+        return all_issues
     
     def topological_sort(self) -> List[str]:
         """Топологическая сортировка узлов (порядок выполнения).
@@ -640,6 +690,173 @@ class ComputeGraph:
         path.parent.mkdir(parents=True, exist_ok=True)
         OmegaConf.save(OmegaConf.create(data), path)
     
+    # ==================== WORKFLOW SERIALIZATION ====================
+    
+    def to_workflow(self, path: str | Path, parameters: dict | None = None) -> None:
+        """Save a complete workflow: graph structure + runtime parameters.
+        
+        This is the ComfyUI-like feature: save everything needed to reproduce
+        a generation, then replay it with `from_workflow()`.
+        
+        Args:
+            path: Destination file (.yaml or .json)
+            parameters: Runtime parameters to include (prompt, seed, guidance_scale, etc.)
+        
+        Format::
+        
+            name: sd15_txt2img
+            metadata: {...}
+            nodes: {...}
+            edges: [...]
+            inputs: {...}
+            outputs: {...}
+            parameters:
+              prompt: {text: "a beautiful cat"}
+              guidance_scale: 7.5
+              seed: 42
+              num_steps: 28
+        """
+        import json
+        
+        # Build base graph structure (same as to_yaml)
+        data = {
+            "name": self.name,
+            "metadata": dict(self.metadata),
+            "nodes": {},
+            "edges": [],
+            "inputs": {},
+            "outputs": {},
+            "parameters": parameters or {},
+        }
+        
+        for node_name, block in self.nodes.items():
+            block_type = getattr(block, 'block_type', 'unknown')
+            config = {}
+            if hasattr(block, 'config'):
+                try:
+                    config = OmegaConf.to_container(block.config, resolve=True)
+                except Exception:
+                    config = dict(block.config) if block.config else {}
+            data["nodes"][node_name] = {
+                "block": block_type,
+                "config": config,
+            }
+        
+        for edge in self.edges:
+            data["edges"].append([
+                f"{edge.src_node}.{edge.src_port}",
+                f"{edge.dst_node}.{edge.dst_port}",
+            ])
+        
+        for input_name, targets in self.graph_inputs.items():
+            if len(targets) == 1:
+                data["inputs"][input_name] = [targets[0][0], targets[0][1]]
+            else:
+                data["inputs"][input_name] = [[n, p] for n, p in targets]
+        
+        for output_name, (node, port) in self.graph_outputs.items():
+            data["outputs"][output_name] = [node, port]
+        
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        
+        suffix = path.suffix.lower()
+        if suffix == ".json":
+            with open(path, "w") as f:
+                json.dump(data, f, indent=2, default=str)
+        else:
+            OmegaConf.save(OmegaConf.create(data), path)
+    
+    @classmethod
+    def from_workflow(cls, path: str | Path) -> tuple[ComputeGraph, dict]:
+        """Load a complete workflow: reconstructs graph + returns runtime parameters.
+        
+        Args:
+            path: Workflow file (.yaml or .json)
+            
+        Returns:
+            Tuple of (graph, parameters) where parameters is a dict of
+            runtime inputs (prompt, seed, etc.) that were saved with the workflow.
+        
+        Example::
+        
+            graph, params = ComputeGraph.from_workflow("workflow.yaml")
+            pipe = Pipeline.from_graph(graph)
+            output = pipe(**params)
+        """
+        import json
+        
+        path = Path(path)
+        suffix = path.suffix.lower()
+        
+        if suffix == ".json":
+            with open(path) as f:
+                data = json.load(f)
+        else:
+            data = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
+        
+        # Build graph from structure using from_yaml-like logic
+        graph = cls._build_from_dict(data)
+        
+        # Extract parameters
+        parameters = data.get("parameters", {})
+        
+        return graph, parameters
+    
+    @classmethod
+    def _build_from_dict(cls, data: dict) -> ComputeGraph:
+        """Build a ComputeGraph from a dict structure."""
+        from yggdrasil.core.block.builder import BlockBuilder
+        
+        graph = cls(data.get("name", "unnamed"))
+        graph.metadata = dict(data.get("metadata", {}))
+        
+        # Build nodes
+        for node_name, node_conf in data.get("nodes", {}).items():
+            block_type = node_conf.get("block") or node_conf.get("type")
+            config = dict(node_conf.get("config", {}))
+            config["type"] = block_type
+            block = BlockBuilder.build(config)
+            graph.add_node(node_name, block)
+        
+        # Build edges
+        for edge_def in data.get("edges", []):
+            if isinstance(edge_def, str):
+                parts = edge_def.split("->")
+                src_spec, dst_spec = parts[0].strip(), parts[1].strip()
+            elif isinstance(edge_def, (list, tuple)) and len(edge_def) >= 2:
+                src_spec, dst_spec = str(edge_def[0]), str(edge_def[1])
+            else:
+                continue
+            
+            src_node, src_port = src_spec.split(".", 1)
+            dst_node, dst_port = dst_spec.split(".", 1)
+            graph.connect(src_node.strip(), src_port.strip(), 
+                         dst_node.strip(), dst_port.strip())
+        
+        # Graph inputs
+        for input_name, mapping in data.get("inputs", {}).items():
+            if isinstance(mapping, str):
+                node, port = mapping.split(".", 1)
+                graph.expose_input(input_name, node.strip(), port.strip())
+            elif isinstance(mapping, (list, tuple)):
+                first = mapping[0]
+                if isinstance(first, (list, tuple)):
+                    for pair in mapping:
+                        graph.expose_input(input_name, str(pair[0]), str(pair[1]))
+                else:
+                    graph.expose_input(input_name, str(mapping[0]), str(mapping[1]))
+        
+        # Graph outputs
+        for output_name, mapping in data.get("outputs", {}).items():
+            if isinstance(mapping, str):
+                node, port = mapping.split(".", 1)
+                graph.expose_output(output_name, node.strip(), port.strip())
+            elif isinstance(mapping, (list, tuple)):
+                graph.expose_output(output_name, str(mapping[0]), str(mapping[1]))
+        
+        return graph
+    
     # ==================== ВИЗУАЛИЗАЦИЯ ====================
     
     def visualize(self) -> str:
@@ -744,120 +961,60 @@ class ComputeGraph:
         return graph
     
     def execute(self, *, prompt=None, **kwargs: Any) -> Dict[str, Any]:
-        """Выполнить граф.
+        """Execute the graph.
         
-        Принимает как высокоуровневые, так и низкоуровневые параметры.
+        Two modes of operation:
         
-        High-level (авто-транслируются в graph inputs):
-            prompt: str или dict — текстовый промпт
-            negative_prompt: str — негативный промпт
-            guidance_scale: float — сила CFG (по умолчанию из metadata)
-            num_steps: int — кол-во шагов деноизинга
-            width: int — ширина изображения (default 512)
-            height: int — высота изображения (default 512)
-            seed: int — сид для воспроизводимости
-            batch_size: int — размер батча (default 1)
+        1. **High-level** (convenience — delegates to Pipeline):
+           Accepts prompt, guidance_scale, num_steps, seed, width, height, etc.
+           Auto-prepares noise latents and applies overrides.
         
-        Low-level (передаются напрямую как graph inputs):
-            latents, timesteps, condition, и т.д.
+        2. **Low-level** (raw graph execution):
+           Pass ready-made graph inputs directly.
         
-        Пример::
+        Example::
         
-            # Минимальный вызов
-            outputs = graph.execute(prompt="a beautiful cat")
+            # High-level (auto noise, auto guidance)
+            outputs = graph.execute(prompt="a cat", guidance_scale=7.5, num_steps=28, seed=42)
             
-            # С параметрами
-            outputs = graph.execute(
-                prompt="a beautiful cat",
-                guidance_scale=7.5,
-                num_steps=28,
-                seed=42,
-                width=512,
-                height=512,
-            )
-            
-            # Low-level (ручное управление)
-            outputs = graph.execute(
-                prompt={"text": "a cat"},
-                latents=my_noise_tensor,
-            )
+            # Low-level (manual)
+            outputs = graph.execute(latents=my_noise, prompt={"text": "a cat"})
         
         Returns:
-            Dict с выходами графа (ключи = expose_output имена).
+            Dict with graph outputs (keys = expose_output names).
         """
-        import torch
-        from .executor import GraphExecutor
+        from yggdrasil.pipeline import Pipeline
+        pipe = Pipeline.from_graph(self)
         
-        # ── 1. Extract runtime overrides (fallback to metadata defaults) ──
+        # Extract high-level params if present
         guidance_scale = kwargs.pop("guidance_scale", None)
         num_steps = kwargs.pop("num_steps", None)
-        width = kwargs.pop("width", self.metadata.get("default_width", 512))
-        height = kwargs.pop("height", self.metadata.get("default_height", 512))
+        width = kwargs.pop("width", None)
+        height = kwargs.pop("height", None)
         seed = kwargs.pop("seed", None)
         batch_size = kwargs.pop("batch_size", 1)
         negative_prompt = kwargs.pop("negative_prompt", None)
         
-        # ── 2. Apply runtime overrides to nodes ──
-        # Guidance scale: explicit > metadata default > no change
-        if guidance_scale is not None:
-            self._apply_guidance_scale(guidance_scale)
-        # Num steps: explicit > metadata default (always applied to ensure
-        # the loop is properly configured even on re-execution)
-        if num_steps is not None:
-            self._apply_num_steps(num_steps)
-        
-        # ── 3. Normalize prompt ──
-        if prompt is not None:
-            if isinstance(prompt, str):
-                prompt = {"text": prompt}
-            kwargs["prompt"] = prompt
-        
-        # ── 4. Auto-generate noise if latents not provided ──
-        if "latents" not in kwargs:
-            kwargs["latents"] = self._make_noise(
-                batch_size=batch_size, width=width, height=height, seed=seed,
-            )
-        
-        # ── 5. Execute ──
-        return GraphExecutor().execute(self, **kwargs)
+        result = pipe(
+            prompt=prompt,
+            guidance_scale=guidance_scale,
+            num_steps=num_steps,
+            width=width,
+            height=height,
+            seed=seed,
+            batch_size=batch_size,
+            negative_prompt=negative_prompt,
+            **kwargs,
+        )
+        return result.raw
     
-    # ── Runtime helpers ──
-    
-    def _apply_guidance_scale(self, scale: float):
-        """Set guidance scale on all guidance nodes (including inner graphs)."""
-        for _, block in self._iter_all_blocks():
-            bt = getattr(block, 'block_type', '')
-            if 'guidance' in bt and hasattr(block, 'scale'):
-                block.scale = scale
-    
-    def _apply_num_steps(self, num_steps: int):
-        """Set num_iterations on all loop nodes."""
-        for _, block in self._iter_all_blocks():
-            if hasattr(block, 'num_iterations'):
-                block.num_iterations = num_steps
-    
-    def _make_noise(self, batch_size=1, width=512, height=512, seed=None):
-        """Generate initial noise latents based on graph metadata."""
-        import torch
-        channels = self.metadata.get("latent_channels", 4)
-        scale = self.metadata.get("spatial_scale_factor", 8)
-        h, w = height // scale, width // scale
+    def execute_raw(self, **inputs: Any) -> Dict[str, Any]:
+        """Execute graph with raw inputs (no Pipeline convenience).
         
-        device = self._device or torch.device("cpu")
-        device_type = device.type if hasattr(device, 'type') else str(device)
-        
-        # MPS workaround: generate on CPU then move
-        if seed is not None:
-            if device_type == "mps":
-                g = torch.Generator().manual_seed(seed)
-                noise = torch.randn(batch_size, channels, h, w, generator=g)
-            else:
-                g = torch.Generator(device).manual_seed(seed)
-                noise = torch.randn(batch_size, channels, h, w, device=device, generator=g)
-        else:
-            noise = torch.randn(batch_size, channels, h, w)
-        
-        return noise.to(device)
+        Use this for non-diffusion graphs or when you want full control.
+        """
+        from .executor import GraphExecutor
+        return GraphExecutor().execute(self, **inputs)
     
     def _iter_all_blocks(self):
         """Итерация по ВСЕМ блокам, включая вложенные SubGraph."""

@@ -6,11 +6,16 @@ from .registry import get_block_class
 
 
 class BlockBuilder:
-    """Главный сборщик Lego. Превращает YAML → живой граф блоков."""
+    """Main Lego assembler. Turns YAML config -> live block graph."""
     
     @classmethod
     def build(cls, config: DictConfig | dict | str) -> AbstractBlock:
-        """Собрать блок из конфига."""
+        """Build a block from config.
+        
+        Raises:
+            ValueError: If 'type' or 'block_type' is missing from config.
+            KeyError: If block type not found (with suggestions for similar blocks).
+        """
         if isinstance(config, str):
             config = OmegaConf.load(config)
         elif isinstance(config, dict):
@@ -18,13 +23,17 @@ class BlockBuilder:
         
         block_type = config.get("type") or config.get("block_type")
         if not block_type:
-            raise ValueError("В конфиге обязателен ключ 'type' или 'block_type'")
+            raise ValueError(
+                f"Config must contain 'type' or 'block_type' key. "
+                f"Got keys: {list(config.keys())}"
+            )
         
         block_type_str = str(block_type)
+        # get_block_class now raises informative KeyError with suggestions
         BlockClass = get_block_class(block_type_str)
         
-        # Для model/modular не подставляем детей в конфиг (OmegaConf не хранит объекты),
-        # дети соберутся в _build_slots через BlockBuilder.build(child_config)
+        # For model/modular: don't substitute children in config (OmegaConf can't store objects);
+        # children are built via _build_slots -> BlockBuilder.build(child_config)
         if block_type == "model/modular":
             resolved_config = config
         else:

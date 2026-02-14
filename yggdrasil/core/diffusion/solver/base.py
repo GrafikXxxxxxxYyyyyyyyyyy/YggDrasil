@@ -1,5 +1,4 @@
 import torch
-from abc import abstractmethod
 from typing import Any, Dict
 
 from ....core.block.base import AbstractBlock
@@ -10,7 +9,22 @@ from ..process import AbstractDiffusionProcess
 
 @register_block("diffusion/solver/abstract")
 class AbstractSolver(AbstractBlock):
-    """Абстрактный солвер (DDIM, Heun, Euler, DPM и т.д.)."""
+    """Абстрактный солвер (DDIM, Heun, Euler, DPM и т.д.).
+    
+    Контракт: реализовать ``process()`` или ``step()``.
+    
+    Порты:
+        IN:  model_output, current_latents, timestep, next_timestep (opt), process (opt)
+        OUT: next_latents
+    
+    Пример::
+    
+        @register_block("solver/my_solver")
+        class MySolver(AbstractSolver):
+            block_type = "solver/my_solver"
+            def step(self, model_output, current_latents, timestep, process, **kw):
+                return current_latents - 0.1 * model_output
+    """
     
     block_type = "diffusion/solver/abstract"
     
@@ -32,7 +46,6 @@ class AbstractSolver(AbstractBlock):
         process = port_inputs.get("process")
         
         if current_latents is None:
-            # Без current_latents solver не может работать — passthrough
             return {"next_latents": model_output, "output": model_output, "latents": model_output}
         
         extra = {k: v for k, v in port_inputs.items()
@@ -44,10 +57,8 @@ class AbstractSolver(AbstractBlock):
         return {}
 
     def _forward_impl(self, *args, **kwargs):
-        """Требуется AbstractBlock; солвер вызывается через step(), не forward."""
         return None
     
-    @abstractmethod
     def step(
         self,
         model_output: torch.Tensor,
@@ -56,5 +67,7 @@ class AbstractSolver(AbstractBlock):
         process: AbstractDiffusionProcess,
         **kwargs: Any
     ) -> torch.Tensor:
-        """Один шаг солвера."""
-        pass
+        """One solver step. Override this or process()."""
+        raise NotImplementedError(
+            f"{type(self).__name__} должен реализовать process() или step()"
+        )

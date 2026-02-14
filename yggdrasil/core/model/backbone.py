@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-from abc import abstractmethod
 from typing import Optional, Any, Dict
 from omegaconf import DictConfig
 
@@ -16,7 +15,22 @@ from ...core.block.port import Port, InputPort, OutputPort, TensorSpec
 class AbstractBackbone(AbstractBlock, nn.Module):
     """Абстрактный backbone (UNet, DiT, Transformer, GNN и т.д.).
     
-    Любой конкретный backbone (в blocks/backbones/) должен наследоваться отсюда.
+    Контракт: реализовать ``process()`` или ``_forward_impl()``.
+    
+    Порты:
+        IN:  x, timestep, condition (opt), position_embedding (opt), adapter_features (opt)
+        OUT: output
+    
+    Пример::
+    
+        @register_block("backbone/my_unet")
+        class MyUNet(AbstractBackbone):
+            block_type = "backbone/my_unet"
+            def __init__(self, config):
+                super().__init__(config)
+                self.model = ...
+            def _forward_impl(self, x, timestep, condition=None, **kw):
+                return self.model(x, timestep, condition)
     """
     
     block_type = "backbone/abstract"
@@ -51,17 +65,15 @@ class AbstractBackbone(AbstractBlock, nn.Module):
         return {"output": output}
     
     def _define_slots(self) -> Dict[str, Slot]:
-        """Backbone может иметь свои слоты (например, для LoRA внутри)."""
         return {
             "adapters": Slot(
                 name="adapters",
-                accepts=AbstractBlock,  # LoRA, DoRA и т.д.
+                accepts=AbstractBlock,
                 multiple=True,
                 optional=True
             )
         }
     
-    @abstractmethod
     def _forward_impl(
         self,
         x: torch.Tensor,
@@ -70,27 +82,17 @@ class AbstractBackbone(AbstractBlock, nn.Module):
         position_embedding: Optional[torch.Tensor] = None,
         **kwargs: Any
     ) -> torch.Tensor:
-        """Основной forward backbone.
-        
-        Args:
-            x: latents [B, C, *spatial_dims]
-            timestep: [B] или [B, 1]
-            condition: dict эмбеддингов (text, control, ip и т.д.)
-            position_embedding: RoPE / sinusoidal / learned
-        """
-        pass
+        """Override this or process() for custom backbone logic."""
+        raise NotImplementedError(
+            f"{type(self).__name__} должен реализовать process() или _forward_impl()"
+        )
     
     def forward(self, *args, **kwargs) -> torch.Tensor:
-        """Пробрасываем в _forward_impl + применяем адаптеры."""
-        output = super().forward(*args, **kwargs)  # вызовет _forward_impl с хуками
-        
-        # Автоматически применяем все адаптеры (LoRA и т.д.)
+        output = super().forward(*args, **kwargs)
         for adapter in self._slot_children.get("adapters", []):
             if hasattr(adapter, "apply"):
                 output = adapter.apply(output, self)
-        
         return output
     
     def inject_adapter(self, adapter: AbstractBlock):
-        """Удобный метод для runtime-инъекции."""
         self.attach_slot("adapters", adapter)

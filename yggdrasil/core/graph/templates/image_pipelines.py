@@ -17,47 +17,79 @@ def _build_denoise_step(
     backbone,
     guidance,
     solver,
+    *,
+    use_cfg: bool = True,
 ) -> ComputeGraph:
-    """Build the inner per-step graph: backbone -> guidance -> solver.
+    """Build the inner per-step graph with explicit dual-pass CFG.
     
-    This graph executes once per denoising step inside LoopSubGraph.
+    Если use_cfg=True (default), создаёт два вызова backbone:
+        backbone_cond   (с condition)  --|
+                                        |--> guidance --> solver
+        backbone_uncond (с null cond)  --|
+    
+    Никаких скрытых зависимостей — всё через порты и рёбра графа.
     
     Inputs (provided by LoopSubGraph at each iteration):
         latents:       current noisy latents
         timestep:      current timestep
         next_timestep: next timestep
-        condition:     conditioner embedding (constant across steps)
+        condition:     conditioner embedding
+        uncond:        null conditioner embedding (for CFG)
     
     Outputs:
         next_latents:  denoised latents for next step
     """
+    import copy
+    
     step = ComputeGraph("denoise_step")
     step.add_node("backbone", backbone)
     step.add_node("guidance", guidance)
     step.add_node("solver", solver)
     
-    # backbone -> guidance -> solver
-    step.connect("backbone", "output", "guidance", "model_output")
-    step.connect("guidance", "guided_output", "solver", "model_output")
+    if use_cfg:
+        # Create a second backbone for unconditional pass.
+        # Both share the SAME weights (same nn.Module object).
+        # GraphExecutor calls process() which doesn't mutate state — safe.
+        step.add_node("backbone_uncond", backbone)
+        
+        # Cond path: backbone -> guidance.model_output
+        step.connect("backbone", "output", "guidance", "model_output")
+        # Uncond path: backbone_uncond -> guidance.uncond_output
+        step.connect("backbone_uncond", "output", "guidance", "uncond_output")
+        
+        # Guidance -> solver
+        step.connect("guidance", "guided_output", "solver", "model_output")
+        
+        # Fan-out: latents -> all consumers
+        step.expose_input("latents", "backbone", "x")
+        step.expose_input("latents", "backbone_uncond", "x")
+        step.expose_input("latents", "solver", "current_latents")
+        
+        # Fan-out: timestep -> all consumers
+        step.expose_input("timestep", "backbone", "timestep")
+        step.expose_input("timestep", "backbone_uncond", "timestep")
+        step.expose_input("timestep", "solver", "timestep")
+        
+        # Condition -> cond backbone only
+        step.expose_input("condition", "backbone", "condition")
+        
+        # Uncond -> uncond backbone only
+        step.expose_input("uncond", "backbone_uncond", "condition")
+    else:
+        # No CFG — single pass
+        step.connect("backbone", "output", "guidance", "model_output")
+        step.connect("guidance", "guided_output", "solver", "model_output")
+        
+        step.expose_input("latents", "backbone", "x")
+        step.expose_input("latents", "solver", "current_latents")
+        
+        step.expose_input("timestep", "backbone", "timestep")
+        step.expose_input("timestep", "solver", "timestep")
+        
+        step.expose_input("condition", "backbone", "condition")
     
-    # Fan-out: latents -> backbone.x, solver.current_latents, guidance.x
-    step.expose_input("latents", "backbone", "x")
-    step.expose_input("latents", "solver", "current_latents")
-    step.expose_input("latents", "guidance", "x")
-    
-    # Fan-out: timestep -> backbone.timestep, solver.timestep, guidance.t
-    step.expose_input("timestep", "backbone", "timestep")
-    step.expose_input("timestep", "solver", "timestep")
-    step.expose_input("timestep", "guidance", "t")
-    
-    # Fan-out: condition -> backbone.condition, guidance.condition
-    step.expose_input("condition", "backbone", "condition")
-    step.expose_input("condition", "guidance", "condition")
-    
-    # next_timestep -> solver
     step.expose_input("next_timestep", "solver", "next_timestep")
     
-    # Output
     step.expose_output("next_latents", "solver", "next_latents")
     step.expose_output("latents", "solver", "next_latents")
     
@@ -94,6 +126,8 @@ def _build_txt2img_graph(
     from yggdrasil.core.block.builder import BlockBuilder
     from yggdrasil.core.graph.subgraph import LoopSubGraph
     
+    use_cfg = guidance_config.get("scale", 7.5) > 1.0
+    
     graph = ComputeGraph(name)
     
     # ── Metadata for runtime parameter resolution ──
@@ -112,12 +146,8 @@ def _build_txt2img_graph(
     guidance = BlockBuilder.build(guidance_config)
     solver = BlockBuilder.build(solver_config)
     
-    # Set backbone reference for CFG/SAG dual-pass
-    if hasattr(guidance, '_backbone_ref'):
-        guidance._backbone_ref = backbone
-    
-    # Build inner step graph
-    step_graph = _build_denoise_step(backbone, guidance, solver)
+    # Build inner step graph (explicit dual-pass, no _backbone_ref)
+    step_graph = _build_denoise_step(backbone, guidance, solver, use_cfg=use_cfg)
     
     # Wrap in denoising loop
     loop = LoopSubGraph.create(
@@ -133,6 +163,18 @@ def _build_txt2img_graph(
         conditioners.append(cond)
         graph.add_node(f"conditioner_{i}", cond)
     
+    # Null conditioner for CFG unconditional pass
+    if use_cfg:
+        # Infer embedding shape from first conditioner config
+        emb_dim = conditioner_configs[0].get("embedding_dim", 768)
+        seq_len = conditioner_configs[0].get("max_length", 77)
+        null_cond = BlockBuilder.build({
+            "type": "conditioner/null",
+            "embedding_dim": emb_dim,
+            "seq_length": seq_len,
+        })
+        graph.add_node("null_conditioner", null_cond)
+    
     # Position embedder (if needed)
     if position_config:
         position = BlockBuilder.build(position_config)
@@ -142,17 +184,23 @@ def _build_txt2img_graph(
     graph.add_node("denoise_loop", loop)
     graph.add_node("codec", codec)
     
-    # Wire conditioners
+    # Wire conditioners — prompt input
     for i, cond in enumerate(conditioners):
         graph.expose_input(
             f"prompt_{i}" if i > 0 else "prompt",
             f"conditioner_{i}", "raw_condition",
         )
     
-    # Connect first conditioner's embedding to loop's condition input
+    # Condition path: conditioner -> loop.condition
     graph.connect("conditioner_0", "embedding", "denoise_loop", "condition")
     
-    # Noise input -> loop (optional: auto-generated if not provided)
+    # Unconditional path: null_conditioner -> loop.uncond
+    if use_cfg:
+        # null_conditioner also needs a dummy input to trigger process()
+        graph.expose_input("prompt", "null_conditioner", "raw_condition")
+        graph.connect("null_conditioner", "embedding", "denoise_loop", "uncond")
+    
+    # Noise input -> loop
     graph.expose_input("latents", "denoise_loop", "initial_latents")
     
     # Optional: timesteps input
@@ -406,9 +454,7 @@ def stable_cascade(**kwargs) -> ComputeGraph:
     prior_backbone = BlockBuilder.build({"type": "backbone/dit", "hidden_dim": 1536, "num_layers": 24, "num_heads": 24, "in_channels": 16, "patch_size": 2})
     prior_guidance = BlockBuilder.build({"type": "guidance/cfg", "scale": 4.0})
     prior_solver = BlockBuilder.build({"type": "diffusion/solver/ddim"})
-    prior_guidance._backbone_ref = prior_backbone
-    
-    prior_step = _build_denoise_step(prior_backbone, prior_guidance, prior_solver)
+    prior_step = _build_denoise_step(prior_backbone, prior_guidance, prior_solver, use_cfg=True)
     prior_loop = LoopSubGraph.create(inner_graph=prior_step, num_iterations=20)
     graph.add_node("prior_loop", prior_loop)
     
@@ -467,8 +513,7 @@ def deepfloyd_txt2img(**kwargs) -> ComputeGraph:
         bb = BlockBuilder.build({"type": "backbone/unet2d_condition", "pretrained": pretrained, "fp16": True})
         g = BlockBuilder.build({"type": "guidance/cfg", "scale": guidance_scale})
         s = BlockBuilder.build({"type": "diffusion/solver/ddim"})
-        g._backbone_ref = bb
-        step = _build_denoise_step(bb, g, s)
+        step = _build_denoise_step(bb, g, s, use_cfg=True)
         return LoopSubGraph.create(inner_graph=step, num_iterations=steps)
     
     # Stage 1: 64x64
@@ -496,4 +541,237 @@ def deepfloyd_txt2img(**kwargs) -> ComputeGraph:
     
     graph.expose_output("image", "stage3_loop", "latents")
     
+    return graph
+
+
+# ==================== FLUX.2 ====================
+
+def _flux2_base(name: str, variant: str, **kwargs) -> ComputeGraph:
+    """Base builder for all FLUX.2 variants.
+
+    FLUX.2 architecture (diffusers v0.36.0):
+        - Backbone: Flux2Transformer2DModel (dual-stream 8 + single-stream 48 layers)
+        - Text encoder: Mistral3 (joint_attention_dim=15360)
+        - VAE: AutoencoderKLFlux2 (32ch latents, patchified to 128ch)
+        - Scheduler: FlowMatchEulerDiscrete
+        - Guidance: embedded (guidance-distilled), NOT traditional CFG
+    """
+    return _build_txt2img_graph(
+        name=name,
+        backbone_config={
+            "type": "backbone/flux2_transformer",
+            "variant": variant,
+            "pretrained": kwargs.get("pretrained", f"black-forest-labs/FLUX.2-{variant}"),
+            "hidden_dim": 3072,
+            "num_layers": 8,
+            "num_heads": 48,
+            "in_channels": 128,
+            "bf16": True,
+        },
+        codec_config={
+            "type": "codec/autoencoder_kl",
+            "pretrained": kwargs.get("pretrained", f"black-forest-labs/FLUX.2-{variant}"),
+            "latent_channels": 32,
+            "spatial_scale_factor": 16,
+        },
+        conditioner_configs=[
+            {
+                "type": "conditioner/mistral3",
+                "pretrained": kwargs.get("text_encoder", "mistralai/Mistral-Small-3.1-24B-Instruct-2503"),
+                "max_length": 512,
+                "hidden_layers": [10, 20, 30],
+                "embedding_dim": 15360,
+            },
+        ],
+        guidance_config={"type": "guidance/cfg", "scale": kwargs.get("guidance_scale", 4.0)},
+        solver_config={"type": "solver/flow_euler"},
+        schedule_config={"type": "noise/schedule/sigmoid"},
+        process_config={"type": "diffusion/process/flow/rectified"},
+        num_steps=kwargs.get("num_steps", 50),
+        default_width=1024,
+        default_height=1024,
+    )
+
+
+@register_template("flux2_txt2img")
+def flux2_txt2img(**kwargs) -> ComputeGraph:
+    """FLUX.2 dev text-to-image."""
+    return _flux2_base("flux2_txt2img", "dev", **kwargs)
+
+
+@register_template("flux2_schnell")
+def flux2_schnell(**kwargs) -> ComputeGraph:
+    """FLUX.2 Schnell — fast 4-step generation."""
+    kwargs.setdefault("num_steps", 4)
+    kwargs.setdefault("guidance_scale", 0.0)  # Schnell: no CFG
+    return _flux2_base("flux2_schnell", "schnell", **kwargs)
+
+
+@register_template("flux2_fill")
+def flux2_fill(**kwargs) -> ComputeGraph:
+    """FLUX.2 Fill — inpainting/outpainting."""
+    graph = _flux2_base("flux2_fill", "Fill-dev", **kwargs)
+    graph.expose_input("mask", "denoise_loop", "mask")
+    graph.expose_input("source_image", "codec", "pixel_data")
+    return graph
+
+
+@register_template("flux2_canny")
+def flux2_canny(**kwargs) -> ComputeGraph:
+    """FLUX.2 Canny — edge-conditioned generation."""
+    graph = _flux2_base("flux2_canny", "Canny-dev", **kwargs)
+    graph.expose_input("canny_image", "denoise_loop", "image_condition")
+    return graph
+
+
+@register_template("flux2_depth")
+def flux2_depth(**kwargs) -> ComputeGraph:
+    """FLUX.2 Depth — depth-conditioned generation."""
+    graph = _flux2_base("flux2_depth", "Depth-dev", **kwargs)
+    graph.expose_input("depth_map", "denoise_loop", "image_condition")
+    return graph
+
+
+@register_template("flux2_redux")
+def flux2_redux(**kwargs) -> ComputeGraph:
+    """FLUX.2 Redux — image variation."""
+    graph = _flux2_base("flux2_redux", "Redux-dev", **kwargs)
+    graph.expose_input("reference_image", "denoise_loop", "image_condition")
+    return graph
+
+
+@register_template("flux2_kontext")
+def flux2_kontext(**kwargs) -> ComputeGraph:
+    """FLUX.2 Kontext — multi-image context generation."""
+    graph = _flux2_base("flux2_kontext", "Kontext-dev", **kwargs)
+    graph.expose_input("context_images", "denoise_loop", "image_condition")
+    return graph
+
+
+# ==================== Wan 2.1 (Video) ====================
+
+def _wan_base(name: str, pretrained: str, **kwargs) -> ComputeGraph:
+    """Base builder for Wan video pipelines."""
+    return _build_txt2img_graph(
+        name=name,
+        backbone_config={
+            "type": "backbone/wan_transformer",
+            "pretrained": pretrained,
+            "hidden_dim": kwargs.get("hidden_dim", 1536),
+            "in_channels": 16,
+            "fp16": True,
+        },
+        codec_config={
+            "type": "codec/wan_vae",
+            "pretrained": pretrained,
+            "latent_channels": 16,
+            "spatial_scale_factor": 8,
+        },
+        conditioner_configs=[
+            {"type": "conditioner/clip_text", "pretrained": "openai/clip-vit-large-patch14", "max_length": 77, "embedding_dim": 768},
+            {"type": "conditioner/t5_text", "pretrained": "google/umt5-xxl", "max_length": 512},
+        ],
+        guidance_config={"type": "guidance/cfg", "scale": kwargs.get("guidance_scale", 5.0)},
+        solver_config={"type": "solver/euler"},
+        schedule_config={"type": "noise/schedule/linear"},
+        process_config={"type": "diffusion/process/flow/rectified"},
+        num_steps=kwargs.get("num_steps", 50),
+        default_width=kwargs.get("default_width", 720),
+        default_height=kwargs.get("default_height", 480),
+    )
+
+
+@register_template("wan_t2v")
+def wan_t2v(**kwargs) -> ComputeGraph:
+    """Wan 2.1 text-to-video."""
+    pretrained = kwargs.get("pretrained", "Wan-AI/Wan2.1-T2V-14B-Diffusers")
+    graph = _wan_base("wan_t2v", pretrained, **kwargs)
+    graph.metadata["num_frames"] = kwargs.get("num_frames", 81)
+    graph.metadata["output_type"] = "video"
+    return graph
+
+
+@register_template("wan_i2v")
+def wan_i2v(**kwargs) -> ComputeGraph:
+    """Wan 2.1 image-to-video."""
+    pretrained = kwargs.get("pretrained", "Wan-AI/Wan2.1-I2V-14B-720P-Diffusers")
+    from yggdrasil.core.block.builder import BlockBuilder
+    
+    graph = _wan_base("wan_i2v", pretrained, **kwargs)
+    
+    # Add CLIP vision conditioner for reference image
+    clip_vision = BlockBuilder.build({
+        "type": "conditioner/clip_vision",
+        "pretrained": "openai/clip-vit-large-patch14",
+    })
+    graph.add_node("image_conditioner", clip_vision)
+    graph.expose_input("reference_image", "image_conditioner", "raw_condition")
+    
+    graph.metadata["num_frames"] = kwargs.get("num_frames", 81)
+    graph.metadata["output_type"] = "video"
+    return graph
+
+
+@register_template("wan_flf2v")
+def wan_flf2v(**kwargs) -> ComputeGraph:
+    """Wan 2.1 first+last frame to video."""
+    pretrained = kwargs.get("pretrained", "Wan-AI/Wan2.1-FLF2V-14B-720P-Diffusers")
+    graph = _wan_base("wan_flf2v", pretrained, **kwargs)
+    graph.expose_input("first_frame", "denoise_loop", "image_condition")
+    graph.expose_input("last_frame", "denoise_loop", "last_frame")
+    graph.metadata["num_frames"] = kwargs.get("num_frames", 81)
+    graph.metadata["output_type"] = "video"
+    return graph
+
+
+@register_template("wan_fun_control")
+def wan_fun_control(**kwargs) -> ComputeGraph:
+    """Wan 2.1 Fun Control — controllable video generation."""
+    pretrained = kwargs.get("pretrained", "Wan-AI/Wan2.1-Fun-Control-14B-Diffusers")
+    graph = _wan_base("wan_fun_control", pretrained, **kwargs)
+    graph.expose_input("control_video", "denoise_loop", "image_condition")
+    graph.metadata["num_frames"] = kwargs.get("num_frames", 81)
+    graph.metadata["output_type"] = "video"
+    return graph
+
+
+# ==================== QwenImage ====================
+
+@register_template("qwen_image_txt2img")
+def qwen_image_txt2img(**kwargs) -> ComputeGraph:
+    """QwenImage text-to-image generation."""
+    return _build_txt2img_graph(
+        name="qwen_image_txt2img",
+        backbone_config={
+            "type": "backbone/qwen_image",
+            "pretrained": kwargs.get("pretrained", "Qwen/QwenImage-1.5B"),
+            "in_channels": 4,
+            "hidden_dim": 320,
+            "fp16": True,
+        },
+        codec_config={
+            "type": "codec/autoencoder_kl",
+            "latent_channels": 4,
+            "spatial_scale_factor": 8,
+        },
+        conditioner_configs=[
+            {"type": "conditioner/qwen_vl", "pretrained": "Qwen/Qwen2.5-VL-3B-Instruct", "embedding_dim": 2048},
+        ],
+        guidance_config={"type": "guidance/cfg", "scale": kwargs.get("guidance_scale", 7.5)},
+        solver_config={"type": "solver/euler"},
+        schedule_config={"type": "noise/schedule/linear"},
+        process_config={"type": "diffusion/process/ddpm"},
+        num_steps=kwargs.get("num_steps", 50),
+        default_width=512,
+        default_height=512,
+    )
+
+
+@register_template("qwen_image_edit")
+def qwen_image_edit(**kwargs) -> ComputeGraph:
+    """QwenImage image editing (text-guided)."""
+    graph = qwen_image_txt2img(**kwargs)
+    graph.name = "qwen_image_edit"
+    graph.expose_input("source_image", "codec", "pixel_data")
+    graph.expose_input("edit_mask", "denoise_loop", "edit_mask")
     return graph

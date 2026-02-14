@@ -36,6 +36,9 @@ _patch_tensorflow_compat()
 from yggdrasil.core.block.registry import auto_discover as _auto_discover
 _auto_discover()
 
+# === Pipeline API ===
+from yggdrasil.pipeline import Pipeline, PipelineOutput  # noqa
+
 # === Удобные функции верхнего уровня ===
 
 def load_model(preset_or_path: str, **kwargs):

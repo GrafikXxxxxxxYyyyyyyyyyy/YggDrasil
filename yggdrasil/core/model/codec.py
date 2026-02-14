@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import torch
-from abc import abstractmethod
 from typing import Tuple, Optional
 from omegaconf import DictConfig
 
@@ -12,10 +11,25 @@ from ...core.block.port import Port, InputPort, OutputPort, TensorSpec
 
 @register_block("codec/abstract")
 class AbstractLatentCodec(AbstractBlock):
-    """Абстрактный кодек (VAE, VQGAN, Encodec, Identity, GaussianSplatting...)."""
+    """Абстрактный кодек (VAE, VQGAN, Encodec, Identity, GaussianSplatting...).
+    
+    Контракт: реализовать ``process()`` или ``encode()/decode()``.
+    
+    Порты:
+        IN:  pixel_data (opt), latent (opt), operation (opt)
+        OUT: encoded, decoded
+    
+    Пример::
+    
+        @register_block("codec/my_vae")
+        class MyVAE(AbstractLatentCodec):
+            block_type = "codec/my_vae"
+            def encode(self, x): return self.encoder(x)
+            def decode(self, z): return self.decoder(z)
+    """
     
     block_type = "codec/abstract"
-    is_trainable: bool = False          # По умолчанию заморожен (как VAE)
+    is_trainable: bool = False
     
     @classmethod
     def declare_io(cls) -> dict:
@@ -39,23 +53,20 @@ class AbstractLatentCodec(AbstractBlock):
             return {"encoded": encoded, "output": encoded}
     
     def _define_slots(self):
-        return {}  # Кодеки редко имеют слоты
+        return {}
     
-    @abstractmethod
     def encode(self, x: torch.Tensor) -> torch.Tensor:
-        """x → latents (обычно [B, C_latent, ...])"""
-        pass
+        """x -> latents. Override this or process()."""
+        raise NotImplementedError(f"{type(self).__name__} must implement encode()")
     
-    @abstractmethod
     def decode(self, z: torch.Tensor) -> torch.Tensor:
-        """latents → reconstructed data"""
-        pass
+        """latents -> reconstructed. Override this or process()."""
+        raise NotImplementedError(f"{type(self).__name__} must implement decode()")
     
     def _forward_impl(self, x: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Требуется AbstractBlock: делегирует в forward."""
         return self.forward(x)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Для обучения: вернуть latents + kl_loss (если есть)."""
+        """For training: return latents + kl_loss."""
         z = self.encode(x)
         return z, None

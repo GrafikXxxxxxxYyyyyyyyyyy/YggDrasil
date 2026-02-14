@@ -18,19 +18,21 @@ logger = logging.getLogger(__name__)
 
 
 class GraphExecutor:
-    """Исполнитель вычислительного графа.
+    """Graph executor — runs blocks in topological order via ports.
     
-    Выполняет узлы в топологическом порядке:
-    1. Собирает входы для каждого узла из кэша выходов предыдущих узлов
-    2. Вызывает block.process(**inputs)
-    3. Кэширует выходы
-    4. Возвращает выходы графа
+    Execution model:
+    1. Topological sort to determine order
+    2. For each node: gather inputs from cache + graph_inputs
+    3. Validate required ports (strict by default)
+    4. Call block.process(**inputs)
+    5. Cache outputs
+    6. Return graph outputs
     
-    Поддерживает:
-    - Кэширование промежуточных результатов
-    - Callbacks для мониторинга
-    - torch.no_grad() для инференса
-    - Debug-режим с логированием
+    Supports:
+    - Strict port validation (default: True — fail on missing required ports)
+    - Callbacks for monitoring (node_name, inputs, outputs, elapsed)
+    - torch.no_grad() for inference
+    - Debug mode with detailed logging
     """
     
     def __init__(
@@ -38,10 +40,17 @@ class GraphExecutor:
         debug: bool = False,
         no_grad: bool = True,
         callbacks: List[Callable] | None = None,
+        strict: bool = True,
+        enable_cache: bool = False,
     ):
         self.debug = debug
         self.no_grad = no_grad
         self.callbacks = callbacks or []
+        self.strict = strict  # Fail on missing required ports (default True)
+        self.enable_cache = enable_cache
+        self._cache: Dict[str, Dict[str, Any]] = {}  # node_name -> outputs
+        self._cache_keys: Dict[str, str] = {}  # node_name -> input_hash
+        self._invalidated: set = set()  # nodes to re-execute
     
     def execute(
         self,
@@ -76,7 +85,7 @@ class GraphExecutor:
         graph: ComputeGraph,
         inputs: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """Внутренняя реализация выполнения."""
+        """Internal execution implementation."""
         order = graph.topological_sort()
         cache: Dict[str, Dict[str, Any]] = {}  # node_name -> {port_name: value}
         
@@ -98,6 +107,15 @@ class GraphExecutor:
             # 2. Check required ports
             self._check_required_ports(node_name, block, port_inputs)
             
+            # Smart caching: skip re-execution if inputs unchanged
+            if self.enable_cache and node_name not in self._invalidated:
+                input_key = self._compute_input_hash(port_inputs)
+                if node_name in self._cache_keys and self._cache_keys[node_name] == input_key:
+                    cache[node_name] = self._cache[node_name]
+                    if self.debug:
+                        logger.info(f"  [{node_name}] CACHED (skipped)")
+                    continue
+            
             # 3. Execute block
             t0 = time.time()
             try:
@@ -114,15 +132,60 @@ class GraphExecutor:
                 output_keys = list(port_outputs.keys())
                 logger.info(f"  [{node_name}] outputs: {output_keys} ({elapsed:.3f}s)")
             
-            # 3. Cache outputs
+            # 4. Cache outputs
             cache[node_name] = port_outputs
             
-            # 4. Callbacks
+            # Update smart cache
+            if self.enable_cache:
+                input_key = self._compute_input_hash(port_inputs)
+                self._cache[node_name] = port_outputs
+                self._cache_keys[node_name] = input_key
+            
+            # 5. Callbacks
             for cb in self.callbacks:
                 cb(node_name, port_inputs, port_outputs, elapsed)
         
-        # 5. Gather graph outputs
+        # Clear invalidation set after execution
+        self._invalidated.clear()
+        
+        # 6. Gather graph outputs
         return self._gather_outputs(graph, cache)
+    
+    def invalidate(self, node_name: str):
+        """Force re-computation of a node on next execution.
+        
+        Also invalidates all downstream nodes automatically.
+        """
+        self._invalidated.add(node_name)
+        # Also invalidate any cached entry
+        self._cache.pop(node_name, None)
+        self._cache_keys.pop(node_name, None)
+    
+    def clear_cache(self):
+        """Clear all cached node outputs."""
+        self._cache.clear()
+        self._cache_keys.clear()
+        self._invalidated.clear()
+    
+    @staticmethod
+    def _compute_input_hash(port_inputs: Dict[str, Any]) -> str:
+        """Compute a hash key for node inputs to detect changes.
+        
+        Uses id() for tensors (fast, tracks exact object identity) and
+        repr() for other types.
+        """
+        import hashlib
+        parts = []
+        for key in sorted(port_inputs.keys()):
+            val = port_inputs[key]
+            if isinstance(val, torch.Tensor):
+                # For tensors: use shape + data_ptr for identity
+                parts.append(f"{key}:tensor:{val.shape}:{val.data_ptr()}")
+            elif val is None:
+                parts.append(f"{key}:None")
+            else:
+                parts.append(f"{key}:{id(val)}")
+        return hashlib.md5("|".join(parts).encode()).hexdigest()
     
     def _execute_node(
         self,
@@ -209,21 +272,27 @@ class GraphExecutor:
         block: Any,
         port_inputs: Dict[str, Any],
     ):
-        """Warn if required input ports are missing (debug mode only)."""
-        if not self.debug:
-            return
+        """Check required input ports.
         
+        In strict mode (default): raises ValueError for missing required ports.
+        In non-strict mode: always logs a warning (not just in debug).
+        """
         ports = getattr(block, 'declare_io', lambda: {})()
         if not ports:
             return
         
         for port_name, port in ports.items():
-            if port.direction == "input" and not port.optional:
+            if port.direction == "input" and not getattr(port, 'optional', False):
                 if port_name not in port_inputs or port_inputs[port_name] is None:
-                    logger.warning(
-                        f"Node '{node_name}': required input port '{port_name}' "
-                        f"is not connected or is None"
+                    block_type = getattr(block, 'block_type', type(block).__name__)
+                    msg = (
+                        f"Node '{node_name}' ({block_type}): "
+                        f"required input port '{port_name}' is not connected or is None"
                     )
+                    if self.strict:
+                        raise ValueError(msg)
+                    else:
+                        logger.warning(msg)
     
     def _gather_outputs(
         self,

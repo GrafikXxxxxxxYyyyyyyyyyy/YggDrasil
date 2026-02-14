@@ -174,6 +174,7 @@ class LoopSubGraph(AbstractBlock):
             "initial_latents": InputPort("initial_latents", description="Начальные латенты (шум)"),
             "timesteps": InputPort("timesteps", data_type="tensor", optional=True, description="Массив таймстепов"),
             "condition": InputPort("condition", data_type="any", optional=True, description="Условия (тензор или словарь)"),
+            "uncond": InputPort("uncond", data_type="any", optional=True, description="Null condition for CFG"),
             "latents": OutputPort("latents", description="Финальные латенты"),
         }
     

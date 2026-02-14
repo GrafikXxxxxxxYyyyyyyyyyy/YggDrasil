@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import torch
-from abc import abstractmethod
 from typing import Dict, Any
 from omegaconf import DictConfig
 
@@ -12,7 +11,27 @@ from ...core.block.port import Port, InputPort, OutputPort, TensorSpec
 
 @register_block("conditioner/abstract")
 class AbstractConditioner(AbstractBlock):
-    """Обработка условий (текст, ControlNet, IP-Adapter, CLAP...)."""
+    """Абстрактный conditioner (CLIP, T5, CLAP, VL, custom).
+    
+    Контракт: реализовать ``process()`` или ``__call__(condition)``.
+    
+    Порты:
+        IN:  raw_condition (dict)
+        OUT: embedding, pooled_embedding, attention_mask
+    
+    Пример::
+    
+        @register_block("conditioner/my_encoder")
+        class MyEncoder(AbstractConditioner):
+            block_type = "conditioner/my_encoder"
+            def __init__(self, config):
+                super().__init__(config)
+                self.encoder = ...
+            def process(self, **kw):
+                text = kw["raw_condition"]["text"]
+                emb = self.encoder(text)
+                return {"embedding": emb}
+    """
     
     block_type = "conditioner/abstract"
     
@@ -29,7 +48,12 @@ class AbstractConditioner(AbstractBlock):
         raw = port_inputs.get("raw_condition", port_inputs)
         if not isinstance(raw, dict):
             raw = {"text": raw}
-        result = self(raw)
+        
+        # Try legacy __call__ for backward compat
+        try:
+            result = self(raw)
+        except NotImplementedError:
+            result = {"embedding": None}
         
         # Normalize output keys — гарантируем что embedding всегда есть
         out = {}
@@ -54,15 +78,11 @@ class AbstractConditioner(AbstractBlock):
         return {}
     
     def _forward_impl(self, *args, **kwargs) -> Dict[str, torch.Tensor]:
-        """Требуется AbstractBlock; делегирует в __call__(condition)."""
         condition = kwargs.get("condition", args[0] if args else {})
         return self(condition)
 
-    @abstractmethod
     def __call__(self, condition: Dict[str, Any]) -> Dict[str, torch.Tensor]:
-        """condition → dict эмбеддингов.
-        
-        Пример:
-            {"text": "cat", "image": img_tensor} → {"text_emb": tensor, "image_emb": tensor}
-        """
-        pass
+        """Legacy: condition -> dict embeddings. Override process() instead."""
+        raise NotImplementedError(
+            f"{type(self).__name__} должен реализовать process() или __call__()"
+        )
