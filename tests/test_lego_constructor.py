@@ -501,7 +501,15 @@ class TestHub:
         if result is not None:
             template_name, params = result
             assert isinstance(template_name, str)
-    
+
+    def test_resolve_model_flux2_klein(self):
+        from yggdrasil.hub import resolve_model
+        template_name, params = resolve_model("black-forest-labs/FLUX.2-klein-9B")
+        assert template_name == "flux2_klein"
+        assert params.get("pretrained") == "black-forest-labs/FLUX.2-klein-9B"
+        template_name2, _ = resolve_model("black-forest-labs/FLUX.2-klein-4B")
+        assert template_name2 == "flux2_klein"
+
     def test_register_model(self):
         from yggdrasil.hub import register_model, MODEL_REGISTRY
         

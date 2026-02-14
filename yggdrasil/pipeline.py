@@ -110,6 +110,9 @@ class Pipeline:
         """
         from yggdrasil.core.graph.graph import ComputeGraph
         graph = ComputeGraph.from_template(template_name, **kwargs)
+        # Video diffusion models: default to CUDA when available if device not set
+        if device is None and graph.metadata.get("modality") == "video" and torch.cuda.is_available():
+            device = "cuda"
         return cls(graph, device=device, dtype=dtype)
     
     @classmethod
@@ -425,7 +428,7 @@ class Pipeline:
                         kwargs["timesteps"] = block.scheduler.timesteps.clone().to(device=device)
                         break
 
-        # ── Generate noise (only if graph expects latents and none provided) ──
+        # ── Generate noise or I2V/V2V initial latents (only if graph expects latents and none provided) ──
         if "latents" in graph_input_names and "latents" not in kwargs:
             if meta.get("modality") == "audio":
                 kwargs["latents"] = self._make_noise_audio(
@@ -433,9 +436,23 @@ class Pipeline:
                 )
             elif meta.get("modality") == "video":
                 num_frames = kwargs.get("num_frames") or meta.get("num_frames", 16)
-                kwargs["latents"] = self._make_noise_video(
-                    batch_size=batch_size, num_frames=num_frames, width=width, height=height, seed=seed, meta=meta,
-                )
+                strength = kwargs.get("strength")
+                source_image = kwargs.get("source_image")
+                source_video = kwargs.get("source_video")
+                if (source_image is not None or source_video is not None):
+                    strength = strength if strength is not None else 0.7
+                    init_latents, init_timesteps = self._make_initial_latents_from_image_or_video(
+                        source_image=source_image, source_video=source_video,
+                        width=width, height=height, num_frames=num_frames, strength=strength, seed=seed,
+                    )
+                    if init_latents is not None:
+                        kwargs["latents"] = init_latents
+                        if init_timesteps is not None:
+                            kwargs["timesteps"] = init_timesteps
+                if "latents" not in kwargs:
+                    kwargs["latents"] = self._make_noise_video(
+                        batch_size=batch_size, num_frames=num_frames, width=width, height=height, seed=seed, meta=meta,
+                    )
             else:
                 kwargs["latents"] = self._make_noise(
                     batch_size=batch_size, width=width, height=height, seed=seed,
@@ -556,19 +573,111 @@ class Pipeline:
             noise = noise * init_sigma
         return noise
 
+    def _make_initial_latents_from_image_or_video(
+        self,
+        source_image=None,
+        source_video=None,
+        width=512,
+        height=512,
+        num_frames=16,
+        strength=0.7,
+        seed=None,
+    ):
+        """I2V/V2V: начальные латенты из изображения или видео + шум по strength. Возвращает (latents, timesteps или None)."""
+        if source_image is None and source_video is None:
+            return None, None
+        graph = self.graph
+        codec = graph.nodes.get("codec")
+        loop = graph.nodes.get("denoise_loop")
+        if not codec or not getattr(codec, "encode", None) or not loop or not getattr(loop, "graph", None):
+            return None, None
+        inner = loop.graph
+        solver = inner.nodes.get("solver") if inner else None
+        if not solver or not getattr(solver, "alphas_cumprod", None):
+            return None, None
+        dev = graph._device or torch.device("cpu")
+        meta = graph.metadata
+        scale = int(meta.get("spatial_scale_factor", 8))
+        h, w = height // scale, width // scale
+        T = int(getattr(loop, "num_train_timesteps", 1000))
+        num_steps = meta.get("default_num_steps", 25)
+        for _, block in graph._iter_all_blocks():
+            if hasattr(block, "num_iterations"):
+                num_steps = block.num_iterations
+                break
+        steps_offset = int(getattr(loop, "steps_offset", 0))
+        step_ratio = T // num_steps
+        timesteps_full = torch.arange(0, num_steps, device=dev).long() * step_ratio
+        timesteps_full = timesteps_full.flip(0)
+        timesteps_full = (timesteps_full + steps_offset).clamp(0, T - 1)
+        start_idx = min(int((1.0 - strength) * num_steps), num_steps - 1)
+        start_idx = max(0, start_idx)
+        timesteps_slice = timesteps_full[start_idx:]
+        first_t = timesteps_slice[0].item()
+
+        if source_video is not None and hasattr(source_video, "shape") and source_video.dim() >= 4:
+            with torch.no_grad():
+                if source_video.dim() == 4:
+                    source_video = source_video.unsqueeze(0)
+                B, C, T_in, H, W = source_video.shape
+                pixel = source_video.to(dev).float()
+                if pixel.max() > 1.0:
+                    pixel = pixel / 255.0
+                if pixel.min() >= 0 and pixel.max() <= 1.0:
+                    pixel = pixel * 2.0 - 1.0
+                if T_in != num_frames or H != height or W != width:
+                    pixel = torch.nn.functional.interpolate(
+                        pixel.reshape(B * T_in, C, H, W), size=(height, width), mode="bilinear", align_corners=False,
+                    )
+                    pixel = pixel.reshape(B, T_in, C, height, width).permute(0, 2, 1, 3, 4)
+                B, C, T_in, H, W = pixel.shape
+                pixel_2d = pixel.permute(0, 2, 1, 3, 4).reshape(B * T_in, C, H, W)
+                lat_2d = codec.encode(pixel_2d)
+                video_latent = lat_2d.reshape(B, T_in, *lat_2d.shape[1:]).permute(0, 2, 1, 3, 4)
+                if T_in != num_frames:
+                    video_latent = torch.nn.functional.interpolate(
+                        video_latent.float(), size=(num_frames, h, w), mode="trilinear", align_corners=False,
+                    )
+        else:
+            if source_image is None:
+                return None, None
+            pixel = source_image.to(dev) if hasattr(source_image, "shape") else source_image
+            if pixel.dim() == 3:
+                pixel = pixel.unsqueeze(0)
+            if pixel.shape[2] != height or pixel.shape[3] != width:
+                pixel = torch.nn.functional.interpolate(
+                    pixel.float(), size=(height, width), mode="bilinear", align_corners=False,
+                )
+            if pixel.min() >= 0 and pixel.max() <= 1.0:
+                pixel = pixel * 2.0 - 1.0
+            with torch.no_grad():
+                image_latent = codec.encode(pixel)
+            video_latent = image_latent.unsqueeze(2).expand(1, image_latent.shape[1], num_frames, h, w).clone()
+
+        alpha = solver.alphas_cumprod[first_t].to(device=dev, dtype=video_latent.dtype)
+        while alpha.dim() < video_latent.dim():
+            alpha = alpha.unsqueeze(-1)
+        g = torch.Generator(device=dev).manual_seed(seed) if seed is not None else None
+        noise = torch.randn_like(video_latent, device=dev, generator=g)
+        noisy = alpha.sqrt() * video_latent + (1 - alpha).sqrt() * noise
+        return noisy, timesteps_slice
+
     def _make_noise_audio(self, batch_size=1, seed=None, meta=None):
         """Initial noise for audio pipelines: (batch, latent_channels, H, W) from metadata."""
         meta = meta or self.graph.metadata
         channels = int(meta.get("latent_channels", 8))
         h = int(meta.get("default_audio_latent_height", 256))
         w = int(meta.get("default_audio_latent_width", 16))
+        # Ensure scalars so torch.randn gets tuple of ints, not list (PyTorch requirement)
+        batch_size = int(batch_size)
         device = self.graph._device or torch.device("cpu")
         dtype = torch.get_default_dtype()
+        shape = (batch_size, channels, h, w)
         if seed is not None:
             g = torch.Generator(device=device).manual_seed(seed)
-            noise = torch.randn(batch_size, channels, h, w, device=device, dtype=dtype, generator=g)
+            noise = torch.randn(*shape, device=device, dtype=dtype, generator=g)
         else:
-            noise = torch.randn(batch_size, channels, h, w, device=device, dtype=dtype)
+            noise = torch.randn(*shape, device=device, dtype=dtype)
         sigma = meta.get("init_noise_sigma", 1.0)
         if sigma != 1.0:
             noise = noise * sigma

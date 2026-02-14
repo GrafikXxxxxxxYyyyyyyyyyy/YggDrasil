@@ -192,7 +192,11 @@ class IPAdapter(AbstractAdapter):
         image_features = kw.get("image_features")
         if image_features is None:
             return {"image_prompt_embeds": None}
-        
+        # Ensure same device/dtype as model (avoids "mat1 on cpu, other on cuda")
+        device = next(self.image_proj.parameters()).device
+        dtype = next(self.image_proj.parameters()).dtype
+        if image_features.device != device or image_features.dtype != dtype:
+            image_features = image_features.to(device=device, dtype=dtype)
         # Project to cross-attention space
         image_prompt_embeds = self.image_proj(image_features)
         return {"image_prompt_embeds": image_prompt_embeds}

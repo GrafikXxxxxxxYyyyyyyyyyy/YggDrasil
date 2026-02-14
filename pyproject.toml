@@ -41,7 +41,7 @@ dependencies = [
     "pillow",
     "omegaconf>=2.3.0",
     
-    # ML
+    # ML. Для FLUX.2 [klein] нужна dev-версия diffusers: pip install -e ".[klein]" или pip install -r requirements-klein.txt
     "diffusers>=0.30.0",
     "transformers>=4.40.0",
     "accelerate",
@@ -70,6 +70,11 @@ full = [
     "scipy>=1.12.0",
     "einops>=0.7.0",
     "peft>=0.13.0",         # Для загрузки LoRA из HuggingFace (OnMoon/loras и др.)
+]
+
+# FLUX.2 [klein] — нужна dev-версия diffusers (guidance_embeds=False, корректная загрузка)
+klein = [
+    "diffusers @ git+https://github.com/huggingface/diffusers.git",
 ]
 
 # Только для обучения

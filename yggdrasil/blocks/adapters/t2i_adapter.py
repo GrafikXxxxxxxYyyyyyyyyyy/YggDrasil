@@ -25,10 +25,9 @@ class T2IAdapter(AbstractAdapter):
     def __init__(self, config: DictConfig):
         super().__init__(config)
         self.adapter_type = config.get("adapter_type", "depth")
-        self.pretrained = config.get(
-            "pretrained",
-            f"TencentARC/t2i-adapter-{self.adapter_type}-sd15v2"
-        )
+        # Hugging Face repo uses underscores: TencentARC/t2iadapter_depth_sd15v2
+        _default_pretrained = f"TencentARC/t2iadapter_{self.adapter_type}_sd15v2"
+        self.pretrained = config.get("pretrained", _default_pretrained)
         self.scale = config.get("scale", 1.0)
         
         self.t2i_adapter = DiffusersT2IAdapter.from_pretrained(

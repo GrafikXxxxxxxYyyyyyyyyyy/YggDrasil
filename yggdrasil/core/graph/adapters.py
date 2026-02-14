@@ -148,12 +148,19 @@ def add_ip_adapter_to_graph(
         "type": "conditioner/clip_vision",
         "pretrained": encoder_pretrained,
     })
+    # Берём размерность выхода энкодера, чтобы IP-Adapter совпадал с любым CLIP (768 ViT-L, 1024 ViT-H)
+    image_embed_dim = getattr(image_encoder, "embedding_dim", None) or (
+        768 if "clip-vit-large" in (encoder_pretrained or "") else 1024
+    )
+    # Переопределение из kwargs имеет приоритет
+    if "image_embed_dim" in ip_adapter_kwargs:
+        image_embed_dim = ip_adapter_kwargs.pop("image_embed_dim")
 
-    # IP-Adapter: cross_attention_dim 768 для SD 1.5, 2048 для SDXL (concat text)
+    # IP-Adapter: image_embed_dim = выход энкодера; cross_attention_dim 768 для SD 1.5
     ip_config = {
         "type": "adapter/ip_adapter",
         "scale": ip_adapter_scale,
-        "image_embed_dim": 1024,
+        "image_embed_dim": image_embed_dim,
         "cross_attention_dim": 768,
         **ip_adapter_kwargs,
     }

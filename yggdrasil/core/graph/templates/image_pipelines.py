@@ -11,6 +11,26 @@ from yggdrasil.core.graph.graph import ComputeGraph
 from yggdrasil.core.graph.templates import register_template
 
 
+def _require_diffusers_klein():
+    """Проверка, что установлена версия diffusers с поддержкой FLUX.2 [klein] (AutoencoderKLFlux2, Flux2Transformer2DModel)."""
+    try:
+        import diffusers
+        from diffusers import AutoencoderKLFlux2, Flux2Transformer2DModel
+    except ImportError as e:
+        raise ImportError(
+            "FLUX.2 [klein] требует diffusers из ветки main (0.37.0.dev0+). "
+            "Установите: pip install 'git+https://github.com/huggingface/diffusers.git' "
+            "или: pip install -e '.[klein]'"
+        ) from e
+    ver = getattr(diffusers, "__version__", "")
+    # 0.36.0 с PyPI не содержит AutoencoderKLFlux2; нужна dev-версия
+    if ver.startswith("0.36.") and "dev" not in ver:
+        raise ImportError(
+            f"Для FLUX.2 [klein] нужна dev-версия diffusers (у вас {ver}). "
+            "Установите: pip install 'git+https://github.com/huggingface/diffusers.git'"
+        )
+
+
 # ==================== HELPER: BUILD DENOISE STEP GRAPH ====================
 
 def _build_denoise_step(
@@ -774,32 +794,62 @@ def deepfloyd_txt2img(**kwargs) -> ComputeGraph:
 def _flux2_base(name: str, variant: str, **kwargs) -> ComputeGraph:
     """Base builder for all FLUX.2 variants.
 
-    FLUX.2 architecture (diffusers v0.36.0):
-        - Backbone: Flux2Transformer2DModel (dual-stream 8 + single-stream 48 layers)
-        - Text encoder: Mistral3 (joint_attention_dim=15360)
-        - VAE: AutoencoderKLFlux2 (32ch latents, patchified to 128ch)
+    FLUX.2 architecture (diffusers v0.37.0.dev0):
+        - Backbone: Flux2Transformer2DModel
+        - Text encoder: Mistral3 (dev/schnell) или Qwen (klein), joint_attention_dim 15360 / 7680
+        - VAE: dev/schnell — AutoencoderKL из репо; Klein — свой AutoencoderKLFlux2 (subfolder vae)
         - Scheduler: FlowMatchEulerDiscrete
-        - Guidance: embedded (guidance-distilled), NOT traditional CFG
+        - Guidance: embedded (guidance-distilled) или false для Klein
     """
-    return _build_txt2img_graph(
-        name=name,
-        backbone_config={
-            "type": "backbone/flux2_transformer",
-            "variant": variant,
-            "pretrained": kwargs.get("pretrained", f"black-forest-labs/FLUX.2-{variant}"),
-            "hidden_dim": 3072,
-            "num_layers": 8,
-            "num_heads": 48,
-            "in_channels": 128,
+    if variant == "klein":
+        _require_diffusers_klein()
+    pretrained = kwargs.get("pretrained", f"black-forest-labs/FLUX.2-{variant}")
+    token = kwargs.get("token")
+    backbone_cfg = {
+        "type": "backbone/flux2_transformer",
+        "variant": variant,
+        "pretrained": pretrained,
+        "hidden_dim": 3072,
+        "num_layers": 8,
+        "num_heads": 48,
+        "in_channels": 128,
+        "bf16": True,
+    }
+    if token is not None:
+        backbone_cfg["token"] = token
+    # Klein использует свой VAE: AutoencoderKLFlux2 (не AutoencoderKL)
+    if variant == "klein":
+        codec_cfg = {
+            "type": "codec/autoencoder_kl_flux2",
+            "pretrained": pretrained,
+            "subfolder": "vae",
             "bf16": True,
-        },
-        codec_config={
-            "type": "codec/autoencoder_kl",
-            "pretrained": kwargs.get("pretrained", f"black-forest-labs/FLUX.2-{variant}"),
             "latent_channels": 32,
             "spatial_scale_factor": 16,
-        },
-        conditioner_configs=[
+        }
+    else:
+        codec_cfg = {
+            "type": "codec/autoencoder_kl",
+            "pretrained": pretrained,
+            "latent_channels": 32,
+            "spatial_scale_factor": 16,
+        }
+    if token is not None:
+        codec_cfg["token"] = token
+    # Klein uses Qwen text encoder (same repo, subfolder text_encoder), joint_attention_dim=7680
+    if variant == "klein":
+        conditioner_cfgs = [
+            {
+                "type": "conditioner/qwen_causal",
+                "pretrained": pretrained,
+                "subfolder": "text_encoder",
+                "max_length": 512,
+                "hidden_layers": [10, 20, 30],
+                "embedding_dim": 7680,
+            },
+        ]
+    else:
+        conditioner_cfgs = [
             {
                 "type": "conditioner/mistral3",
                 "pretrained": kwargs.get("text_encoder", "mistralai/Mistral-Small-3.1-24B-Instruct-2503"),
@@ -807,7 +857,14 @@ def _flux2_base(name: str, variant: str, **kwargs) -> ComputeGraph:
                 "hidden_layers": [10, 20, 30],
                 "embedding_dim": 15360,
             },
-        ],
+        ]
+    if token is not None:
+        conditioner_cfgs[0]["token"] = token
+    return _build_txt2img_graph(
+        name=name,
+        backbone_config=backbone_cfg,
+        codec_config=codec_cfg,
+        conditioner_configs=conditioner_cfgs,
         guidance_config={"type": "guidance/cfg", "scale": kwargs.get("guidance_scale", 4.0)},
         solver_config={"type": "solver/flow_euler"},
         schedule_config={"type": "noise/schedule/sigmoid"},
@@ -871,6 +928,15 @@ def flux2_kontext(**kwargs) -> ComputeGraph:
     graph = _flux2_base("flux2_kontext", "Kontext-dev", **kwargs)
     graph.expose_input("context_images", "denoise_loop", "image_condition")
     return graph
+
+
+@register_template("flux2_klein")
+def flux2_klein(**kwargs) -> ComputeGraph:
+    """FLUX.2 [klein] — быстрая генерация (4 шага, 9B/4B)."""
+    kwargs.setdefault("num_steps", 4)
+    kwargs.setdefault("guidance_scale", 0.0)
+    kwargs.setdefault("pretrained", "black-forest-labs/FLUX.2-klein-9B")
+    return _flux2_base("flux2_klein", "klein", **kwargs)
 
 
 # ==================== Wan 2.1 (Video) ====================

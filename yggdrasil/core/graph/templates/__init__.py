@@ -47,6 +47,7 @@ def _ensure_templates_loaded():
         "yggdrasil.core.graph.templates.image_pipelines",
         "yggdrasil.core.graph.templates.control_pipelines",
         "yggdrasil.core.graph.templates.video_pipelines",
+        "yggdrasil.core.graph.templates.animatediff_extensions",
         "yggdrasil.core.graph.templates.audio_pipelines",
         "yggdrasil.core.graph.templates.specialized_pipelines",
         "yggdrasil.core.graph.templates.training_pipelines",

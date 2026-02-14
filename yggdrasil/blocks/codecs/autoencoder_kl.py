@@ -24,10 +24,15 @@ class AutoencoderKLCodec(AbstractLatentCodec):
 
     def __init__(self, config: DictConfig):
         super().__init__(config)
+        load_kwargs = {
+            "subfolder": config.get("subfolder", "vae"),
+            "torch_dtype": torch.float16 if config.get("fp16", True) else torch.float32,
+        }
+        if config.get("token") is not None:
+            load_kwargs["token"] = config.get("token")
         self.vae = AutoencoderKL.from_pretrained(
             config.get("pretrained", "runwayml/stable-diffusion-v1-5"),
-            subfolder="vae",
-            torch_dtype=torch.float16 if config.get("fp16", True) else torch.float32,
+            **load_kwargs,
         )
         self.vae.requires_grad_(False)
         self.scaling_factor = config.get("scaling_factor", 0.18215)

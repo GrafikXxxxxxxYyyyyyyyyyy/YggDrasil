@@ -47,6 +47,9 @@ def video_tensor_to_mp4(tensor: torch.Tensor, path: Path, fps: int = 8) -> bool:
         return True
     except ImportError:
         pass
+    except ValueError as e:
+        if "backend" in str(e).lower() or "ffmpeg" in str(e).lower():
+            print("Для сохранения MP4 установите: pip install imageio[ffmpeg]", file=__import__("sys").stderr)
     try:
         import cv2
         path.parent.mkdir(parents=True, exist_ok=True)

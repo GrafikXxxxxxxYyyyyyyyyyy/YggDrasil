@@ -242,9 +242,10 @@ class LoopSubGraph(AbstractBlock):
             t = t.unsqueeze(0) if t.dim() == 0 else t
             next_t = next_t.unsqueeze(0) if next_t.dim() == 0 else next_t
             
+            # Backbone (UNet) expects timestep as long for time_embed; solver converts to float internally
             step_inputs = {
                 "latents": latents,
-                "timestep": t.float() if hasattr(t, "float") else t,  # Euler expects float
+                "timestep": t if t.dtype in (torch.long, torch.int64) else t.long(),
                 "next_timestep": next_t,
                 "condition": condition,
             }

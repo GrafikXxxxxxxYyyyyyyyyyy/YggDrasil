@@ -104,6 +104,16 @@ MODEL_REGISTRY: Dict[str, Dict[str, Any]] = {
         "default_width": 1024,
         "default_height": 1024,
     },
+    "black-forest-labs/FLUX.2-klein-9B": {
+        "template": "flux2_klein",
+        "default_width": 1024,
+        "default_height": 1024,
+    },
+    "black-forest-labs/FLUX.2-klein-4B": {
+        "template": "flux2_klein",
+        "default_width": 1024,
+        "default_height": 1024,
+    },
     
     # Wan 2.1
     "Wan-AI/Wan2.1-T2V-1.3B-Diffusers": {
@@ -171,6 +181,9 @@ def resolve_model(model_id: str) -> Tuple[str, Dict[str, Any]]:
     
     # Pattern matching (ordered: more specific first)
     patterns = [
+        ("flux.2.klein", "flux2_klein"),
+        ("flux2.klein", "flux2_klein"),
+        ("klein", "flux2_klein"),
         ("flux.2", "flux2_txt2img"),
         ("flux2", "flux2_txt2img"),
         ("flux.1", "flux_txt2img"),

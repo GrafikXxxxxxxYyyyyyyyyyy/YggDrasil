@@ -56,10 +56,16 @@ class Mistral3Conditioner(AbstractConditioner):
     def _build_model(self):
         try:
             from transformers import Mistral3ForConditionalGeneration, AutoProcessor
+            load_kwargs = {"torch_dtype": torch.bfloat16}
+            if self.config.get("token") is not None:
+                load_kwargs["token"] = self.config.get("token")
             self._model = Mistral3ForConditionalGeneration.from_pretrained(
-                self.pretrained, torch_dtype=torch.bfloat16,
+                self.pretrained, **load_kwargs,
             )
-            self._processor = AutoProcessor.from_pretrained(self.pretrained)
+            self._processor = AutoProcessor.from_pretrained(
+                self.pretrained,
+                token=self.config.get("token"),
+            )
             self._model.requires_grad_(False)
         except Exception:
             self._model = None

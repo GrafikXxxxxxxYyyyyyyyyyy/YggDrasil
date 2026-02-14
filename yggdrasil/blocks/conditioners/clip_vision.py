@@ -35,6 +35,15 @@ class CLIPVisionConditioner(AbstractConditioner):
             "pooled_embedding": OutputPort("pooled_embedding", spec=TensorSpec(space="embedding")),
         }
     
+    @property
+    def embedding_dim(self) -> int:
+        """Output embedding dimension (768 for ViT-L, 1024 for ViT-H)."""
+        if self._model is not None and hasattr(self._model, "visual_projection"):
+            return getattr(self._model.visual_projection, "out_features", 768)
+        if self._model is not None and hasattr(self._model, "config"):
+            return getattr(self._model.config, "projection_dim", 768)
+        return 768
+
     def _build_model(self):
         try:
             from transformers import CLIPVisionModelWithProjection, CLIPImageProcessor

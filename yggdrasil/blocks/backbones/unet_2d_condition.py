@@ -79,13 +79,13 @@ class UNet2DConditionBackbone(AbstractBackbone):
             timestep = timestep.to(model_device)
         if encoder_hidden_states is not None and encoder_hidden_states.device != model_device:
             encoder_hidden_states = encoder_hidden_states.to(model_device)
-        # Cast sample and encoder to model dtype (timestep: keep int/long for indexing, or float for time_embed)
+        # Cast sample and encoder to model dtype; timestep must stay long for diffusers time_embed
         if encoder_hidden_states is not None and encoder_hidden_states.dtype != model_dtype:
             encoder_hidden_states = encoder_hidden_states.to(dtype=model_dtype)
         if x.dtype != model_dtype:
             x = x.to(dtype=model_dtype)
-        if timestep.dtype != torch.long and timestep.dtype != model_dtype:
-            timestep = timestep.to(dtype=model_dtype)
+        if timestep.dtype not in (torch.long, torch.int64):
+            timestep = timestep.long()
         
         # Pass through ControlNet/Adapter residuals (from condition dict, kwargs, or adapter_features port)
         down_block_residuals = kwargs.get("down_block_additional_residuals")
