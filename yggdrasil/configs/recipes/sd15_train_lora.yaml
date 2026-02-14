@@ -1,0 +1,38 @@
+# SD 1.5 LoRA training recipe
+model:
+  type: model/modular
+  backbone:
+    type: backbone/unet2d_condition
+    pretrained: "stable-diffusion-v1-5/stable-diffusion-v1-5"
+  codec:
+    type: codec/autoencoder_kl
+    pretrained: "stable-diffusion-v1-5/stable-diffusion-v1-5"
+  conditioner:
+    - type: conditioner/clip_text
+      pretrained: "openai/clip-vit-large-patch14"
+  adapters:
+    - type: adapter/lora
+      rank: 4
+      alpha: 1.0
+      target_modules: ["to_q", "to_v", "to_k", "to_out.0"]
+
+training:
+  train_mode: adapter
+  num_epochs: 100
+  batch_size: 1
+  learning_rate: 1.0e-4
+  weight_decay: 0.01
+  gradient_accumulation_steps: 4
+  mixed_precision: fp16
+  optimizer: adamw
+  lr_scheduler: cosine_warmup
+  warmup_steps: 100
+  save_every: 500
+  log_every: 10
+
+diffusion_process:
+  type: diffusion/process/ddpm
+  num_train_timesteps: 1000
+
+loss:
+  type: epsilon

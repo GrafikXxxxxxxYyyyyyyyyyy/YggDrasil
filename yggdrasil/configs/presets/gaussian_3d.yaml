@@ -1,0 +1,51 @@
+# YggDrasil Preset: 3D Gaussian Splatting Diffusion
+# Модальность: 3D (Gaussian Splatting)
+# Процесс: Flow Matching
+
+_meta:
+  name: "3D Gaussian Diffusion"
+  modality: 3d
+  description: "Diffusion model for 3D Gaussian Splatting generation"
+
+model:
+  type: model/modular
+  id: gaussian_3d
+
+  backbone:
+    type: backbone/pointcloud_transformer
+    d_model: 512
+    num_layers: 12
+    num_heads: 8
+    max_points: 50000
+
+  codec:
+    type: codec/gaussian_splatting   # 3D Gaussians ↔ latent
+    num_gaussians: 50000
+    latent_dim: 64
+
+  conditioner:
+    type: conditioner/multiview_image   # Условие на multi-view изображения
+    num_views: 4
+    resolution: 256
+
+  guidance:
+    type: guidance/cfg
+    scale: 4.0
+
+diffusion_process:
+  type: diffusion/process/flow/rectified
+  sigma_min: 0.001
+
+solver:
+  type: diffusion/solver/heun
+
+sampler:
+  num_inference_steps: 64
+  guidance_scale: 4.0
+
+training:
+  loss: training/loss/flow_matching
+  learning_rate: 5.0e-5
+  batch_size: 4
+  mixed_precision: bf16
+  train_mode: full

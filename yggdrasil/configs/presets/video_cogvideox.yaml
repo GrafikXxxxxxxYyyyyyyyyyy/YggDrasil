@@ -1,0 +1,52 @@
+# YggDrasil Preset: CogVideoX
+# Модальность: Видео (text-to-video)
+# Процесс: DDPM
+
+_meta:
+  name: "CogVideoX"
+  modality: video
+  resolution: 480
+  fps: 8
+  num_frames: 49
+  description: "CogVideoX — 3D UNet/DiT + VAE3D + T5"
+
+model:
+  type: model/modular
+  id: cogvideox
+
+  backbone:
+    type: backbone/dit_video
+    pretrained: "THUDM/CogVideoX-2b"
+    fp16: true
+
+  codec:
+    type: codec/vae3d
+    pretrained: "THUDM/CogVideoX-2b"
+    fp16: true
+
+  conditioner:
+    type: conditioner/t5_text
+    pretrained: "THUDM/CogVideoX-2b"
+
+  guidance:
+    type: guidance/cfg
+    scale: 6.0
+
+diffusion_process:
+  type: diffusion/process/ddpm
+  num_train_timesteps: 1000
+
+solver:
+  type: diffusion/solver/ddim
+  eta: 0.0
+
+sampler:
+  num_inference_steps: 50
+  guidance_scale: 6.0
+
+training:
+  loss: training/loss/epsilon
+  learning_rate: 2.0e-5
+  batch_size: 1
+  mixed_precision: bf16
+  train_mode: adapter

@@ -14,9 +14,11 @@ class AbstractBlock(ABC, nn.Module):
     
     Каждый блок:
     - имеет уникальный id
-    - имеет slots — места для подключения других блоков
+    - имеет typed I/O ports (declare_io) для dataflow-графа
+    - имеет slots — места для подключения других блоков (legacy, backward compat)
     - умеет себя собирать из конфига
     - поддерживает pre/post hooks
+    - имеет process() для port-based execution
     """
     
     # Метаданные блока (заполняются при регистрации)
@@ -49,35 +51,49 @@ class AbstractBlock(ABC, nn.Module):
         return {}
     
     def _build_slots(self):
-        """Автоматически собирает все слоты из конфига."""
+        """Automatically build all slots from config."""
         from yggdrasil.core.block.builder import BlockBuilder
         
         for slot_name, slot in self.slots.items():
             if slot_name not in self.config:
                 continue
             child_config = self.config[slot_name]
-            # Уже собранный блок (например, после BlockBuilder._resolve_slots)
-            if isinstance(child_config, AbstractBlock):
-                child = child_config
-            else:
+            
+            # Handle list configs for multiple-accept slots
+            if isinstance(child_config, (list, tuple)):
+                for item in child_config:
+                    if isinstance(item, AbstractBlock):
+                        self.attach_slot(slot_name, item)
+                    elif isinstance(item, dict) and "type" in item:
+                        child = BlockBuilder.build(item)
+                        self.attach_slot(slot_name, child)
+            elif isinstance(child_config, AbstractBlock):
+                self.attach_slot(slot_name, child_config)
+            elif isinstance(child_config, dict) and "type" in child_config:
                 child = BlockBuilder.build(child_config)
-            self.attach_slot(slot_name, child)
+                self.attach_slot(slot_name, child)
+            else:
+                try:
+                    child = BlockBuilder.build(child_config)
+                    self.attach_slot(slot_name, child)
+                except Exception:
+                    pass  # Skip non-block configs
     
     def attach_slot(self, slot_name: str, block: "AbstractBlock"):
-        """Подключить блок в слот (Lego-действие)."""
+        """Attach a block to a slot (Lego action)."""
         if slot_name not in self.slots:
-            raise KeyError(f"Слот {slot_name} не существует в {self.block_type}")
+            raise KeyError(f"Slot {slot_name} does not exist in {self.block_type}")
         
         slot = self.slots[slot_name]
         if isinstance(block, type):
-            raise TypeError(f"Слот {slot_name}: передан класс {block.__name__}, нужен экземпляр.")
-        # Быстрая проверка по block_type без вызова slot.accepts (избегаем рекурсии/ABC)
-        block_cl = type(block)
-        ok = getattr(slot.accepts, "__mro__", None) and slot.accepts in block_cl.__mro__
-        if not ok and hasattr(block, "block_type"):
-            ok = getattr(slot.accepts, "block_type", None) and block.block_type == getattr(slot.accepts, "block_type", "")
-        if not ok:
-            raise TypeError(f"Блок {block.block_type} не подходит для слота {slot_name}")
+            raise TypeError(f"Slot {slot_name}: received class {block.__name__}, expected an instance.")
+        
+        if not slot.check_compatible(block):
+            raise TypeError(
+                f"Block {getattr(block, 'block_type', type(block).__name__)} "
+                f"is not compatible with slot {slot_name} "
+                f"(expects {slot.accepts})"
+            )
         
         if slot.multiple:
             if slot_name not in self._slot_children:
@@ -113,6 +129,59 @@ class AbstractBlock(ABC, nn.Module):
     def _forward_impl(self, *args, **kwargs) -> Any:
         """Реальная реализация forward в потомке."""
         pass
+    
+    # ==================== PORT SYSTEM (Dataflow Graph) ====================
+    
+    @classmethod
+    def declare_io(cls) -> Dict[str, "Port"]:
+        """Декларация всех I/O портов блока.
+        
+        Переопределяется в потомках. Возвращает dict вида::
+        
+            {
+                "x": InputPort("x", spec=TensorSpec(ndim=4, space="latent")),
+                "timestep": InputPort("timestep", data_type="scalar"),
+                "output": OutputPort("output", spec=TensorSpec(ndim=4, space="latent")),
+            }
+        
+        Порты используются для:
+        - Валидации соединений в ComputeGraph
+        - Автогенерации UI в Gradio
+        - Документации
+        """
+        return {}
+    
+    def process(self, **port_inputs: Any) -> Dict[str, Any]:
+        """Выполнить блок через порты (для dataflow-графа).
+        
+        Принимает именованные входы (ключи = имена входных портов),
+        возвращает dict выходов (ключи = имена выходных портов).
+        
+        По умолчанию делегирует в ``_forward_impl``.
+        Переопределите этот метод для полного контроля над port-based execution.
+        """
+        result = self._forward_impl(**port_inputs)
+        # Если _forward_impl возвращает dict — прокидываем как есть
+        if isinstance(result, dict):
+            return result
+        # Иначе оборачиваем в {"output": result}
+        return {"output": result}
+    
+    def get_input_ports(self) -> Dict[str, "Port"]:
+        """Получить только входные порты."""
+        return {
+            name: port for name, port in self.declare_io().items()
+            if port.direction == "input"
+        }
+    
+    def get_output_ports(self) -> Dict[str, "Port"]:
+        """Получить только выходные порты."""
+        return {
+            name: port for name, port in self.declare_io().items()
+            if port.direction == "output"
+        }
+    
+    # ==================== HOOKS ====================
     
     def add_pre_hook(self, hook: callable):
         self.pre_hooks.append(hook)

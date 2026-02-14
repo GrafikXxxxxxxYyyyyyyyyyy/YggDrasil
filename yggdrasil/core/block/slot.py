@@ -7,23 +7,25 @@ from typing import Type, Optional, Any, Union
 
 @dataclass
 class Slot:
-    """Место для подключения другого блока (Lego-дырка)."""
+    """Connection point for attaching blocks (Lego socket)."""
     name: str
     accepts: Union[Type["AbstractBlock"], tuple[Type["AbstractBlock"], ...], str]
     multiple: bool = False
     optional: bool = False
     default: Optional[dict] = None
 
-    def accepts(self, block: "AbstractBlock") -> bool:
-        """Проверка совместимости."""
+    def check_compatible(self, block: "AbstractBlock") -> bool:
+        """Check if a block is compatible with this slot."""
         from .base import AbstractBlock
+        
+        if isinstance(block, type):
+            return False
         
         if isinstance(self.accepts, str):
             return getattr(block, "block_type", "").startswith(self.accepts)
         
         if isinstance(self.accepts, tuple):
             return isinstance(block, self.accepts)
-        if isinstance(block, type):
-            return False
-        cl = type(block)
-        return self.accepts in cl.__mro__
+        
+        # Check isinstance (handles ABC and concrete classes)
+        return isinstance(block, self.accepts)

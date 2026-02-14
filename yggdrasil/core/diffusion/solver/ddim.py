@@ -1,3 +1,4 @@
+import math
 import torch
 from omegaconf import DictConfig
 
@@ -7,7 +8,11 @@ from ....core.block.registry import register_block
 
 @register_block("diffusion/solver/ddim")
 class DDIMSolver(AbstractSolver):
-    """DDIM солвер для дискретных таймстепов (SD 1.5 / SDXL).
+    """DDIM солвер для дискретных таймстепов.
+    
+    Работает в двух режимах:
+    1. С DiffusionProcess: использует точные alpha из process
+    2. Без DiffusionProcess (graph mode fallback): вычисляет alpha из cosine schedule
     
     Формула (eta=0, детерминистический):
         x_{t-1} = sqrt(alpha_{t-1}) * pred_x0
@@ -19,16 +24,38 @@ class DDIMSolver(AbstractSolver):
     def __init__(self, config: DictConfig):
         super().__init__(config)
         self.eta = config.get("eta", 0.0)
+        self.num_train_timesteps = int(config.get("num_train_timesteps", 1000))
     
-    def step(self, model_output, current_latents, timestep, process, **kwargs):
+    def _cosine_alpha(self, timestep: torch.Tensor) -> torch.Tensor:
+        """Fallback cosine alpha schedule when no DiffusionProcess available."""
+        # Normalize timestep to [0, 1]
+        t = timestep.float()
+        if t.max() > 1.0:
+            t = t / self.num_train_timesteps
+        # Cosine schedule: alpha_bar(t) = cos^2(pi/2 * t)
+        return torch.cos(t * math.pi / 2.0) ** 2
+    
+    def step(self, model_output, current_latents, timestep, process=None, **kwargs):
         next_timestep = kwargs.get("next_timestep")
 
-        # alpha_cumprod для текущего и предыдущего таймстепов
-        alpha_prod_t = process.get_alpha(timestep).to(dtype=current_latents.dtype)
-        if next_timestep is not None:
-            alpha_prod_t_prev = process.get_alpha(next_timestep).to(dtype=current_latents.dtype)
+        # Get alpha cumprod — from process or fallback
+        if process is not None and hasattr(process, 'get_alpha'):
+            alpha_prod_t = process.get_alpha(timestep).to(dtype=current_latents.dtype)
+            if next_timestep is not None:
+                alpha_prod_t_prev = process.get_alpha(next_timestep).to(dtype=current_latents.dtype)
+            else:
+                alpha_prod_t_prev = torch.ones_like(alpha_prod_t)
         else:
-            alpha_prod_t_prev = torch.ones_like(alpha_prod_t)
+            # Fallback: cosine schedule
+            alpha_prod_t = self._cosine_alpha(timestep).to(
+                device=current_latents.device, dtype=current_latents.dtype
+            )
+            if next_timestep is not None:
+                alpha_prod_t_prev = self._cosine_alpha(next_timestep).to(
+                    device=current_latents.device, dtype=current_latents.dtype
+                )
+            else:
+                alpha_prod_t_prev = torch.ones_like(alpha_prod_t)
 
         # Reshape для broadcasting
         while alpha_prod_t.dim() < current_latents.dim():
@@ -37,8 +64,6 @@ class DDIMSolver(AbstractSolver):
 
         # Предсказание x0 из epsilon
         pred_x0 = (current_latents - (1 - alpha_prod_t).sqrt() * model_output) / alpha_prod_t.sqrt().clamp(min=1e-8)
-
-        # Опционально: clamp pred_x0 для стабильности
         pred_x0 = pred_x0.clamp(-20, 20)
 
         # DDIM шаг (eta=0 → детерминистический)

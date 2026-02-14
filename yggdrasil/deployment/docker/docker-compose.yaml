@@ -1,0 +1,50 @@
+# YggDrasil Docker Compose
+version: "3.8"
+
+services:
+  api:
+    build:
+      context: ../../..
+      dockerfile: yggdrasil/deployment/docker/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - model_cache:/root/.cache/huggingface
+      - ./checkpoints:/app/checkpoints
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - YGGDRASIL_DEVICE=cuda
+      - HF_HOME=/root/.cache/huggingface
+
+  ui:
+    build:
+      context: ../../..
+      dockerfile: yggdrasil/deployment/docker/Dockerfile
+    ports:
+      - "7860:7860"
+    command: ["python", "-c", "from yggdrasil.ui import launch; launch(server_port=7860)"]
+    volumes:
+      - model_cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      - api
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  model_cache:

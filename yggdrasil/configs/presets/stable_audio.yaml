@@ -1,0 +1,52 @@
+# YggDrasil Preset: Stable Audio Open
+# Модальность: Аудио (до 47с, 44.1kHz)
+# Процесс: Flow Matching
+
+_meta:
+  name: "Stable Audio Open"
+  modality: audio
+  sample_rate: 44100
+  max_duration: 47.0
+  description: "Stable Audio — DiT + VAE Audio + CLAP"
+
+model:
+  type: model/modular
+  id: stable_audio
+
+  backbone:
+    type: backbone/dit_audio
+    pretrained: "stabilityai/stable-audio-open-1.0"
+    fp16: true
+
+  codec:
+    type: codec/audio_vae
+    pretrained: "stabilityai/stable-audio-open-1.0"
+    fp16: true
+    sample_rate: 44100
+
+  conditioner:
+    type: conditioner/clap
+    pretrained: "stabilityai/stable-audio-open-1.0"
+    max_length: 512
+
+  guidance:
+    type: guidance/cfg
+    scale: 7.0
+
+diffusion_process:
+  type: diffusion/process/flow/rectified
+  sigma_min: 0.0001
+
+solver:
+  type: diffusion/solver/heun
+
+sampler:
+  num_inference_steps: 100
+  guidance_scale: 7.0
+
+training:
+  loss: training/loss/flow_matching
+  learning_rate: 1.0e-5
+  batch_size: 1
+  mixed_precision: fp16
+  train_mode: adapter

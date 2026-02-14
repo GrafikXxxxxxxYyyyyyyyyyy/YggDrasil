@@ -5,23 +5,76 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "yggdrasil"
 version = "0.1.0"
-description = "YggDrasil — Lego Diffusion Framework"
+description = "YggDrasil — Universal Lego Diffusion Framework for any modality and any model"
 readme = "README.md"
 requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+
 dependencies = [
+    # Core
     "torch>=2.3.0",
-    "diffusers>=0.30.0",
-    "transformers>=4.40.0",
-    "omegaconf>=2.3.0",
+    "numpy",
     "tqdm",
     "pillow",
-    "numpy",
+    "omegaconf>=2.3.0",
+    
+    # ML
+    "diffusers>=0.30.0",
+    "transformers>=4.40.0",
     "accelerate",
+    
+    # Serving
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "pydantic>=2.0.0",
+    "websockets>=12.0",
+    
+    # UI
+    "gradio>=4.20.0",
 ]
+
+[project.optional-dependencies]
+# Полная установка со всеми зависимостями
+full = [
+    "networkx>=3.0",        # Для BlockGraph
+    "torchvision>=0.18.0",  # Для ImageFolderSource
+    "safetensors>=0.4.0",
+    "scipy>=1.12.0",
+    "einops>=0.7.0",
+]
+
+# Только для обучения
+train = [
+    "torchvision>=0.18.0",
+    "wandb>=0.16.0",
+    "tensorboard>=2.16.0",
+]
+
+# Только для разработки
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.3.0",
+    "mypy>=1.9.0",
+]
+
+[project.scripts]
+yggdrasil = "yggdrasil.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["yggdrasil*"]
 
+[tool.setuptools.package-data]
+"yggdrasil" = ["configs/presets/*.yaml", "plugins/custom/*.yaml"]
+
 [tool.setuptools.package-dir]
 "" = "."
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]

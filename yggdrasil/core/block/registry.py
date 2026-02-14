@@ -54,23 +54,31 @@ list_blocks = BlockRegistry.list_blocks
 
 
 def auto_discover():
-    """Автоматически импортирует все модули из core/ и blocks/, чтобы зарегистрировать блоки."""
+    """Auto-import all modules from core/ and blocks/ to register blocks."""
     packages = [
         "yggdrasil.core.block",
         "yggdrasil.core.model",
         "yggdrasil.core.diffusion",
+        "yggdrasil.core.diffusion.solver",
+        "yggdrasil.core.diffusion.noise",
         "yggdrasil.core.engine",
         "yggdrasil.blocks.adapters",
         "yggdrasil.blocks.backbones",
         "yggdrasil.blocks.codecs",
         "yggdrasil.blocks.conditioners",
         "yggdrasil.blocks.guidances",
+        "yggdrasil.blocks.positions",
+        "yggdrasil.training",
     ]
     
     for pkg in packages:
         try:
             package = importlib.import_module(pkg)
-            for _, module_name, _ in pkgutil.iter_modules(package.__path__):
-                importlib.import_module(f"{pkg}.{module_name}")
-        except Exception as e:
-            print(f"Auto-discover skipped {pkg}: {e}")
+            if hasattr(package, "__path__"):
+                for _, module_name, _ in pkgutil.iter_modules(package.__path__):
+                    try:
+                        importlib.import_module(f"{pkg}.{module_name}")
+                    except Exception:
+                        pass
+        except Exception:
+            pass  # Package may not exist

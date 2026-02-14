@@ -6,6 +6,7 @@ from typing import Tuple, Optional
 
 from ...core.block.base import AbstractBlock
 from ...core.block.registry import register_block
+from ...core.block.port import Port, InputPort, OutputPort, TensorSpec
 
 
 @register_block("position/abstract")
@@ -13,6 +14,20 @@ class AbstractPositionEmbedder(AbstractBlock):
     """Позиционные эмбеддинги любой размерности (RoPE, sinusoidal, learned)."""
     
     block_type = "position/abstract"
+    
+    @classmethod
+    def declare_io(cls) -> dict:
+        return {
+            "timestep": InputPort("timestep", data_type="tensor", description="Timestep"),
+            "shape": InputPort("shape", data_type="any", optional=True, description="Spatial shape hint"),
+            "embedding": OutputPort("embedding", spec=TensorSpec(space="embedding"), description="Position embedding"),
+        }
+    
+    def process(self, **port_inputs) -> dict:
+        timestep = port_inputs.get("timestep")
+        shape = port_inputs.get("shape")
+        emb = self(timestep, shape)
+        return {"embedding": emb, "output": emb}
     
     def _define_slots(self):
         return {}

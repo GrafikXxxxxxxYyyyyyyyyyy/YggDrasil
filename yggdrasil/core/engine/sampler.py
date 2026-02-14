@@ -9,6 +9,7 @@ from pathlib import Path
 from ...core.block.base import AbstractBlock
 from ...core.block.registry import register_block
 from ...core.block.slot import Slot
+from ...core.block.port import Port, InputPort, OutputPort, TensorSpec
 
 from ...core.model.modular import ModularDiffusionModel
 from ...core.diffusion.process import AbstractDiffusionProcess
@@ -24,32 +25,53 @@ class DiffusionSampler(AbstractBlock):
     """Универсальный DiffusionSampler — Lego-оркестратор генерации.
     
     Работает с ЛЮБОЙ моделью, ЛЮБОЙ модальностью и ЛЮБЫМ процессом.
-    Один и тот же класс используется для:
-    - Изображений (SDXL, Flux)
-    - Видео (CogVideoX)
-    - Аудио (Stable Audio)
-    - 3D (Gaussian Splatting)
-    - Молекул, временных рядов, текста и твоих кастомных модальностей
+    
+    Поддерживает два режима:
+    1. Legacy (slot-based): Жёсткий цикл model -> solver
+    2. Graph-based: Выполнение через ComputeGraph с произвольным step-графом
     """
     
     block_type = "engine/sampler"
-    block_version = "1.0.0"
+    block_version = "2.0.0"
     
     def __init__(self, config: DictConfig | dict, model: Optional[ModularDiffusionModel] = None):
         super().__init__(config)
         
-        # Если модель передана явно — подключаем в слот
+        # Attach model if provided explicitly
         if model is not None:
             self.attach_slot("model", model)
         
-        # Настройки по умолчанию
+        # Default settings
         self.num_inference_steps = self.config.get("num_inference_steps", 50)
         self.guidance_scale = self.config.get("guidance_scale", 7.5)
-        self.eta = self.config.get("eta", 0.0)                    # для DDIM
+        self.eta = self.config.get("eta", 0.0)
         self.show_progress = self.config.get("show_progress", True)
         
-        # Кэш состояния (для streaming и продолжения генерации)
+        # Hooks for step-level control (FaceDetailer, ControlNet mid-loop, etc.)
+        self.pre_step_hooks: List[Callable] = []
+        self.post_step_hooks: List[Callable] = []
+        
+        # State cache (for streaming and continuation)
         self.current_state: Optional[DiffusionState] = None
+    
+    @classmethod
+    def declare_io(cls) -> Dict[str, Port]:
+        return {
+            "condition": InputPort("condition", data_type="dict", description="Generation condition"),
+            "shape": InputPort("shape", data_type="any", optional=True, description="Output shape"),
+            "num_inference_steps": InputPort("num_inference_steps", data_type="scalar", optional=True, description="Steps"),
+            "guidance_scale": InputPort("guidance_scale", data_type="scalar", optional=True, description="CFG scale"),
+            "result": OutputPort("result", description="Generated output (decoded)"),
+            "latents": OutputPort("latents", spec=TensorSpec(space="latent"), description="Final latents"),
+        }
+    
+    def process(self, **port_inputs) -> Dict[str, Any]:
+        condition = port_inputs.get("condition", {})
+        shape = port_inputs.get("shape")
+        steps = port_inputs.get("num_inference_steps")
+        scale = port_inputs.get("guidance_scale")
+        result = self.sample(condition=condition, shape=shape, num_inference_steps=steps, guidance_scale=scale)
+        return {"result": result, "output": result}
     
     def _define_slots(self) -> Dict[str, Slot]:
         """Lego-дырки сэмплера."""
@@ -116,13 +138,30 @@ class DiffusionSampler(AbstractBlock):
         timesteps = self._get_timesteps(steps).to(device=device).long()
 
         # 3. Основной цикл сэмплирования
-        state = DiffusionState(latents=latents, timestep=timesteps[0])
+        state = DiffusionState(
+            latents=latents,
+            timestep=timesteps[0],
+            total_steps=len(timesteps),
+        )
         
         for i in tqdm(range(len(timesteps)), disable=not self.show_progress, desc="Sampling"):
             state.timestep = timesteps[i]
+            state.step_index = i
             next_t = timesteps[i + 1] if i + 1 < len(timesteps) else torch.tensor(0, device=device).long()
             
+            # Pre-step hooks (e.g. ControlNet injection, latent manipulation)
+            for hook in self.pre_step_hooks:
+                hook_result = hook(state, i)
+                if hook_result is not None:
+                    state = hook_result
+            
             state = self.step(state, condition, guidance_scale=scale, next_timestep=next_t, **kwargs)
+            
+            # Post-step hooks (e.g. FaceDetailer, latent blending)
+            for hook in self.post_step_hooks:
+                hook_result = hook(state, i)
+                if hook_result is not None:
+                    state = hook_result
             
             if callback is not None:
                 callback(i, state.latents)
@@ -138,12 +177,12 @@ class DiffusionSampler(AbstractBlock):
         guidance_scale: float = 7.5,
         **kwargs
     ) -> DiffusionState:
-        """Один шаг диффузии (используется и в цикле, и для streaming)."""
+        """One diffusion step (used in the loop and for streaming)."""
         model = self._slot_children["model"]
         process = self._slot_children.get("diffusion_process")
         solver = self._slot_children.get("solver")
         
-        # 1. Forward модели (с guidance внутри модели)
+        # 1. Model forward (guidance applied inside model)
         model_output = model(
             x=state.latents,
             t=state.timestep,
@@ -151,23 +190,31 @@ class DiffusionSampler(AbstractBlock):
             return_dict=False
         )
         
-        # 2. Применяем solver (DDIM, Heun, Euler и т.д.)
+        # 2. Build a model_fn closure for multi-eval solvers (Heun, DPM++)
+        def model_fn(latents: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+            return model(x=latents, t=t, condition=condition, return_dict=False)
+        
+        # 3. Apply solver (DDIM, Heun, Euler, etc.)
         if solver is not None:
             next_latents = solver.step(
                 model_output=model_output,
                 current_latents=state.latents,
                 timestep=state.timestep,
                 process=process,
+                model_fn=model_fn,
                 **kwargs
             )
         else:
-            # Fallback — простой процесс
+            # Fallback -- simple process reverse step
             next_latents = process.reverse_step(
                 model_output, state.latents, state.timestep
             )
         
+        state.model_output = model_output
+        state.prev_latents = state.latents.clone()
         state.latents = next_latents
         state.prev_timestep = state.timestep
+        state.step_index += 1
         return state
     
     # ==================== ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ====================
@@ -214,7 +261,30 @@ class DiffusionSampler(AbstractBlock):
         timesteps = timesteps.flip(0)  # от большого шума к малому: 999, 964, ...
         return timesteps
     
-    # ==================== STREAMING И ПРОДОЛЖЕНИЕ ====================
+    # ==================== HOOK MANAGEMENT ====================
+    
+    def add_pre_step_hook(self, hook: Callable):
+        """Add a hook called before each sampling step.
+        
+        Hook signature: hook(state: DiffusionState, step_idx: int) -> Optional[DiffusionState]
+        If hook returns a DiffusionState, it replaces the current state.
+        """
+        self.pre_step_hooks.append(hook)
+    
+    def add_post_step_hook(self, hook: Callable):
+        """Add a hook called after each sampling step.
+        
+        Hook signature: hook(state: DiffusionState, step_idx: int) -> Optional[DiffusionState]
+        If hook returns a DiffusionState, it replaces the current state.
+        """
+        self.post_step_hooks.append(hook)
+    
+    def clear_hooks(self):
+        """Remove all step hooks."""
+        self.pre_step_hooks.clear()
+        self.post_step_hooks.clear()
+    
+    # ==================== STREAMING ====================
     
     def sample_iter(
         self,

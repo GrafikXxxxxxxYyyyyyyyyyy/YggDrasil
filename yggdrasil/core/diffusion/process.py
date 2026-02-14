@@ -8,6 +8,7 @@ from omegaconf import DictConfig
 from ...core.block.base import AbstractBlock
 from ...core.block.registry import register_block
 from ...core.block.slot import Slot
+from ...core.block.port import Port, InputPort, OutputPort, TensorSpec
 
 from .noise.schedule import NoiseSchedule
 
@@ -20,6 +21,23 @@ class AbstractDiffusionProcess(AbstractBlock):
     """
     
     block_type = "diffusion/process/abstract"
+    
+    @classmethod
+    def declare_io(cls) -> dict:
+        return {
+            "x0": InputPort("x0", spec=TensorSpec(space="latent"), description="Clean data"),
+            "t": InputPort("t", data_type="tensor", description="Timestep"),
+            "noise": InputPort("noise", optional=True, description="Optional noise"),
+            "xt": OutputPort("xt", spec=TensorSpec(space="latent"), description="Noised data"),
+            "target": OutputPort("target", description="Target for loss computation"),
+        }
+    
+    def process(self, **port_inputs) -> dict:
+        x0 = port_inputs.get("x0")
+        t = port_inputs.get("t")
+        noise = port_inputs.get("noise")
+        result = self.forward_process(x0, t, noise)
+        return result
     
     def _define_slots(self) -> Dict[str, Slot]:
         return {

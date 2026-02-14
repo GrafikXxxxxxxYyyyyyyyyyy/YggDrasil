@@ -1,0 +1,50 @@
+# YggDrasil Preset: Flux.1 Dev
+# Модальность: Изображения (1024x1024)
+# Процесс: Rectified Flow (velocity prediction)
+
+_meta:
+  name: "Flux.1 Dev"
+  modality: image
+  resolution: 1024
+  description: "Flux.1 — DiT + Flow Matching + T5 + CLIP"
+
+model:
+  type: model/modular
+  id: flux_dev
+
+  backbone:
+    type: backbone/flux_dit
+    pretrained: "black-forest-labs/FLUX.1-dev"
+    fp16: true
+
+  codec:
+    type: codec/autoencoder_kl
+    pretrained: "black-forest-labs/FLUX.1-dev"
+    fp16: true
+    scaling_factor: 0.3611
+
+  conditioner:
+    type: conditioner/t5_clip_dual
+    pretrained: "black-forest-labs/FLUX.1-dev"
+
+  guidance:
+    type: guidance/cfg
+    scale: 3.5
+
+diffusion_process:
+  type: diffusion/process/flow/rectified
+  sigma_min: 0.0001
+
+solver:
+  type: diffusion/solver/heun
+
+sampler:
+  num_inference_steps: 28
+  guidance_scale: 3.5
+
+training:
+  loss: training/loss/flow_matching
+  learning_rate: 1.0e-5
+  batch_size: 1
+  mixed_precision: bf16
+  train_mode: adapter

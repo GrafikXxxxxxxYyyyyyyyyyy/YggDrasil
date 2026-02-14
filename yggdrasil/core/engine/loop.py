@@ -63,10 +63,14 @@ class SamplingLoop(AbstractBlock):
         steps = num_steps or sampler.num_inference_steps
         
         # Инициализация состояния
-        state = initial_state or DiffusionState(
-            latents=sampler._initialize_latents(kwargs.get("shape")),
-            timestep=torch.tensor([1.0], device="cuda")
-        )
+        if initial_state is not None:
+            state = initial_state
+        else:
+            latents = sampler._initialize_latents(kwargs.get("shape"))
+            state = DiffusionState(
+                latents=latents,
+                timestep=torch.tensor([1.0], device=latents.device),
+            )
         
         timesteps = sampler._get_timesteps(steps)
         

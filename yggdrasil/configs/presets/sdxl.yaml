@@ -1,0 +1,54 @@
+# YggDrasil Preset: Stable Diffusion XL
+# Модальность: Изображения (1024x1024)
+# Процесс: DDPM (epsilon-prediction, dual text encoder)
+
+_meta:
+  name: "Stable Diffusion XL"
+  modality: image
+  resolution: 1024
+  description: "SDXL — UNet + VAE + CLIP-L + OpenCLIP-G"
+
+model:
+  type: model/modular
+  id: sdxl
+
+  backbone:
+    type: backbone/unet2d_condition
+    pretrained: "stabilityai/stable-diffusion-xl-base-1.0"
+    fp16: true
+
+  codec:
+    type: codec/autoencoder_kl
+    pretrained: "stabilityai/stable-diffusion-xl-base-1.0"
+    fp16: true
+    scaling_factor: 0.13025
+
+  conditioner:
+    type: conditioner/clip_text
+    pretrained: "stabilityai/stable-diffusion-xl-base-1.0"
+    max_length: 77
+
+  guidance:
+    type: guidance/cfg
+    scale: 7.0
+
+diffusion_process:
+  type: diffusion/process/ddpm
+  num_train_timesteps: 1000
+  beta_start: 0.00085
+  beta_end: 0.012
+
+solver:
+  type: diffusion/solver/ddim
+  eta: 0.0
+
+sampler:
+  num_inference_steps: 30
+  guidance_scale: 7.0
+
+training:
+  loss: training/loss/epsilon
+  learning_rate: 1.0e-5
+  batch_size: 1
+  mixed_precision: fp16
+  train_mode: adapter

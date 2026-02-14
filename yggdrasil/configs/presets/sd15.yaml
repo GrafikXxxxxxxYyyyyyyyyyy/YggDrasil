@@ -1,0 +1,62 @@
+# YggDrasil Preset: Stable Diffusion 1.5
+# Модальность: Изображения (512x512)
+# Процесс: DDPM (epsilon-prediction)
+
+_meta:
+  name: "Stable Diffusion 1.5"
+  modality: image
+  resolution: 512
+  description: "Classic SD 1.5 — UNet + VAE + CLIP"
+
+# === Модель ===
+model:
+  type: model/modular
+  id: sd15
+
+  backbone:
+    type: backbone/unet2d_condition
+    pretrained: "runwayml/stable-diffusion-v1-5"
+    fp16: true
+
+  codec:
+    type: codec/autoencoder_kl
+    pretrained: "runwayml/stable-diffusion-v1-5"
+    fp16: true
+    scaling_factor: 0.18215
+
+  conditioner:
+    type: conditioner/clip_text
+    pretrained: "runwayml/stable-diffusion-v1-5"
+    tokenizer_subfolder: tokenizer
+    text_encoder_subfolder: text_encoder
+    max_length: 77
+
+  guidance:
+    type: guidance/cfg
+    scale: 7.5
+
+# === Диффузионный процесс ===
+diffusion_process:
+  type: diffusion/process/ddpm
+  num_train_timesteps: 1000
+  beta_start: 0.00085
+  beta_end: 0.012
+
+# === Солвер ===
+solver:
+  type: diffusion/solver/ddim
+  eta: 0.0
+
+# === Сэмплер ===
+sampler:
+  num_inference_steps: 28
+  guidance_scale: 7.5
+  show_progress: true
+
+# === Обучение (по умолчанию) ===
+training:
+  loss: training/loss/epsilon
+  learning_rate: 1.0e-5
+  batch_size: 1
+  mixed_precision: fp16
+  train_mode: adapter

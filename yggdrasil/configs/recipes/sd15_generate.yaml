@@ -1,0 +1,29 @@
+# SD 1.5 text-to-image generation pipeline
+model:
+  type: model/modular
+  backbone:
+    type: backbone/unet2d_condition
+    pretrained: "stable-diffusion-v1-5/stable-diffusion-v1-5"
+  codec:
+    type: codec/autoencoder_kl
+    pretrained: "stable-diffusion-v1-5/stable-diffusion-v1-5"
+    latent_channels: 4
+    spatial_scale_factor: 8
+    scaling_factor: 0.18215
+  conditioner:
+    - type: conditioner/clip_text
+      pretrained: "openai/clip-vit-large-patch14"
+  guidance:
+    - type: guidance/cfg
+      scale: 7.5
+
+sampler:
+  type: engine/sampler
+  num_inference_steps: 50
+  guidance_scale: 7.5
+  diffusion_process:
+    type: diffusion/process/ddpm
+    num_train_timesteps: 1000
+  solver:
+    type: diffusion/solver/ddim
+    eta: 0.0
