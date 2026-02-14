@@ -215,7 +215,8 @@ class ModelManager:
         gpu_used = gpu_total = None
         if torch.cuda.is_available():
             gpu_used = torch.cuda.memory_allocated() / 1e9
-            gpu_total = torch.cuda.get_device_properties(0).total_mem / 1e9
+            props = torch.cuda.get_device_properties(0)
+            gpu_total = getattr(props, "total_memory", getattr(props, "total_mem", 0)) / 1e9
         
         return ServerStatus(
             status="ok",

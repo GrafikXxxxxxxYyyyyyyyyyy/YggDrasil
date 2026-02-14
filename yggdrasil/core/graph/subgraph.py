@@ -244,11 +244,13 @@ class LoopSubGraph(AbstractBlock):
             
             step_inputs = {
                 "latents": latents,
-                "timestep": t,
+                "timestep": t.float() if hasattr(t, "float") else t,  # Euler expects float
                 "next_timestep": next_t,
                 "condition": condition,
             }
-            # Add any extra inputs from port_inputs
+            if i == 0:
+                step_inputs["num_steps"] = len(timesteps)
+            # Forward extra inputs (e.g. control_image for ControlNet) to inner graph every step
             for k, v in port_inputs.items():
                 if k not in ("initial_latents", "timesteps", "condition"):
                     step_inputs[k] = v

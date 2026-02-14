@@ -49,9 +49,34 @@ class UNet2DConditionBackbone(AbstractBackbone):
         if x.dtype != model_dtype:
             x = x.to(dtype=model_dtype)
         
-        return self.unet(
+        # Pass through ControlNet/Adapter residuals (from condition dict, kwargs, or adapter_features port)
+        down_block_residuals = kwargs.get("down_block_additional_residuals")
+        mid_block_residual = kwargs.get("mid_block_additional_residual")
+        if down_block_residuals is None and condition is not None and isinstance(condition, dict):
+            down_block_residuals = condition.get("down_block_additional_residuals")
+            mid_block_residual = condition.get("mid_block_additional_residual")
+        if down_block_residuals is None:
+            af = kwargs.get("adapter_features")
+            if isinstance(af, dict):
+                down_block_residuals = af.get("down_block_additional_residuals") or af.get("down_block_residuals")
+                mid_block_residual = af.get("mid_block_additional_residual") or af.get("mid_block_residual")
+            elif isinstance(af, (tuple, list)) and len(af) >= 2:
+                down_block_residuals, mid_block_residual = af[0], af[1]
+
+        added_cond_kwargs = None
+        if condition is not None and isinstance(condition, dict):
+            added_cond_kwargs = condition.get("added_cond_kwargs")
+        if added_cond_kwargs is None:
+            added_cond_kwargs = kwargs.get("added_cond_kwargs")
+
+        unet_kw = dict(
             sample=x,
             timestep=timestep,
             encoder_hidden_states=encoder_hidden_states,
-            return_dict=False
-        )[0]
+            down_block_additional_residuals=down_block_residuals,
+            mid_block_additional_residual=mid_block_residual,
+            return_dict=False,
+        )
+        if added_cond_kwargs is not None:
+            unet_kw["added_cond_kwargs"] = added_cond_kwargs
+        return self.unet(**unet_kw)[0]

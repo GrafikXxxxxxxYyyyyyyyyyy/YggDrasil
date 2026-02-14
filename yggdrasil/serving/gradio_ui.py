@@ -30,7 +30,8 @@ from .schema import GenerateRequest, OutputFormat, ServerConfig
 def _get_device_info() -> str:
     if torch.cuda.is_available():
         name = torch.cuda.get_device_name(0)
-        mem = torch.cuda.get_device_properties(0).total_mem / 1e9
+        props = torch.cuda.get_device_properties(0)
+        mem = getattr(props, "total_memory", getattr(props, "total_mem", 0)) / 1e9
         return f"CUDA: {name} ({mem:.1f} GB)"
     if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
         return "Apple MPS"
@@ -489,7 +490,7 @@ def create_ui(
                         connect_btn = gr.Button("Connect")
                     
                     with gr.Column(scale=2):
-                        graph_mermaid = gr.Code(label="Graph Visualization (Mermaid)", language="text", lines=20)
+                        graph_mermaid = gr.Code(label="Graph Visualization (Mermaid)", language="markdown", lines=20)
                         graph_info = gr.Textbox(label="Graph Info", interactive=False, lines=5)
                         graph_yaml = gr.Code(label="Graph YAML", language="yaml", lines=15)
                 

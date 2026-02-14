@@ -31,8 +31,8 @@ class DDIMSolver(AbstractSolver):
         super().__init__(config)
         self.eta = config.get("eta", 0.0)
         self.num_train_timesteps = int(config.get("num_train_timesteps", 1000))
-        # Default 2.0: SD uses 1.0 in diffusers but aggressive clamp can distort content in our pipeline
-        self.clip_sample_range = float(config.get("clip_sample_range", 2.0))
+        # 1.0 for SD 1.5 parity with diffusers (less clamp = better quality)
+        self.clip_sample_range = float(config.get("clip_sample_range", 1.0))
         
         # Build noise schedule (alphas_cumprod) — formulas match HuggingFace diffusers
         beta_schedule = config.get("beta_schedule", "scaled_linear")

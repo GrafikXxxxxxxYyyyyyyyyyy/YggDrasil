@@ -78,7 +78,7 @@ class ControlNetAdapter(AbstractAdapter):
     @classmethod
     def declare_io(cls):
         return {
-            "control_image": InputPort("control_image", description="Conditioning image (depth, canny, etc.)"),
+            "control_image": InputPort("control_image", description="Conditioning image (depth, canny, etc.)", optional=True),
             "sample": InputPort("sample", description="Noisy latent sample", optional=True),
             "timestep": InputPort("timestep", description="Timestep", optional=True),
             "encoder_hidden_states": InputPort("encoder_hidden_states", 
@@ -87,6 +87,7 @@ class ControlNetAdapter(AbstractAdapter):
                                                 description="ControlNet residuals for down blocks"),
             "mid_block_residual": OutputPort("mid_block_residual",
                                               description="ControlNet residual for mid block"),
+            "output": OutputPort("output", description="Dict for backbone adapter_features (down_block_additional_residuals, mid_block_additional_residual)"),
         }
     
     def process(self, **kw) -> Dict[str, Any]:
@@ -100,13 +101,64 @@ class ControlNetAdapter(AbstractAdapter):
             return {
                 "down_block_residuals": None,
                 "mid_block_residual": None,
+                "output": {"down_block_additional_residuals": None, "mid_block_additional_residual": None},
             }
-        
+
+        # If still a string (URL/path), load image (e.g. when pipeline resolution failed or input came from another node)
+        if isinstance(control_image, str):
+            try:
+                from yggdrasil.pipeline import load_image_from_url_or_path, _pil_to_tensor
+                pil_img = load_image_from_url_or_path(control_image)
+                if pil_img is None:
+                    raise ValueError(f"Failed to load control image from {control_image!r}")
+                control_image = _pil_to_tensor(pil_img)
+            except Exception as e:
+                logger.warning("ControlNet: could not load control_image from string %r: %s. Using zero residuals.", control_image, e)
+                return {
+                    "down_block_residuals": None,
+                    "mid_block_residual": None,
+                    "output": {"down_block_additional_residuals": None, "mid_block_additional_residual": None},
+                }
+
+        # Match dtypes: pipeline often sends float32 (e.g. from URL), model is fp16
+        target_dtype = next(self.controlnet.parameters()).dtype
+        target_device = next(self.controlnet.parameters()).device
+        control_image = control_image.to(device=target_device, dtype=target_dtype)
         sample = kw.get("sample")
         timestep = kw.get("timestep")
-        encoder_hidden_states = kw.get("encoder_hidden_states")
-        
-        down_residuals, mid_residual = self.controlnet(
+        # Resize control image to match generation resolution (sample is latents: H/8 x W/8)
+        if sample is not None and hasattr(sample, "shape") and len(sample.shape) == 4:
+            target_h, target_w = sample.shape[2] * 8, sample.shape[3] * 8
+            if control_image.shape[2] != target_h or control_image.shape[3] != target_w:
+                control_image = torch.nn.functional.interpolate(
+                    control_image, size=(target_h, target_w), mode="bilinear", align_corners=False
+                )
+        raw_cond = kw.get("encoder_hidden_states")
+        # Graph may pass full condition dict (e.g. SDXL: {encoder_hidden_states, added_cond_kwargs}); extract tensor
+        if isinstance(raw_cond, dict):
+            encoder_hidden_states = raw_cond.get("encoder_hidden_states")
+        else:
+            encoder_hidden_states = raw_cond
+        if encoder_hidden_states is None:
+            logger.warning("ControlNet: encoder_hidden_states missing (condition not connected?). Using zero residuals.")
+            return {
+                "down_block_residuals": None,
+                "mid_block_residual": None,
+                "output": {"down_block_additional_residuals": None, "mid_block_additional_residual": None},
+            }
+        if hasattr(encoder_hidden_states, "to"):
+            encoder_hidden_states = encoder_hidden_states.to(device=target_device, dtype=target_dtype)
+        if sample is not None and hasattr(sample, "to"):
+            sample = sample.to(device=target_device, dtype=target_dtype)
+        if timestep is not None and hasattr(timestep, "to"):
+            timestep = timestep.to(device=target_device)
+        added_cond_kwargs = None
+        if isinstance(raw_cond, dict):
+            added_cond_kwargs = raw_cond.get("added_cond_kwargs")
+        if added_cond_kwargs is not None and isinstance(added_cond_kwargs, dict):
+            added_cond_kwargs = {k: v.to(device=target_device, dtype=target_dtype) if hasattr(v, "to") else v for k, v in added_cond_kwargs.items()}
+
+        controlnet_kw: Dict[str, Any] = dict(
             sample=sample,
             timestep=timestep,
             encoder_hidden_states=encoder_hidden_states,
@@ -114,11 +166,19 @@ class ControlNetAdapter(AbstractAdapter):
             conditioning_scale=self.conditioning_scale,
             return_dict=False,
         )
+        if added_cond_kwargs is not None:
+            controlnet_kw["added_cond_kwargs"] = added_cond_kwargs
+        down_residuals, mid_residual = self.controlnet(**controlnet_kw)
         
-        return {
+        out = {
             "down_block_residuals": down_residuals,
             "mid_block_residual": mid_residual,
+            "output": {
+                "down_block_additional_residuals": down_residuals,
+                "mid_block_additional_residual": mid_residual,
+            },
         }
+        return out
     
     def inject_into(self, target):
         """Inject ControlNet conditioning into a backbone.

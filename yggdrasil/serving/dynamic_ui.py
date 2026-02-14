@@ -569,7 +569,7 @@ class DynamicUI:
                     apply_lora_btn = gr.Button("Apply LoRA")
                 
                 with gr.Column(scale=2):
-                    graph_viz = gr.Code(label="Graph (Mermaid)", language="text", lines=15)
+                    graph_viz = gr.Code(label="Graph (Mermaid)", language="markdown", lines=15)
                     graph_nodes = gr.Textbox(label="Nodes", interactive=False, lines=8)
                     graph_edges = gr.Textbox(label="Edges", interactive=False, lines=8)
             

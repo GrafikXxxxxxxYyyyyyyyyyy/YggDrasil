@@ -80,6 +80,7 @@ class DiffusersBridge:
         "UNet2DConditionModel": "backbone/unet2d_condition",
         "UNet2DModel": "backbone/unet2d_condition",
         "UNet3DConditionModel": "backbone/unet3d_condition",
+        "UNet1DModel": "backbone/unet2d_condition",  # 1D audio UNet, same wrapper API
         "FluxTransformer2DModel": "backbone/flux_transformer",
         "SD3Transformer2DModel": "backbone/sd3_transformer",
         "DiTTransformer2DModel": "backbone/dit",
@@ -89,6 +90,7 @@ class DiffusersBridge:
         "HunyuanDiT2DModel": "backbone/mmdit",
         "LatteTransformer3DModel": "backbone/dit",
         "UNetSpatioTemporalConditionModel": "backbone/unet3d_condition",
+        "StableAudioDiTModel": "backbone/dit",  # Stable Audio transformer
     }
     
     # Pipeline type → template name mapping
@@ -110,6 +112,8 @@ class DiffusersBridge:
         "AudioLDMPipeline": "audioldm_txt2audio",
         "AudioLDM2Pipeline": "audioldm2_txt2audio",
         "StableAudioPipeline": "stable_audio",
+        "MusicLDMPipeline": "musicldm_txt2audio",
+        "DanceDiffusionPipeline": "dance_diffusion_audio",
         "ShapEPipeline": "shap_e_txt2_3d",
         "KandinskyV22Pipeline": "kandinsky_txt2img",
         "IFPipeline": "deepfloyd_txt2img",
@@ -168,6 +172,12 @@ class DiffusersBridge:
             template = "audioldm2_txt2audio"
         elif "audioldm" in model_id_lower:
             template = "audioldm_txt2audio"
+        elif "musicldm" in model_id_lower:
+            template = "musicldm_txt2audio"
+        elif "stable-audio" in model_id_lower or "stable_audio" in model_id_lower:
+            template = "stable_audio"
+        elif "dance" in model_id_lower and "diffusion" in model_id_lower:
+            template = "dance_diffusion_audio"
         elif "animatediff" in model_id_lower:
             template = "animatediff_txt2vid"
         elif "cogvideo" in model_id_lower:

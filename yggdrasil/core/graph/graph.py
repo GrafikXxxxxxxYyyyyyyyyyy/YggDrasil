@@ -1022,7 +1022,45 @@ class ComputeGraph:
         """
         from .executor import GraphExecutor
         return GraphExecutor().execute(self, **inputs)
-    
+
+    def with_controlnet(
+        self,
+        controlnet_pretrained: str = "lllyasviel/control_v11p_sd15_canny",
+        conditioning_scale: float = 1.0,
+        control_image_source: Optional[Tuple[str, str]] = None,
+        **kwargs: Any,
+    ) -> "ComputeGraph":
+        """Добавить ControlNet к графу (in-place). Граф должен иметь denoise_loop с backbone, поддерживающим adapter_features.
+        control_image_source: (node_name, port_name) — брать control_image с выхода узла по ссылке."""
+        from .adapters import add_controlnet_to_graph
+        add_controlnet_to_graph(
+            self,
+            controlnet_pretrained=controlnet_pretrained,
+            conditioning_scale=conditioning_scale,
+            control_image_source=control_image_source,
+            **kwargs,
+        )
+        return self
+
+    def with_adapter(
+        self,
+        adapter_type: str,
+        input_source: Optional[Tuple[str, str]] = None,
+        **kwargs: Any,
+    ) -> "ComputeGraph":
+        """Добавить любой адаптер к графу (in-place): controlnet, ip_adapter и т.д.
+
+        input_source: (node_name, port_name) — передать вход адаптеру по ссылке на выход узла.
+        Иначе добавляется новый вход графа (control_image для controlnet, ip_image для ip_adapter).
+
+        Example::
+            graph.with_adapter("controlnet", controlnet_pretrained="lllyasviel/control_v11p_sd15_canny")
+            graph.with_adapter("controlnet", input_source=("canny_preprocessor", "output"))
+        """
+        from .adapters import add_adapter_to_graph
+        add_adapter_to_graph(self, adapter_type, input_source=input_source, **kwargs)
+        return self
+
     def _iter_all_blocks(self):
         """Итерация по ВСЕМ блокам, включая вложенные SubGraph."""
         for name, block in self.nodes.items():

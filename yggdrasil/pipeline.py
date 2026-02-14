@@ -16,11 +16,47 @@
 """
 from __future__ import annotations
 
+import io
 import torch
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 from pathlib import Path
+from urllib.request import urlopen
+from urllib.error import URLError
+
+
+def load_image_from_url_or_path(source: Union[str, Path]) -> Optional[Any]:
+    """Загрузить изображение по URL или с диска. Возвращает PIL.Image или None при ошибке.
+
+    source: http(s)://... или путь к файлу.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    source = str(source).strip()
+    if not source:
+        return None
+    try:
+        if source.startswith(("http://", "https://")):
+            with urlopen(source, timeout=30) as resp:
+                data = resp.read()
+            img = Image.open(io.BytesIO(data)).convert("RGB")
+        else:
+            img = Image.open(source).convert("RGB")
+        return img
+    except (URLError, OSError, Exception):
+        return None
+
+
+def _pil_to_tensor(pil_img: Any) -> torch.Tensor:
+    """PIL Image -> tensor (1, 3, H, W) float32 [0, 1]."""
+    arr = np.array(pil_img).astype(np.float32) / 255.0
+    if arr.ndim == 2:
+        arr = np.stack([arr] * 3, axis=-1)
+    t = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)
+    return t
 
 
 @dataclass
@@ -121,7 +157,18 @@ class Pipeline:
         except Exception as e:
             errors.append(f"Hub registry: {type(e).__name__}: {e}")
         
-        # 3. Fallback: guess template from model_id
+        # 3. Fallback: guess template from model_id (preset names or HF-style ids)
+        preset_to_template = {"sd15": "sd15_txt2img", "sdxl": "sdxl_txt2img", "sd3": "sd3_txt2img", "flux": "flux_txt2img"}
+        if model_id.lower() in preset_to_template:
+            try:
+                return cls.from_template(
+                    preset_to_template[model_id.lower()],
+                    device=device,
+                    dtype=dtype,
+                    **kwargs,
+                )
+            except Exception as e:
+                errors.append(f"Preset '{model_id}': {type(e).__name__}: {e}")
         template_map = {
             "stable-diffusion-v1-5": "sd15_txt2img",
             "stable-diffusion-xl": "sdxl_txt2img",
@@ -297,15 +344,53 @@ class Pipeline:
             if isinstance(kwargs["negative_prompt"], dict):
                 kwargs["negative_prompt"] = kwargs["negative_prompt"].get("text", "")
         
+        # ── Default width/height from metadata (e.g. SDXL 1024) ──
+        if width is None:
+            width = meta.get("default_width", 512)
+        if height is None:
+            height = meta.get("default_height", 512)
+        if "height" in graph_input_names and "height" not in kwargs:
+            kwargs["height"] = height
+        if "width" in graph_input_names and "width" not in kwargs:
+            kwargs["width"] = width
+
+        # ── Resolve image inputs from URL or path (control_image, ip_image, source_image) ──
+        for key in ("control_image", "ip_image", "source_image"):
+            if key not in kwargs:
+                continue
+            val = kwargs[key]
+            if not isinstance(val, str):
+                continue
+            pil_img = load_image_from_url_or_path(val)
+            if pil_img is None:
+                import warnings
+                warnings.warn(f"Failed to load image from {val!r}; passing None for {key}.", UserWarning)
+                kwargs[key] = None
+                continue
+            if key == "ip_image":
+                # IP-Adapter / CLIP vision expect dict with "image" or raw image
+                kwargs[key] = {"image": pil_img}
+            else:
+                # control_image, source_image: tensor (1, 3, H, W) in [0, 1], resized to generation size
+                t = _pil_to_tensor(pil_img)
+                if t.shape[2] != height or t.shape[3] != width:
+                    t = torch.nn.functional.interpolate(
+                        t, size=(height, width), mode="bilinear", align_corners=False
+                    )
+                if self.graph._device is not None and hasattr(t, "to"):
+                    t = t.to(self.graph._device)
+                kwargs[key] = t
+
         # ── Generate noise (only if graph expects latents and none provided) ──
         if "latents" in graph_input_names and "latents" not in kwargs:
-            if width is None:
-                width = meta.get("default_width", 512)
-            if height is None:
-                height = meta.get("default_height", 512)
-            kwargs["latents"] = self._make_noise(
-                batch_size=batch_size, width=width, height=height, seed=seed,
-            )
+            if meta.get("modality") == "audio":
+                kwargs["latents"] = self._make_noise_audio(
+                    batch_size=batch_size, seed=seed, meta=meta,
+                )
+            else:
+                kwargs["latents"] = self._make_noise(
+                    batch_size=batch_size, width=width, height=height, seed=seed,
+                )
         
         # ── Execute graph (non-strict: tolerate missing optional inputs) ──
         from yggdrasil.core.graph.executor import GraphExecutor
@@ -318,14 +403,45 @@ class Pipeline:
         """Move pipeline to device."""
         self.graph.to(device, dtype)
         return self
-    
+
+    def load_lora_weights(
+        self,
+        pretrained_model_name_or_path: str,
+        *,
+        weight_name: Optional[str] = None,
+        adapter_name: Optional[str] = None,
+        **kwargs,
+    ) -> List[str]:
+        """Load LoRA weights from HuggingFace (e.g. OnMoon/loras) into the graph's UNet.
+
+        Requires: peft. Uses diffusers-compatible LoRA format.
+
+        Args:
+            pretrained_model_name_or_path: HF model id or local path.
+            weight_name: Optional .safetensors filename in the repo.
+            adapter_name: Adapter name for multi-LoRA.
+            **kwargs: Passed to loader (cache_dir, token, revision, etc.).
+
+        Returns:
+            List of loaded components (e.g. ["unet"]).
+        """
+        from yggdrasil.integration.lora_loader import load_lora_weights as _load_lora
+        return _load_lora(
+            self.graph,
+            pretrained_model_name_or_path,
+            weight_name=weight_name,
+            adapter_name=adapter_name,
+            **kwargs,
+        )
+
     # ── Internal helpers ──
     
     def _apply_guidance_scale(self, scale: float):
         for _, block in self.graph._iter_all_blocks():
             bt = getattr(block, 'block_type', '')
-            if 'guidance' in bt and hasattr(block, 'scale'):
-                block.scale = scale
+            if hasattr(block, 'scale'):
+                if 'guidance' in bt or 'batched_cfg' in bt:
+                    block.scale = scale
     
     def _apply_num_steps(self, num_steps: int):
         for _, block in self.graph._iter_all_blocks():
@@ -358,7 +474,25 @@ class Pipeline:
             noise = noise * init_sigma
 
         return noise.to(device=device, dtype=dtype)
-    
+
+    def _make_noise_audio(self, batch_size=1, seed=None, meta=None):
+        """Initial noise for audio pipelines: (batch, latent_channels, H, W) from metadata."""
+        meta = meta or self.graph.metadata
+        channels = meta.get("latent_channels", 8)
+        h = meta.get("default_audio_latent_height", 256)
+        w = meta.get("default_audio_latent_width", 16)
+        device = self.graph._device or torch.device("cpu")
+        dtype = torch.get_default_dtype()
+        if seed is not None:
+            g = torch.Generator(device=device).manual_seed(seed)
+            noise = torch.randn(batch_size, channels, h, w, device=device, dtype=dtype, generator=g)
+        else:
+            noise = torch.randn(batch_size, channels, h, w, device=device, dtype=dtype)
+        sigma = meta.get("init_noise_sigma", 1.0)
+        if sigma != 1.0:
+            noise = noise * sigma
+        return noise
+
     def _build_output(self, raw: Dict[str, Any]) -> PipelineOutput:
         """Convert raw graph output to PipelineOutput."""
         output = PipelineOutput(raw=raw)
@@ -374,7 +508,8 @@ class Pipeline:
                 output.images = self._tensor_to_images(decoded)
             elif decoded.dim() == 5:
                 output.video = decoded
-            elif decoded.dim() <= 2:
+            elif decoded.dim() == 3 or decoded.dim() <= 2:
+                # Audio: (batch, channels, time) or (batch, time)
                 output.audio = decoded
         
         # If no decoded, check for raw output

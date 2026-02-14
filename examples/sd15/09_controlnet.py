@@ -41,12 +41,19 @@ def main():
         "prompt": {"text": "a beautiful landscape, detailed"},
         "latents": latents,
     }
+    dev = graph._device if hasattr(graph, "_device") and graph._device is not None else device
     if ref_path and Path(ref_path).exists():
         img = Image.open(ref_path).convert("RGB").resize((512, 512))
         arr = np.array(img).astype(np.float32) / 255.0
-        control = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).to(graph._device or device)
+        control = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).to(dev)
+        if dev != "cpu" and torch.cuda.is_available():
+            control = control.half()
         inputs["control_image"] = control
         print("Используется контрольное изображение:", ref_path)
+    else:
+        print("Путь к контрольному изображению не указан. Укажите: python 09_controlnet.py path/to/image.png")
+        print("Граф controlnet_txt2img загружен успешно (проверка работоспособности шаблона).")
+        return
 
     executor = GraphExecutor(no_grad=True)
     raw = executor.execute(graph, **inputs)

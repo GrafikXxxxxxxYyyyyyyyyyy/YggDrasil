@@ -23,22 +23,23 @@ def _build_controlnet_step(backbone, guidance, solver, controlnet):
     
     # Fan-out: latents
     step.expose_input("latents", "backbone", "x")
-    step.expose_input("latents", "controlnet", "input")
+    step.expose_input("latents", "controlnet", "sample")
     step.expose_input("latents", "solver", "current_latents")
     step.expose_input("latents", "guidance", "x")
     
     # Fan-out: timestep
     step.expose_input("timestep", "backbone", "timestep")
+    step.expose_input("timestep", "controlnet", "timestep")
     step.expose_input("timestep", "solver", "timestep")
     step.expose_input("timestep", "guidance", "t")
     
     # Fan-out: condition
     step.expose_input("condition", "backbone", "condition")
-    step.expose_input("condition", "controlnet", "context")
+    step.expose_input("condition", "controlnet", "encoder_hidden_states")
     step.expose_input("condition", "guidance", "condition")
     
     step.expose_input("next_timestep", "solver", "next_timestep")
-    step.expose_input("control_image", "controlnet", "input")
+    step.expose_input("control_image", "controlnet", "control_image")
     
     step.expose_output("next_latents", "solver", "next_latents")
     step.expose_output("latents", "solver", "next_latents")

@@ -7,10 +7,14 @@ ComputeGraph — DAG из блоков, соединённых через тип
 from .graph import ComputeGraph, Edge
 from .executor import GraphExecutor
 from .subgraph import SubGraph
+from .adapters import add_controlnet_to_graph, add_ip_adapter_to_graph, add_adapter_to_graph
 
 __all__ = [
     "ComputeGraph",
     "Edge",
     "GraphExecutor",
     "SubGraph",
+    "add_controlnet_to_graph",
+    "add_ip_adapter_to_graph",
+    "add_adapter_to_graph",
 ]

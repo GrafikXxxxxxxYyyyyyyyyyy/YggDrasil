@@ -9,6 +9,7 @@
     python examples/sd15/10_list_templates_blocks.py
 """
 from yggdrasil.core.graph.graph import ComputeGraph
+from yggdrasil.core.graph.templates import list_templates
 from yggdrasil.core.block.registry import list_blocks
 
 
@@ -16,12 +17,11 @@ def main():
     print("=" * 60)
     print("ШАБЛОНЫ ГРАФОВ (ComputeGraph.from_template)")
     print("=" * 60)
-    reg = getattr(ComputeGraph, "_template_registry", {})
-    for name in sorted(reg.keys()):
-        if "sd15" in name or "sd15" in str(reg.get(name, "")):
+    all_templates = list_templates()
+    for name in all_templates:
+        if "sd15" in name:
             print(f"  {name}")
     print("  ... и другие (sdxl, flux, controlnet, etc.)")
-    all_templates = sorted(reg.keys())
     print(f"\nВсего шаблонов: {len(all_templates)}")
     for t in all_templates[:30]:
         print(f"  {t}")

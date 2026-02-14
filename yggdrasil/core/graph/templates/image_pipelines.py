@@ -134,6 +134,49 @@ def _build_denoise_step_batched_cfg(
     return step
 
 
+def _build_denoise_step_batched_cfg_euler(
+    backbone_config: dict,
+    guidance_config: dict,
+    solver,
+) -> ComputeGraph:
+    """Batched CFG step with scale_model_input for EulerDiscreteScheduler (SDXL parity).
+    
+    Euler requires: scaled_latents = latents / (sigma^2+1)^0.5 before UNet.
+    """
+    from yggdrasil.core.block.builder import BlockBuilder
+
+    batched_config = {
+        **backbone_config,
+        "type": "backbone/unet2d_batched_cfg",
+        "scale": guidance_config.get("scale", 7.5),
+        "guidance_rescale": guidance_config.get("guidance_rescale", 0.0),
+    }
+    batched_backbone = BlockBuilder.build(batched_config)
+    scale_block = BlockBuilder.build({"type": "solver/scale_model_input"})
+    scale_block.set_solver(solver)
+
+    step = ComputeGraph("denoise_step")
+    step.add_node("scale_input", scale_block)
+    step.add_node("backbone", batched_backbone)
+    step.add_node("solver", solver)
+
+    step.expose_input("latents", "scale_input", "sample")
+    step.expose_input("latents", "solver", "current_latents")
+    step.expose_input("timestep", "scale_input", "timestep")
+    step.expose_input("timestep", "backbone", "timestep")
+    step.expose_input("timestep", "solver", "timestep")
+    step.expose_input("num_steps", "scale_input", "num_steps")
+    step.connect("scale_input", "scaled", "backbone", "x")
+    step.connect("backbone", "output", "solver", "model_output")
+    step.expose_input("condition", "backbone", "condition")
+    step.expose_input("uncond", "backbone", "uncond")
+    step.expose_input("next_timestep", "solver", "next_timestep")
+    step.expose_output("next_latents", "solver", "next_latents")
+    step.expose_output("latents", "solver", "next_latents")
+
+    return step
+
+
 # ==================== HELPER: BUILD FULL PIPELINE ====================
 
 def _build_txt2img_graph(
@@ -298,6 +341,36 @@ def sd15_txt2img(**kwargs) -> ComputeGraph:
     )
 
 
+@register_template("sd15_txt2img_nobatch")
+def sd15_txt2img_nobatch(**kwargs) -> ComputeGraph:
+    """SD 1.5 txt2img с отдельными backbone/guidance/solver (без batched CFG).
+    Подходит для add_controlnet_to_graph() — к этому графу можно добавить ControlNet."""
+    pretrained = kwargs.get("pretrained", "runwayml/stable-diffusion-v1-5")
+    return _build_txt2img_graph(
+        name="sd15_txt2img_nobatch",
+        backbone_config={"type": "backbone/unet2d_condition", "pretrained": pretrained, "fp16": True},
+        codec_config={"type": "codec/autoencoder_kl", "pretrained": pretrained, "fp16": True, "scaling_factor": 0.18215, "latent_channels": 4, "spatial_scale_factor": 8},
+        conditioner_configs=[{"type": "conditioner/clip_text", "pretrained": pretrained, "tokenizer_subfolder": "tokenizer", "text_encoder_subfolder": "text_encoder", "max_length": 77}],
+        guidance_config={"type": "guidance/cfg", "scale": 7.5, "guidance_rescale": 0.7},
+        solver_config={
+            "type": "diffusion/solver/ddim",
+            "eta": 0.0,
+            "beta_schedule": "scaled_linear",
+            "beta_start": 0.00085,
+            "beta_end": 0.012,
+            "num_train_timesteps": 1000,
+            "clip_sample_range": 1.0,
+            "steps_offset": 1,
+        },
+        schedule_config={"type": "noise/schedule/linear", "num_train_timesteps": 1000},
+        process_config={"type": "diffusion/process/ddpm"},
+        num_steps=kwargs.get("num_steps", 50),
+        default_width=512,
+        default_height=512,
+        use_batched_cfg=False,
+    )
+
+
 @register_template("sd15_img2img")
 def sd15_img2img(**kwargs) -> ComputeGraph:
     """SD 1.5 image-to-image: starts from encoded source image + noise."""
@@ -318,23 +391,108 @@ def sd15_inpainting(**kwargs) -> ComputeGraph:
 
 # ==================== STABLE DIFFUSION XL ====================
 
+def _build_sdxl_txt2img_graph(
+    name: str,
+    pretrained: str,
+    num_steps: int = 50,
+    guidance_scale: float = 7.5,
+    use_batched_cfg: bool = True,
+    **kwargs,
+) -> ComputeGraph:
+    """Build SDXL txt2img with dual CLIP conditioner (encoder_hidden_states + added_cond_kwargs)."""
+    from yggdrasil.core.block.builder import BlockBuilder
+    from yggdrasil.core.graph.subgraph import LoopSubGraph
+
+    graph = ComputeGraph(name)
+    graph.metadata = {
+        "default_guidance_scale": guidance_scale,
+        "default_num_steps": num_steps,
+        "default_width": 1024,
+        "default_height": 1024,
+        "latent_channels": 4,
+        "spatial_scale_factor": 8,
+        "modality": "image",
+    }
+
+    backbone_config = {"type": "backbone/unet2d_condition", "pretrained": pretrained, "fp16": True}
+    codec_config = {
+        "type": "codec/autoencoder_kl",
+        "pretrained": pretrained,
+        "fp16": True,
+        "scaling_factor": 0.13025,
+        "latent_channels": 4,
+        "spatial_scale_factor": 8,
+    }
+    guidance_config = {
+        "type": "guidance/cfg",
+        "scale": guidance_scale,
+        "guidance_rescale": 0.7,  # SDXL: reduces oversaturation, improves quality
+    }
+
+    conditioner = BlockBuilder.build({
+        "type": "conditioner/clip_sdxl",
+        "pretrained": pretrained,
+        "force_zeros_for_empty_prompt": True,
+    })
+    codec = BlockBuilder.build(codec_config)
+
+    solver_config = {
+        "type": "diffusion/solver/ddim",
+        "eta": 0.0,
+        "beta_schedule": "scaled_linear",
+        "beta_start": 0.00085,
+        "beta_end": 0.012,
+        "num_train_timesteps": 1000,
+        "steps_offset": 1,
+    }
+    solver = BlockBuilder.build(solver_config)
+
+    if use_batched_cfg:
+        step_graph = _build_denoise_step_batched_cfg(backbone_config, guidance_config, solver)
+    else:
+        backbone = BlockBuilder.build(backbone_config)
+        guidance = BlockBuilder.build(guidance_config)
+        step_graph = _build_denoise_step(backbone, guidance, solver, use_cfg=True)
+
+    loop = LoopSubGraph.create(
+        inner_graph=step_graph,
+        num_iterations=num_steps,
+        carry_vars=["latents"],
+        num_train_timesteps=1000,
+        timestep_spacing="leading",
+        steps_offset=1,
+    )
+
+    graph.add_node("conditioner", conditioner)
+    graph.add_node("denoise_loop", loop)
+    graph.add_node("codec", codec)
+
+    graph.expose_input("prompt", "conditioner", "prompt")
+    graph.expose_input("negative_prompt", "conditioner", "negative_prompt")
+    graph.expose_input("height", "conditioner", "height")
+    graph.expose_input("width", "conditioner", "width")
+    graph.expose_input("latents", "denoise_loop", "initial_latents")
+    graph.expose_input("timesteps", "denoise_loop", "timesteps")
+
+    graph.connect("conditioner", "condition", "denoise_loop", "condition")
+    graph.connect("conditioner", "uncond", "denoise_loop", "uncond")
+    graph.connect("denoise_loop", "latents", "codec", "latent")
+
+    graph.expose_output("decoded", "codec", "decoded")
+    graph.expose_output("latents", "denoise_loop", "latents")
+    return graph
+
+
 @register_template("sdxl_txt2img")
 def sdxl_txt2img(**kwargs) -> ComputeGraph:
-    """Stable Diffusion XL text-to-image with dual text encoder."""
+    """Stable Diffusion XL text-to-image with dual text encoder (CLIP L + CLIP G) and added_cond_kwargs."""
     pretrained = kwargs.get("pretrained", "stabilityai/stable-diffusion-xl-base-1.0")
-    return _build_txt2img_graph(
+    return _build_sdxl_txt2img_graph(
         name="sdxl_txt2img",
-        backbone_config={"type": "backbone/unet2d_condition", "pretrained": pretrained, "fp16": True},
-        codec_config={"type": "codec/autoencoder_kl", "pretrained": pretrained, "fp16": True, "scaling_factor": 0.13025, "latent_channels": 4},
-        conditioner_configs=[
-            {"type": "conditioner/clip_text", "pretrained": pretrained, "tokenizer_subfolder": "tokenizer", "text_encoder_subfolder": "text_encoder", "max_length": 77},
-            {"type": "conditioner/clip_text", "pretrained": pretrained, "tokenizer_subfolder": "tokenizer_2", "text_encoder_subfolder": "text_encoder_2", "max_length": 77},
-        ],
-        guidance_config={"type": "guidance/cfg", "scale": kwargs.get("guidance_scale", 7.5)},
-        solver_config={"type": "diffusion/solver/ddim", "eta": 0.0},
-        schedule_config={"type": "noise/schedule/linear", "num_train_timesteps": 1000},
-        process_config={"type": "diffusion/process/ddpm"},
+        pretrained=pretrained,
         num_steps=kwargs.get("num_steps", 50),
+        guidance_scale=kwargs.get("guidance_scale", 7.5),
+        use_batched_cfg=True,
     )
 
 

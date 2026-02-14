@@ -6,6 +6,7 @@ from .codec import AbstractLatentCodec
 from .conditioner import AbstractConditioner
 from .guidance import AbstractGuidance
 from .position import AbstractPositionEmbedder
+from .postprocess import AbstractPostProcessor
 
 __all__ = [
     "ModularDiffusionModel",
@@ -14,4 +15,5 @@ __all__ = [
     "AbstractConditioner",
     "AbstractGuidance",
     "AbstractPositionEmbedder",
+    "AbstractPostProcessor",
 ]

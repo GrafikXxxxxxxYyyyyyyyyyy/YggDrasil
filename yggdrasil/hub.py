@@ -43,6 +43,11 @@ MODEL_REGISTRY: Dict[str, Dict[str, Any]] = {
         "default_width": 1024,
         "default_height": 1024,
     },
+    "stabilityai/stable-diffusion-xl-refiner-1.0": {
+        "template": "sdxl_refiner",
+        "default_width": 1024,
+        "default_height": 1024,
+    },
     
     # SD 3
     "stabilityai/stable-diffusion-3-medium-diffusers": {

@@ -60,10 +60,14 @@ class AutoencoderKLCodec(AbstractLatentCodec):
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         z = z / self.scaling_factor
         vae_device = next(self.vae.parameters()).device
-        
-        # On MPS: decode in float32 for stability (GroupNorm/conv in fp16 can artifact)
-        # Keep VAE in float32 after first decode to avoid repeated dtype toggling
-        if vae_device.type == "mps":
+
+        # SDXL VAE in float16 produces NaN (overflow); use float32 for decode.
+        # MPS: float32 for stability (GroupNorm/conv in fp16 can artifact).
+        use_fp32_decode = (
+            vae_device.type == "mps"
+            or self.scaling_factor == 0.13025  # SDXL
+        )
+        if use_fp32_decode:
             z = z.to(device=vae_device, dtype=torch.float32)
             with torch.no_grad():
                 self.vae.to(dtype=torch.float32)
