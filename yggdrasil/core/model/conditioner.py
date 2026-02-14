@@ -22,7 +22,7 @@ class AbstractConditioner(AbstractBlock):
             "raw_condition": InputPort("raw_condition", data_type="dict", description="Raw condition (text, image, audio...)"),
             "embedding": OutputPort("embedding", spec=TensorSpec(space="embedding"), description="Condition embedding"),
             "pooled_embedding": OutputPort("pooled_embedding", spec=TensorSpec(space="embedding"), description="Pooled embedding"),
-            "attention_mask": OutputPort("attention_mask", optional=True, description="Attention mask"),
+            "attention_mask": OutputPort("attention_mask", description="Attention mask"),
         }
     
     def process(self, **port_inputs) -> dict:
@@ -36,10 +36,14 @@ class AbstractConditioner(AbstractBlock):
         out.update(result)
         
         # Find the main embedding tensor from various key names
-        emb = (result.get("encoder_hidden_states")
-               or result.get("text_emb")
-               or result.get("embedding")
-               or next(iter(result.values()), None))
+        emb = None
+        for key in ("encoder_hidden_states", "text_emb", "embedding"):
+            val = result.get(key)
+            if val is not None:
+                emb = val
+                break
+        if emb is None:
+            emb = next(iter(result.values()), None)
         
         out["embedding"] = emb
         out["encoder_hidden_states"] = emb  # backbone-compatible key

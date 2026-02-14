@@ -31,6 +31,18 @@ class UNet2DConditionBackbone(AbstractBackbone):
     ) -> torch.Tensor:
         encoder_hidden_states = condition.get("encoder_hidden_states") if condition else None
         
+        # Ensure timestep is on the same device as the model
+        # (MPS workaround: UNet time_embedding expects int/long on model device)
+        if timestep.device != x.device:
+            timestep = timestep.to(x.device)
+        
+        # Cast encoder_hidden_states to model dtype if needed
+        model_dtype = next(self.unet.parameters()).dtype
+        if encoder_hidden_states is not None and encoder_hidden_states.dtype != model_dtype:
+            encoder_hidden_states = encoder_hidden_states.to(dtype=model_dtype)
+        if x.dtype != model_dtype:
+            x = x.to(dtype=model_dtype)
+        
         return self.unet(
             sample=x,
             timestep=timestep,

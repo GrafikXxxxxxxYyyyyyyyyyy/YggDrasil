@@ -77,8 +77,14 @@ def _build_txt2img_graph(
     process_config: dict,
     position_config: dict | None = None,
     num_steps: int = 50,
+    default_width: int = 512,
+    default_height: int = 512,
 ) -> ComputeGraph:
     """Build a complete txt2img pipeline with denoising loop.
+    
+    Параметры num_steps и guidance_scale НЕ запекаются навсегда —
+    они сохраняются как defaults в metadata и могут быть переопределены
+    при вызове ``graph.execute(num_steps=..., guidance_scale=...)``.
     
     Structure:
         prompt -> conditioner ─┐
@@ -89,6 +95,16 @@ def _build_txt2img_graph(
     from yggdrasil.core.graph.subgraph import LoopSubGraph
     
     graph = ComputeGraph(name)
+    
+    # ── Metadata for runtime parameter resolution ──
+    graph.metadata = {
+        "default_guidance_scale": guidance_config.get("scale", 7.5),
+        "default_num_steps": num_steps,
+        "default_width": default_width,
+        "default_height": default_height,
+        "latent_channels": codec_config.get("latent_channels", 4),
+        "spatial_scale_factor": codec_config.get("spatial_scale_factor", 8),
+    }
     
     # Build blocks
     backbone = BlockBuilder.build(backbone_config)
@@ -134,10 +150,9 @@ def _build_txt2img_graph(
         )
     
     # Connect first conditioner's embedding to loop's condition input
-    # (for multi-conditioner, user can customize after template creation)
     graph.connect("conditioner_0", "embedding", "denoise_loop", "condition")
     
-    # Noise input -> loop
+    # Noise input -> loop (optional: auto-generated if not provided)
     graph.expose_input("latents", "denoise_loop", "initial_latents")
     
     # Optional: timesteps input
@@ -157,18 +172,27 @@ def _build_txt2img_graph(
 
 @register_template("sd15_txt2img")
 def sd15_txt2img(**kwargs) -> ComputeGraph:
-    """Stable Diffusion 1.5 text-to-image pipeline (full, with denoising loop)."""
+    """Stable Diffusion 1.5 text-to-image pipeline (full, with denoising loop).
+    
+    Использование::
+    
+        graph = ComputeGraph.from_template("sd15_txt2img", device="cuda")
+        outputs = graph.execute(prompt="a cat", guidance_scale=7.5, num_steps=28, seed=42)
+        image = outputs["decoded"]
+    """
     pretrained = kwargs.get("pretrained", "stable-diffusion-v1-5/stable-diffusion-v1-5")
     return _build_txt2img_graph(
         name="sd15_txt2img",
         backbone_config={"type": "backbone/unet2d_condition", "pretrained": pretrained, "fp16": True},
-        codec_config={"type": "codec/autoencoder_kl", "pretrained": pretrained, "fp16": True, "scaling_factor": 0.18215, "latent_channels": 4},
+        codec_config={"type": "codec/autoencoder_kl", "pretrained": pretrained, "fp16": True, "scaling_factor": 0.18215, "latent_channels": 4, "spatial_scale_factor": 8},
         conditioner_configs=[{"type": "conditioner/clip_text", "pretrained": pretrained, "tokenizer_subfolder": "tokenizer", "text_encoder_subfolder": "text_encoder", "max_length": 77}],
-        guidance_config={"type": "guidance/cfg", "scale": kwargs.get("guidance_scale", 7.5)},
+        guidance_config={"type": "guidance/cfg", "scale": 7.5},
         solver_config={"type": "diffusion/solver/ddim", "eta": 0.0},
         schedule_config={"type": "noise/schedule/linear", "num_train_timesteps": 1000},
         process_config={"type": "diffusion/process/ddpm"},
         num_steps=kwargs.get("num_steps", 50),
+        default_width=512,
+        default_height=512,
     )
 
 

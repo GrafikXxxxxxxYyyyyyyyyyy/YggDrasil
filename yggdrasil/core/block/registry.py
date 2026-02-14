@@ -37,12 +37,17 @@ class BlockRegistry:
     
     @classmethod
     def _auto_discover(cls):
-        """Автоматически импортирует все блоки из blocks/ и plugins/."""
+        """Автоматически импортирует все блоки из blocks/ и plugins/ (рекурсивно)."""
         for package in ["yggdrasil.blocks", "yggdrasil.plugins"]:
             try:
-                package_path = importlib.import_module(package).__path__
-                for _, name, _ in pkgutil.iter_modules(package_path):
-                    importlib.import_module(f"{package}.{name}")
+                pkg = importlib.import_module(package)
+                for importer, name, ispkg in pkgutil.walk_packages(
+                    pkg.__path__, prefix=f"{package}."
+                ):
+                    try:
+                        importlib.import_module(name)
+                    except Exception:
+                        pass
             except Exception:
                 pass  # Пакет может отсутствовать
 
@@ -54,30 +59,23 @@ list_blocks = BlockRegistry.list_blocks
 
 
 def auto_discover():
-    """Auto-import all modules from core/ and blocks/ to register blocks."""
-    packages = [
-        "yggdrasil.core.block",
-        "yggdrasil.core.model",
-        "yggdrasil.core.diffusion",
-        "yggdrasil.core.diffusion.solver",
-        "yggdrasil.core.diffusion.noise",
-        "yggdrasil.core.engine",
-        "yggdrasil.blocks.adapters",
-        "yggdrasil.blocks.backbones",
-        "yggdrasil.blocks.codecs",
-        "yggdrasil.blocks.conditioners",
-        "yggdrasil.blocks.guidances",
-        "yggdrasil.blocks.positions",
+    """Auto-import all modules from core/ and blocks/ to register blocks.
+    
+    Uses walk_packages for recursive discovery.
+    """
+    root_packages = [
+        "yggdrasil.core",
+        "yggdrasil.blocks",
         "yggdrasil.training",
     ]
     
-    for pkg in packages:
+    for root in root_packages:
         try:
-            package = importlib.import_module(pkg)
-            if hasattr(package, "__path__"):
-                for _, module_name, _ in pkgutil.iter_modules(package.__path__):
+            pkg = importlib.import_module(root)
+            if hasattr(pkg, "__path__"):
+                for _, name, _ in pkgutil.walk_packages(pkg.__path__, prefix=f"{root}."):
                     try:
-                        importlib.import_module(f"{pkg}.{module_name}")
+                        importlib.import_module(name)
                     except Exception:
                         pass
         except Exception:

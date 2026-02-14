@@ -18,6 +18,20 @@ Build your diffusion like Lego, even if it hasn't been invented yet.
 """
 __version__ = "0.1.0"
 
+# Workaround: TensorFlow Metal конфликтует с PyTorch MPS при параллельной загрузке.
+# Предотвращаем краш "platform is already registered with name: METAL",
+# патчим __spec__ на уже-загруженных стабах tensorflow, чтобы diffusers мог импортироваться.
+def _patch_tensorflow_compat():
+    import sys
+    tf = sys.modules.get("tensorflow")
+    if tf is not None and getattr(tf, "__spec__", None) is None:
+        import importlib.machinery
+        tf.__spec__ = importlib.machinery.ModuleSpec("tensorflow", None)
+        if not hasattr(tf, "__path__"):
+            tf.__path__ = []
+
+_patch_tensorflow_compat()
+
 # Авто-регистрация блоков
 from yggdrasil.core.block.registry import auto_discover as _auto_discover
 _auto_discover()

@@ -72,6 +72,72 @@ class ComputeGraph:
         self.graph_inputs: Dict[str, List[Tuple[str, str]]] = {}   # input_name -> [(node, port), ...]
         self.graph_outputs: Dict[str, Tuple[str, str]] = {}        # output_name -> (node, port)
         self.metadata: Dict[str, Any] = {}
+        # Device tracking
+        self._device: Any = None
+        self._dtype: Any = None
+    
+    # ==================== DEVICE MANAGEMENT ====================
+    
+    def to(self, device=None, dtype=None) -> ComputeGraph:
+        """Перенести весь граф на устройство.
+        
+        Рекурсивно переносит все узлы, включая вложенные SubGraph.
+        На MPS автоматически использует float32 (fp16 нестабилен).
+        
+        Args:
+            device: Устройство ("cuda", "mps", "cpu", torch.device).
+            dtype: Тип данных (torch.float16, torch.float32).
+                   Если None — выбирается автоматически по устройству.
+        
+        Returns:
+            self (для chaining).
+        """
+        import torch
+        
+        if isinstance(device, str):
+            device = torch.device(device)
+        
+        self._device = device
+        
+        # Auto-resolve dtype: MPS/CPU → float32, CUDA → float16
+        if dtype is None and device is not None:
+            device_type = device.type if hasattr(device, 'type') else str(device)
+            if device_type in ("mps", "cpu"):
+                dtype = torch.float32
+            else:
+                dtype = torch.float16
+        self._dtype = dtype
+        
+        # Move all nodes recursively
+        for name, block in self.nodes.items():
+            self._move_block(block, device, dtype)
+            # Recurse into SubGraphs (LoopSubGraph, SubGraph)
+            if hasattr(block, 'graph') and block.graph is not None:
+                block.graph.to(device, dtype)
+        
+        return self
+    
+    @staticmethod
+    def _move_block(block, device, dtype):
+        """Move a single block to device/dtype."""
+        if not hasattr(block, 'to'):
+            return
+        try:
+            if dtype is not None:
+                block.to(device=device, dtype=dtype)
+            else:
+                block.to(device)
+        except TypeError:
+            # Some blocks don't accept dtype
+            try:
+                block.to(device)
+            except Exception:
+                pass
+    
+    @property
+    def device(self):
+        """Текущее устройство графа."""
+        return self._device
     
     # ==================== СБОРКА ГРАФА ====================
     
@@ -326,6 +392,8 @@ class ComputeGraph:
         new_graph.graph_inputs = {k: list(v) for k, v in self.graph_inputs.items()}
         new_graph.graph_outputs = dict(self.graph_outputs)
         new_graph.metadata = dict(self.metadata)
+        new_graph._device = self._device
+        new_graph._dtype = self._dtype
         return new_graph
     
     # ==================== ВАЛИДАЦИЯ ====================
@@ -479,8 +547,14 @@ class ComputeGraph:
         
         # Build edges: "src.port -> dst.port" or [src.port, dst.port]
         for edge_def in conf.get("edges", []):
-            if isinstance(edge_def, (list, tuple)):
-                src_spec, dst_spec = edge_def[0], edge_def[1]
+            if isinstance(edge_def, str):
+                pass  # fall through to string parsing below
+            elif hasattr(edge_def, '__getitem__') and len(edge_def) >= 2:
+                src_spec, dst_spec = str(edge_def[0]), str(edge_def[1])
+                src_node, src_port = src_spec.split(".", 1)
+                dst_node, dst_port = dst_spec.split(".", 1)
+                graph.connect(src_node.strip(), src_port.strip(), dst_node.strip(), dst_port.strip())
+                continue
             else:
                 # String format: "src.port -> dst.port"
                 parts = str(edge_def).split("->")
@@ -493,9 +567,13 @@ class ComputeGraph:
         
         # Graph inputs (supports fan-out: list of [node, port] pairs)
         for input_name, mapping in conf.get("inputs", {}).items():
-            if isinstance(mapping, (list, tuple)):
+            if isinstance(mapping, str):
+                node, port = mapping.split(".", 1)
+                graph.expose_input(input_name, node.strip(), port.strip())
+            elif hasattr(mapping, '__getitem__') and len(mapping) >= 2:
                 # Check if it's a list of pairs (fan-out) or a single pair
-                if len(mapping) > 0 and isinstance(mapping[0], (list, tuple)):
+                first = mapping[0]
+                if hasattr(first, '__getitem__') and not isinstance(first, str) and len(first) >= 2:
                     # Fan-out: [[node, port], [node, port], ...]
                     for pair in mapping:
                         graph.expose_input(input_name, str(pair[0]), str(pair[1]))
@@ -508,7 +586,10 @@ class ComputeGraph:
         
         # Graph outputs
         for output_name, mapping in conf.get("outputs", {}).items():
-            if isinstance(mapping, (list, tuple)):
+            if isinstance(mapping, str):
+                node, port = mapping.split(".", 1)
+                graph.expose_output(output_name, node.strip(), port.strip())
+            elif hasattr(mapping, '__getitem__') and len(mapping) >= 2:
                 graph.expose_output(output_name, str(mapping[0]), str(mapping[1]))
             else:
                 node, port = str(mapping).split(".", 1)
@@ -630,24 +711,158 @@ class ComputeGraph:
     # ==================== CLASS METHODS ====================
     
     @classmethod
-    def from_template(cls, template_name: str, **kwargs) -> ComputeGraph:
+    def from_template(
+        cls,
+        template_name: str,
+        *,
+        device: Any = None,
+        dtype: Any = None,
+        **kwargs,
+    ) -> ComputeGraph:
         """Создать граф из именованного шаблона.
         
         Args:
-            template_name: Имя шаблона (например "sd15_txt2img", "flux_txt2img").
-            **kwargs: Параметры для шаблона.
+            template_name: Имя шаблона ("sd15_txt2img", "flux_txt2img", ...).
+            device: Устройство ("cuda", "mps", "cpu"). Если указано,
+                    граф сразу переносится на устройство.
+            dtype: Тип данных. Если None — выбирается автоматически.
+            **kwargs: Доп. параметры шаблона (pretrained, ...).
         
         Returns:
-            Готовый ComputeGraph.
+            Готовый ComputeGraph (уже на устройстве, если указан device).
+        
+        Пример::
+        
+            graph = ComputeGraph.from_template("sd15_txt2img", device="cuda")
+            outputs = graph.execute(prompt="a cat", num_steps=28)
         """
         from yggdrasil.core.graph.templates import get_template
         builder_fn = get_template(template_name)
-        return builder_fn(**kwargs)
+        graph = builder_fn(**kwargs)
+        if device is not None:
+            graph.to(device, dtype)
+        return graph
     
-    def execute(self, **inputs: Any) -> Dict[str, Any]:
-        """Выполнить граф с данными входами.
+    def execute(self, *, prompt=None, **kwargs: Any) -> Dict[str, Any]:
+        """Выполнить граф.
         
-        Shortcut для ``GraphExecutor().execute(self, **inputs)``.
+        Принимает как высокоуровневые, так и низкоуровневые параметры.
+        
+        High-level (авто-транслируются в graph inputs):
+            prompt: str или dict — текстовый промпт
+            negative_prompt: str — негативный промпт
+            guidance_scale: float — сила CFG (по умолчанию из metadata)
+            num_steps: int — кол-во шагов деноизинга
+            width: int — ширина изображения (default 512)
+            height: int — высота изображения (default 512)
+            seed: int — сид для воспроизводимости
+            batch_size: int — размер батча (default 1)
+        
+        Low-level (передаются напрямую как graph inputs):
+            latents, timesteps, condition, и т.д.
+        
+        Пример::
+        
+            # Минимальный вызов
+            outputs = graph.execute(prompt="a beautiful cat")
+            
+            # С параметрами
+            outputs = graph.execute(
+                prompt="a beautiful cat",
+                guidance_scale=7.5,
+                num_steps=28,
+                seed=42,
+                width=512,
+                height=512,
+            )
+            
+            # Low-level (ручное управление)
+            outputs = graph.execute(
+                prompt={"text": "a cat"},
+                latents=my_noise_tensor,
+            )
+        
+        Returns:
+            Dict с выходами графа (ключи = expose_output имена).
         """
+        import torch
         from .executor import GraphExecutor
-        return GraphExecutor().execute(self, **inputs)
+        
+        # ── 1. Extract runtime overrides (fallback to metadata defaults) ──
+        guidance_scale = kwargs.pop("guidance_scale", None)
+        num_steps = kwargs.pop("num_steps", None)
+        width = kwargs.pop("width", self.metadata.get("default_width", 512))
+        height = kwargs.pop("height", self.metadata.get("default_height", 512))
+        seed = kwargs.pop("seed", None)
+        batch_size = kwargs.pop("batch_size", 1)
+        negative_prompt = kwargs.pop("negative_prompt", None)
+        
+        # ── 2. Apply runtime overrides to nodes ──
+        # Guidance scale: explicit > metadata default > no change
+        if guidance_scale is not None:
+            self._apply_guidance_scale(guidance_scale)
+        # Num steps: explicit > metadata default (always applied to ensure
+        # the loop is properly configured even on re-execution)
+        if num_steps is not None:
+            self._apply_num_steps(num_steps)
+        
+        # ── 3. Normalize prompt ──
+        if prompt is not None:
+            if isinstance(prompt, str):
+                prompt = {"text": prompt}
+            kwargs["prompt"] = prompt
+        
+        # ── 4. Auto-generate noise if latents not provided ──
+        if "latents" not in kwargs:
+            kwargs["latents"] = self._make_noise(
+                batch_size=batch_size, width=width, height=height, seed=seed,
+            )
+        
+        # ── 5. Execute ──
+        return GraphExecutor().execute(self, **kwargs)
+    
+    # ── Runtime helpers ──
+    
+    def _apply_guidance_scale(self, scale: float):
+        """Set guidance scale on all guidance nodes (including inner graphs)."""
+        for _, block in self._iter_all_blocks():
+            bt = getattr(block, 'block_type', '')
+            if 'guidance' in bt and hasattr(block, 'scale'):
+                block.scale = scale
+    
+    def _apply_num_steps(self, num_steps: int):
+        """Set num_iterations on all loop nodes."""
+        for _, block in self._iter_all_blocks():
+            if hasattr(block, 'num_iterations'):
+                block.num_iterations = num_steps
+    
+    def _make_noise(self, batch_size=1, width=512, height=512, seed=None):
+        """Generate initial noise latents based on graph metadata."""
+        import torch
+        channels = self.metadata.get("latent_channels", 4)
+        scale = self.metadata.get("spatial_scale_factor", 8)
+        h, w = height // scale, width // scale
+        
+        device = self._device or torch.device("cpu")
+        device_type = device.type if hasattr(device, 'type') else str(device)
+        
+        # MPS workaround: generate on CPU then move
+        if seed is not None:
+            if device_type == "mps":
+                g = torch.Generator().manual_seed(seed)
+                noise = torch.randn(batch_size, channels, h, w, generator=g)
+            else:
+                g = torch.Generator(device).manual_seed(seed)
+                noise = torch.randn(batch_size, channels, h, w, device=device, generator=g)
+        else:
+            noise = torch.randn(batch_size, channels, h, w)
+        
+        return noise.to(device)
+    
+    def _iter_all_blocks(self):
+        """Итерация по ВСЕМ блокам, включая вложенные SubGraph."""
+        for name, block in self.nodes.items():
+            yield name, block
+            if hasattr(block, 'graph') and block.graph is not None:
+                for inner_name, inner_block in block.graph.nodes.items():
+                    yield f"{name}.{inner_name}", inner_block
