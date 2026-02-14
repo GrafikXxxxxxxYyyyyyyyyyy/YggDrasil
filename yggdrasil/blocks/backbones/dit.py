@@ -171,12 +171,13 @@ class DiTBackbone(AbstractBackbone):
         t_emb = self._timestep_embedding(timestep)
         t_emb = self.time_embed(t_emb)
         
-        # 4. Text/class conditioning
-        cond_emb = torch.zeros_like(t_emb)
+        # 4. Text/class conditioning (cast to same dtype as model for mixed precision)
+        model_dtype = next(self.parameters()).dtype
+        cond_emb = torch.zeros_like(t_emb, dtype=model_dtype)
         if condition is not None:
             for key in ["encoder_hidden_states", "text_emb", "class_emb"]:
                 if key in condition:
-                    c = condition[key]
+                    c = condition[key].to(dtype=model_dtype, device=x.device)
                     if c.dim() == 3:
                         c = c.mean(dim=1)  # Pool sequence dim
                     cond_emb = cond_emb + self.cond_proj(c)

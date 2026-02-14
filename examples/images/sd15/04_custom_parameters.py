@@ -5,7 +5,7 @@
 без пересборки графа. Меняем силу текста, число шагов и негативный промпт.
 
 Запуск:
-    python examples/sd15/04_custom_parameters.py
+    python examples/images/sd15/04_custom_parameters.py
 """
 import torch
 from yggdrasil.pipeline import Pipeline

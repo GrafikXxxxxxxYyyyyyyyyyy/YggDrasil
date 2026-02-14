@@ -7,8 +7,8 @@ ControlNet (по умолчанию Canny). Для работы нужен ко�
 промпту и при наличии пути к изображению использует его как референс.
 
 Запуск:
-    python examples/sd15/09_controlnet.py
-    python examples/sd15/09_controlnet.py path/to/reference.png
+    python examples/images/sd15/09_controlnet.py
+    python examples/images/sd15/09_controlnet.py path/to/reference.png
 """
 import sys
 from pathlib import Path

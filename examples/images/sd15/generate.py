@@ -2,7 +2,7 @@
 """Stable Diffusion 1.5 — простой пример генерации изображения.
 
 Запуск:
-    python examples/sd15/generate.py
+    python examples/images/sd15/generate.py
 
 Модель скачивается автоматически с HuggingFace при первом запуске.
 Требуется ~5 GB свободного места на диске.
@@ -26,9 +26,11 @@ def main():
     print(f"Устройство: {device}")
 
     # ── Создаём пайплайн из шаблона SD 1.5 ──
+    # На CUDA явно задаём float16 (экономия памяти и скорость). Без dtype блоки сохраняют
+    # свой dtype из шаблона: UNet/VAE в fp16, CLIP в fp32 (для совместимости с MPS).
     t0 = time.time()
     print("Загрузка модели Stable Diffusion 1.5...")
-    pipe = Pipeline.from_template("sd15_txt2img", device=device)
+    pipe = Pipeline.from_template("sd15_txt2img", device=device, dtype=torch.float16)
     print(f"Пайплайн готов за {time.time() - t0:.1f}с: {pipe}")
 
     # ── Диагностика: проверяем device и dtype ──

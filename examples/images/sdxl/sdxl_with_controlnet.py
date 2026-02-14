@@ -6,10 +6,10 @@
 (или используйте готовую depth-карту).
 
 Usage:
-    python examples/sdxl/sdxl_with_controlnet.py --control_image "https://example.com/photo.png"
-    python examples/sdxl/sdxl_with_controlnet.py --control_image path/to/depth.png
+    python examples/images/sdxl/sdxl_with_controlnet.py --control_image "https://example.com/photo.png"
+    python examples/images/sdxl/sdxl_with_controlnet.py --control_image path/to/depth.png
     # Canny вместо depth:
-    python examples/sdxl/sdxl_with_controlnet.py --controlnet xinsir/controlnet-sdxl-1.0-canny --control_image canny.png
+    python examples/images/sdxl/sdxl_with_controlnet.py --controlnet xinsir/controlnet-sdxl-1.0-canny --control_image canny.png
 """
 import argparse
 

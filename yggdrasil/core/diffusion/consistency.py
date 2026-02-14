@@ -18,3 +18,6 @@ class ConsistencyProcess(AbstractDiffusionProcess):
     
     def predict_x0(self, model_output, xt, t):
         return model_output
+
+    def predict_velocity(self, model_output, xt, t):
+        return model_output  # consistency predicts x0; velocity interface for compatibility

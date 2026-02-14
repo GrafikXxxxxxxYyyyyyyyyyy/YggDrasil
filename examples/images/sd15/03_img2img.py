@@ -6,8 +6,8 @@
 Полный img2img (старт из encoded image + noise) требует передачи латентов вручную.
 
 Запуск:
-    python examples/sd15/03_img2img.py
-    python examples/sd15/03_img2img.py path/to/image.png
+    python examples/images/sd15/03_img2img.py
+    python examples/images/sd15/03_img2img.py path/to/image.png
 """
 import sys
 from pathlib import Path

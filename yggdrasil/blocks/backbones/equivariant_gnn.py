@@ -143,9 +143,11 @@ class EquivariantGNNBackbone(AbstractBackbone):
             timestep: [B] timestep
             condition: Optional dict with 'coordinates', 'atom_types', etc.
         """
-        # Handle different input formats
-        if x.dim() == 3 and x.shape[-1] > x.shape[1]:
+        # Handle different input formats: [B, N, D+3] vs [B, D+3, N]
+        transposed = False
+        if x.dim() == 3 and x.shape[1] == self.in_features + self.coord_dim:
             x = x.transpose(1, 2)  # [B, C, N] -> [B, N, C]
+            transposed = True
         
         B = x.shape[0]
         
@@ -177,8 +179,8 @@ class EquivariantGNNBackbone(AbstractBackbone):
         # Combine features and coordinates
         output = torch.cat([feat_out, coord_out], dim=-1)
         
-        # Return in input format
-        if x.dim() == 3:
+        # Return in input format (transpose back only if input was [B, C, N])
+        if transposed:
             output = output.transpose(1, 2)  # [B, N, C] -> [B, C, N]
         
         return output

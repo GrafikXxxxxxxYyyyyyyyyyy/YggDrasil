@@ -42,7 +42,7 @@ class AbstractBackbone(AbstractBlock, nn.Module):
             "timestep": InputPort("timestep", data_type="tensor", description="Timestep"),
             "condition": InputPort("condition", data_type="dict", optional=True, description="Condition embeddings"),
             "position_embedding": InputPort("position_embedding", optional=True, description="Position embedding"),
-            "adapter_features": InputPort("adapter_features", data_type="list", optional=True, description="Adapter features (ControlNet, T2I)"),
+            "adapter_features": InputPort("adapter_features", data_type="any", optional=True, description="Adapter features (ControlNet, T2I) — dict or list of dicts"),
             "output": OutputPort("output", spec=TensorSpec(space="latent"), description="Denoised output"),
         }
     

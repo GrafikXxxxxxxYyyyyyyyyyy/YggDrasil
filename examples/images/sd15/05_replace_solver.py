@@ -6,7 +6,7 @@
 Демонстрирует graph.replace_node() и вложенную структуру LoopSubGraph.
 
 Запуск:
-    python examples/sd15/05_replace_solver.py
+    python examples/images/sd15/05_replace_solver.py
 """
 import torch
 from yggdrasil.pipeline import Pipeline

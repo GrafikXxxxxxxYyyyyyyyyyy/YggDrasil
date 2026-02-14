@@ -3,20 +3,22 @@ from __future__ import annotations
 
 import torch
 from omegaconf import DictConfig
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
-from diffusers import T2IAdapter
-from diffusers.models import UNet2DConditionModel   # ← ИСПРАВЛЕНО здесь
+from diffusers import T2IAdapter as DiffusersT2IAdapter
+from diffusers.models import UNet2DConditionModel
 
 from yggdrasil.core.block.registry import register_block
+from yggdrasil.core.block.port import InputPort, OutputPort
 from yggdrasil.core.block.slot import Slot
+from yggdrasil.core.block.base import AbstractBlock
 from .base import AbstractAdapter
 from yggdrasil.core.model.backbone import AbstractBackbone
 
 
 @register_block("adapter/t2i")
 class T2IAdapter(AbstractAdapter):
-    """T2I-Adapter — лёгкий структурный контроллер."""
+    """T2I-Adapter — лёгкий структурный контроллер. Может использоваться как узел графа (control_image -> output) или через inject_into."""
     
     block_type = "adapter/t2i"
     
@@ -29,13 +31,45 @@ class T2IAdapter(AbstractAdapter):
         )
         self.scale = config.get("scale", 1.0)
         
-        self.t2i_adapter = T2IAdapter.from_pretrained(
+        self.t2i_adapter = DiffusersT2IAdapter.from_pretrained(
             self.pretrained,
             torch_dtype=torch.float16 if config.get("fp16", True) else torch.float32,
         )
         self.t2i_adapter.requires_grad_(config.get("trainable", False))
         
         self.adapter_features: Optional[torch.Tensor] = None
+
+    @classmethod
+    def declare_io(cls):
+        return {
+            "control_image": InputPort("control_image", description="Conditioning image (depth, sketch, etc.)", optional=True),
+            "sample": InputPort("sample", description="Noisy latent sample", optional=True),
+            "timestep": InputPort("timestep", description="Timestep", optional=True),
+            "encoder_hidden_states": InputPort("encoder_hidden_states", description="Text embeddings", optional=True),
+            "output": OutputPort("output", description="Dict for backbone adapter_features (down_block_additional_residuals, mid_block_additional_residual)"),
+        }
+    
+    def process(self, **kw) -> Dict[str, Any]:
+        """Node mode: take control_image and return adapter_features for backbone. When control_image is None, return zero residuals."""
+        control_image = kw.get("control_image")
+        if control_image is None or self.t2i_adapter is None:
+            return {"output": {"down_block_additional_residuals": None, "mid_block_additional_residual": None}}
+        target_dtype = next(self.t2i_adapter.parameters()).dtype
+        target_device = next(self.t2i_adapter.parameters()).device
+        if control_image.dtype != target_dtype or control_image.device != target_device:
+            control_image = control_image.to(device=target_device, dtype=target_dtype)
+        if control_image.max() > 1.0:
+            control_image = (control_image + 1.0) / 2.0
+        with torch.no_grad():
+            out = self.t2i_adapter(control_image)
+        if isinstance(out, (tuple, list)):
+            down_res = [x * self.scale for x in out]
+            mid_res = None
+        else:
+            down_res = out if isinstance(out, list) else [out]
+            down_res = [x * self.scale for x in down_res]
+            mid_res = None
+        return {"output": {"down_block_additional_residuals": down_res, "mid_block_additional_residual": mid_res}}
     
     def _define_slots(self):
         return {

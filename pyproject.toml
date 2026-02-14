@@ -9,7 +9,30 @@ description = "YggDrasil — Universal Lego Diffusion Framework for any modality
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
-
+authors = [
+    {name = "YggDrasil Contributors"}
+]
+keywords = [
+    "diffusion",
+    "generative",
+    "stable-diffusion",
+    "flux",
+    "image-generation",
+    "video-generation",
+    "audio-generation",
+    "machine-learning",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     # Core
     "torch>=2.3.0",
@@ -32,6 +55,11 @@ dependencies = [
     # UI
     "gradio>=4.20.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/your-org/YggDrasil"
+Repository = "https://github.com/your-org/YggDrasil"
+Documentation = "https://github.com/your-org/YggDrasil#readme"
 
 [project.optional-dependencies]
 # Полная установка со всеми зависимостями

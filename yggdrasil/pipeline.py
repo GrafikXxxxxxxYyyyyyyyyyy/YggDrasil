@@ -252,18 +252,20 @@ class Pipeline:
         except ImportError:
             pass
         
-        # Also check the template registry if it exists
+        # Template registry (all @register_template: image, audio, video, ...)
         try:
-            templates = ComputeGraph._template_registry
-            for name, builder in templates.items():
+            from yggdrasil.core.graph.templates import list_templates
+            for name in list_templates():
                 if name not in available:
-                    doc = (builder.__doc__ or "").strip().split("\n")[0]
+                    from yggdrasil.core.graph.templates import get_template
+                    builder = get_template(name)
+                    doc = (getattr(builder, "__doc__") or "").strip().split("\n")[0]
                     available[name] = {
                         "description": doc,
-                        "builder": builder.__name__,
+                        "builder": getattr(builder, "__name__", name),
                         "modality": _guess_modality(name),
                     }
-        except AttributeError:
+        except Exception:
             pass
         
         # Add hub models
@@ -279,6 +281,32 @@ class Pipeline:
         
         return available
     
+    @staticmethod
+    def list_audio_templates() -> Dict[str, str]:
+        """Список аудио-шаблонов (имя → краткое описание). Единая система генерации звука."""
+        try:
+            from yggdrasil.core.graph.templates.audio_pipelines import list_audio_templates
+            return list_audio_templates()
+        except ImportError:
+            return {
+                k: v.get("description", k)
+                for k, v in Pipeline.list_available().items()
+                if v.get("modality") == "audio"
+            }
+
+    @staticmethod
+    def list_video_templates() -> Dict[str, str]:
+        """Список видео-шаблонов (имя → краткое описание). Генерация видео и анимация изображений."""
+        try:
+            from yggdrasil.core.graph.templates.video_pipelines import list_video_templates
+            return list_video_templates()
+        except ImportError:
+            return {
+                k: v.get("description", k)
+                for k, v in Pipeline.list_available().items()
+                if v.get("modality") == "video"
+            }
+
     def __call__(
         self,
         prompt: Union[str, Dict[str, Any], None] = None,
@@ -354,8 +382,8 @@ class Pipeline:
         if "width" in graph_input_names and "width" not in kwargs:
             kwargs["width"] = width
 
-        # ── Resolve image inputs from URL or path (control_image, ip_image, source_image) ──
-        for key in ("control_image", "ip_image", "source_image"):
+        # ── Resolve image inputs from URL or path (control_image, t2i_control_image, ip_image, source_image) ──
+        for key in ("control_image", "t2i_control_image", "ip_image", "source_image"):
             if key not in kwargs:
                 continue
             val = kwargs[key]
@@ -371,7 +399,7 @@ class Pipeline:
                 # IP-Adapter / CLIP vision expect dict with "image" or raw image
                 kwargs[key] = {"image": pil_img}
             else:
-                # control_image, source_image: tensor (1, 3, H, W) in [0, 1], resized to generation size
+                # control_image, t2i_control_image, source_image: tensor (1, 3, H, W) in [0, 1], resized to generation size
                 t = _pil_to_tensor(pil_img)
                 if t.shape[2] != height or t.shape[3] != width:
                     t = torch.nn.functional.interpolate(
@@ -381,11 +409,32 @@ class Pipeline:
                     t = t.to(self.graph._device)
                 kwargs[key] = t
 
+        # ── Use scheduler's timesteps in the loop (diffusers parity: Euler, PNDM, etc.)
+        if "timesteps" not in kwargs and "timesteps" in graph_input_names:
+            use_scheduler = meta.get("use_euler_init_sigma") or meta.get("use_scheduler_timesteps")
+            if use_scheduler:
+                num_steps = meta.get("default_num_steps", 50)
+                for _, block in self.graph._iter_all_blocks():
+                    if hasattr(block, "num_iterations"):
+                        num_steps = block.num_iterations
+                        break
+                device = self.graph._device or torch.device("cpu")
+                for _, block in self.graph._iter_all_blocks():
+                    if hasattr(block, "set_timesteps") and hasattr(block, "scheduler"):
+                        block.set_timesteps(num_steps, device)
+                        kwargs["timesteps"] = block.scheduler.timesteps.clone().to(device=device)
+                        break
+
         # ── Generate noise (only if graph expects latents and none provided) ──
         if "latents" in graph_input_names and "latents" not in kwargs:
             if meta.get("modality") == "audio":
                 kwargs["latents"] = self._make_noise_audio(
                     batch_size=batch_size, seed=seed, meta=meta,
+                )
+            elif meta.get("modality") == "video":
+                num_frames = kwargs.get("num_frames") or meta.get("num_frames", 16)
+                kwargs["latents"] = self._make_noise_video(
+                    batch_size=batch_size, num_frames=num_frames, width=width, height=height, seed=seed, meta=meta,
                 )
             else:
                 kwargs["latents"] = self._make_noise(
@@ -453,10 +502,25 @@ class Pipeline:
         channels = meta.get("latent_channels", 4)
         scale = meta.get("spatial_scale_factor", 8)
         h, w = height // scale, width // scale
-        
+
         device = self.graph._device or torch.device("cpu")
-        device_type = device.type if hasattr(device, 'type') else str(device)
-        
+        device_type = device.type if hasattr(device, "type") else str(device)
+
+        init_sigma = meta.get("init_noise_sigma")
+        if init_sigma is None and meta.get("use_euler_init_sigma"):
+            num_steps = meta.get("default_num_steps", 50)
+            for _, block in self.graph._iter_all_blocks():
+                if hasattr(block, "num_iterations"):
+                    num_steps = block.num_iterations
+                    break
+            for _, block in self.graph._iter_all_blocks():
+                if getattr(block, "block_type", "") == "solver/euler_discrete":
+                    block.set_timesteps(num_steps, device)
+                    init_sigma = block.init_noise_sigma
+                    break
+        if init_sigma is None:
+            init_sigma = 1.0
+
         # Use float32 for initial noise so the denoising loop accumulates in float32 (avoids banding; diffusers does this on MPS)
         dtype = torch.float32 if device_type == "mps" else torch.get_default_dtype()
         if seed is not None:
@@ -469,18 +533,35 @@ class Pipeline:
         else:
             noise = torch.randn(batch_size, channels, h, w, dtype=dtype)
 
-        init_sigma = meta.get("init_noise_sigma", 1.0)
         if init_sigma != 1.0:
             noise = noise * init_sigma
 
         return noise.to(device=device, dtype=dtype)
 
+    def _make_noise_video(self, batch_size=1, num_frames=16, width=512, height=512, seed=None, meta=None):
+        """Initial noise for video pipelines: (batch, channels, num_frames, H, W)."""
+        meta = meta or self.graph.metadata
+        channels = int(meta.get("latent_channels", 4))
+        scale = int(meta.get("spatial_scale_factor", 8))
+        h, w = height // scale, width // scale
+        device = self.graph._device or torch.device("cpu")
+        dtype = torch.get_default_dtype()
+        init_sigma = meta.get("init_noise_sigma", 1.0)
+        if seed is not None:
+            g = torch.Generator(device=device).manual_seed(seed)
+            noise = torch.randn(batch_size, channels, int(num_frames), h, w, device=device, dtype=dtype, generator=g)
+        else:
+            noise = torch.randn(batch_size, channels, int(num_frames), h, w, device=device, dtype=dtype)
+        if init_sigma != 1.0:
+            noise = noise * init_sigma
+        return noise
+
     def _make_noise_audio(self, batch_size=1, seed=None, meta=None):
         """Initial noise for audio pipelines: (batch, latent_channels, H, W) from metadata."""
         meta = meta or self.graph.metadata
-        channels = meta.get("latent_channels", 8)
-        h = meta.get("default_audio_latent_height", 256)
-        w = meta.get("default_audio_latent_width", 16)
+        channels = int(meta.get("latent_channels", 8))
+        h = int(meta.get("default_audio_latent_height", 256))
+        w = int(meta.get("default_audio_latent_width", 16))
         device = self.graph._device or torch.device("cpu")
         dtype = torch.get_default_dtype()
         if seed is not None:

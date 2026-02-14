@@ -2,8 +2,8 @@
 """Generate an image with Stable Diffusion XL (1024x1024, dual text encoder, added_cond_kwargs).
 
 Usage:
-    python examples/sdxl/generate_sdxl.py
-    python examples/sdxl/generate_sdxl.py --prompt "a photo of an astronaut" --height 768 --width 768
+    python examples/images/sdxl/generate_sdxl.py
+    python examples/images/sdxl/generate_sdxl.py --prompt "a photo of an astronaut" --height 768 --width 768
 """
 import argparse
 from pathlib import Path

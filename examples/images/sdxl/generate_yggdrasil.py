@@ -6,9 +6,9 @@
 LoRA: OnMoon/loras (и другие репозитории в формате diffusers).
 
 Usage:
-    python examples/sdxl/generate_yggdrasil.py --prompt "A cat on the floor" --seed 42
-    python examples/sdxl/generate_yggdrasil.py --checkpoint OnMoon/sdxl_PhotorealisticMix
-    python examples/sdxl/generate_yggdrasil.py --lora OnMoon/loras --lora_weight SomeLora.safetensors
+    python examples/images/sdxl/generate_yggdrasil.py --prompt "A cat on the floor" --seed 42
+    python examples/images/sdxl/generate_yggdrasil.py --checkpoint OnMoon/sdxl_PhotorealisticMix
+    python examples/images/sdxl/generate_yggdrasil.py --lora OnMoon/loras --lora_weight SomeLora.safetensors
 """
 import argparse
 import sys

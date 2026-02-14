@@ -16,6 +16,19 @@ from ..block.builder import BlockBuilder
 # Тип "источник по ссылке": (имя_узла, имя_порта)
 SourceRef = Tuple[str, str]
 
+# Backbone types that accept adapter_features (ControlNet/T2I residuals)
+_BACKBONE_TYPES_WITH_ADAPTER = (
+    "backbone/unet2d_condition",
+    "backbone/unet2d_batched_cfg",
+    "backbone/unet3d_condition",
+)
+
+
+def _backbone_supports_adapters(backbone: Any) -> bool:
+    """True if the backbone has adapter_features input (ControlNet/T2I)."""
+    bt = getattr(backbone, "block_type", "")
+    return bt in _BACKBONE_TYPES_WITH_ADAPTER
+
 
 def add_controlnet_to_graph(
     graph: ComputeGraph,
@@ -69,8 +82,8 @@ def add_controlnet_to_graph(
         raise ValueError("Inner graph must have a 'backbone' node")
 
     backbone = inner.nodes["backbone"]
-    bt = getattr(backbone, "block_type", "")
-    # Batched backbone now supports adapter_features (ControlNet residuals)
+    if not _backbone_supports_adapters(backbone):
+        return graph  # skip: DiT/WAN etc. do not support adapter_features
 
     config = {
         "type": "adapter/controlnet",
@@ -194,7 +207,101 @@ def add_adapter_to_graph(
             image_source=input_source,
             **kwargs,
         )
+    if adapter_type == "t2i_adapter" or adapter_type == "t2i":
+        return add_t2i_adapter_to_graph(
+            graph,
+            control_image_source=input_source,
+            **kwargs,
+        )
     raise ValueError(
         f"Unknown adapter_type '{adapter_type}'. "
-        "Supported: controlnet, ip_adapter."
+        "Supported: controlnet, ip_adapter, t2i_adapter."
     )
+
+
+def add_t2i_adapter_to_graph(
+    graph: ComputeGraph,
+    t2i_pretrained: Optional[str] = None,
+    adapter_type: str = "depth",
+    scale: float = 1.0,
+    fp16: bool = True,
+    control_image_source: Optional[SourceRef] = None,
+    **t2i_kwargs: Any,
+) -> ComputeGraph:
+    """Добавить T2I-Adapter к графу (аналогично ControlNet).
+
+    Внутренний шаг должен содержать backbone с поддержкой adapter_features.
+    При отсутствии поддержки (DiT, WAN и т.д.) граф не изменяется.
+    """
+    if "denoise_loop" not in graph.nodes:
+        return graph
+    loop = graph.nodes["denoise_loop"]
+    if not hasattr(loop, "graph") or loop.graph is None:
+        return graph
+    inner = loop.graph
+    if "t2i_adapter" in inner.nodes:
+        return graph
+    if "backbone" not in inner.nodes:
+        return graph
+    backbone = inner.nodes["backbone"]
+    if not _backbone_supports_adapters(backbone):
+        return graph
+
+    config = {
+        "type": "adapter/t2i",
+        "adapter_type": adapter_type,
+        "scale": scale,
+        "fp16": fp16,
+        **({"pretrained": t2i_pretrained} if t2i_pretrained else {}),
+        **t2i_kwargs,
+    }
+    t2i = BlockBuilder.build(config)
+    inner.add_node("t2i_adapter", t2i)
+    inner.expose_input("t2i_control_image", "t2i_adapter", "control_image")
+    inner.expose_input("condition", "t2i_adapter", "encoder_hidden_states")
+    inner.expose_input("latents", "t2i_adapter", "sample")
+    inner.expose_input("timestep", "t2i_adapter", "timestep")
+    inner.connect("t2i_adapter", "output", "backbone", "adapter_features")
+
+    if control_image_source is not None:
+        src_node, src_port = control_image_source
+        if src_node in graph.nodes:
+            graph.connect(src_node, src_port, "denoise_loop", "t2i_control_image")
+    else:
+        graph.expose_input("t2i_control_image", "denoise_loop", "t2i_control_image")
+    return graph
+
+
+def add_optional_adapters_to_graph(
+    graph: ComputeGraph,
+    controlnet: bool = True,
+    t2i_adapter: bool = True,
+    ip_adapter: bool = True,
+    controlnet_pretrained: str = "lllyasviel/control_v11p_sd15_canny",
+    t2i_pretrained: Optional[str] = None,
+    **kwargs: Any,
+) -> ComputeGraph:
+    """Добавить все применимые адаптеры к графу (video/audio/image с denoise_loop).
+
+    Добавляет ControlNet и T2I-Adapter только если внутренний backbone поддерживает
+    adapter_features (UNet2D, UNet3D). IP-Adapter добавляет энкодер и вход ip_image;
+    для полной работы требуется инъекция в backbone (inject_into).
+    """
+    if controlnet:
+        add_controlnet_to_graph(
+            graph,
+            controlnet_pretrained=controlnet_pretrained,
+            **{k: v for k, v in kwargs.items() if k in ("conditioning_scale", "fp16")},
+        )
+    if t2i_adapter:
+        add_t2i_adapter_to_graph(
+            graph,
+            t2i_pretrained=t2i_pretrained,
+            **{k: v for k, v in kwargs.items() if k in ("adapter_type", "scale", "fp16")},
+        )
+    if ip_adapter:
+        add_ip_adapter_to_graph(
+            graph,
+            **{k: v for k, v in kwargs.items() if k in ("ip_adapter_scale", "image_encoder_pretrained")},
+        )
+    return graph

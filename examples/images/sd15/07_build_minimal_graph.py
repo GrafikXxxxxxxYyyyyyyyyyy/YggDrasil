@@ -7,7 +7,7 @@
 архитектуру SD 1.5 как графа блоков.
 
 Запуск:
-    python examples/sd15/07_build_minimal_graph.py
+    python examples/images/sd15/07_build_minimal_graph.py
 """
 import torch
 from yggdrasil.core.graph.graph import ComputeGraph

@@ -2,7 +2,7 @@
 """Генерация тем же промптом через HuggingFace Diffusers (эталон для сравнения).
 
 Запуск:
-    python examples/sd15/generate_diffusers.py
+    python examples/images/sd15/generate_diffusers.py
 
 Сохраняет output_diffusers.png — сравните с output.png от YggDrasil.
 Если diffusers даёт хорошее качество, а YggDrasil нет — баг в нашем пайплайне.

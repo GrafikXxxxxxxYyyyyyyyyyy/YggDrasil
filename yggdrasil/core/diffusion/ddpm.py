@@ -50,6 +50,7 @@ class DDPMProcess(AbstractDiffusionProcess):
         return {
             "xt": alpha.sqrt() * x0 + (1 - alpha).sqrt() * noise,
             "noise": noise,
+            "target": noise,
         }
 
     def predict_x0(

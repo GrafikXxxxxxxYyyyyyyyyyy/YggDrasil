@@ -58,6 +58,12 @@ class AutoencoderKLCodec(AbstractLatentCodec):
         return latents
     
     def decode(self, z: torch.Tensor) -> torch.Tensor:
+        # Video: (B, C, T, h, w) -> decode frame-by-frame
+        if z.dim() == 5:
+            B, C, T, h, w = z.shape
+            z_2d = z.permute(0, 2, 1, 3, 4).reshape(B * T, C, h, w)
+            out_2d = self.decode(z_2d)
+            return out_2d.reshape(B, T, *out_2d.shape[1:]).permute(0, 2, 1, 3, 4)
         z = z / self.scaling_factor
         vae_device = next(self.vae.parameters()).device
 

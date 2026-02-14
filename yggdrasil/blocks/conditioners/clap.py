@@ -52,8 +52,21 @@ class CLAPConditioner(AbstractConditioner):
             
             with torch.no_grad():
                 outputs = self._model.get_text_features(**inputs)
-            
-            return {"encoder_hidden_states": outputs.unsqueeze(1)}
+            # get_text_features can return tensor or BaseModelOutputWithPooling; avoid using tensor in boolean context
+            if isinstance(outputs, torch.Tensor):
+                text_features = outputs
+            else:
+                text_features = getattr(outputs, "pooler_output", None)
+                if text_features is None:
+                    text_features = getattr(outputs, "last_hidden_state", None)
+                if text_features is None:
+                    text_features = getattr(outputs, "text_embeds", None)
+                if not isinstance(text_features, torch.Tensor):
+                    dev = next(self._model.parameters()).device
+                    text_features = torch.zeros(len(prompt), self.embed_dim, device=dev)
+                if isinstance(text_features, torch.Tensor) and text_features.dim() == 2:
+                    text_features = text_features.unsqueeze(1)
+            return {"encoder_hidden_states": text_features}
         
         # Fallback
         dummy = torch.zeros(len(prompt), 1, self.embed_dim)

@@ -7,7 +7,7 @@ ClassifierFreeGuidance с scale=3.0. Шаблон sd15_txt2img использу�
 guidance_scale=3.0 в pipe() — тот же эффект «слабее» текстового контроля.
 
 Запуск:
-    python examples/sd15/06_replace_guidance.py
+    python examples/images/sd15/06_replace_guidance.py
 """
 import torch
 from yggdrasil.pipeline import Pipeline

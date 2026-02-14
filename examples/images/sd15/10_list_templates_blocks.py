@@ -6,7 +6,7 @@
 Типы блоков — в BlockBuilder.build({"type": "..."}).
 
 Запуск:
-    python examples/sd15/10_list_templates_blocks.py
+    python examples/images/sd15/10_list_templates_blocks.py
 """
 from yggdrasil.core.graph.graph import ComputeGraph
 from yggdrasil.core.graph.templates import list_templates

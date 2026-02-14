@@ -5,9 +5,9 @@ Same prompt and seed as generate_yggdrasil.py. Supports external checkpoints and
 from HuggingFace (e.g. https://huggingface.co/OnMoon).
 
 Usage:
-    python examples/sdxl/generate_diffusers.py --prompt "A cat on the floor" --seed 42
-    python examples/sdxl/generate_diffusers.py --checkpoint OnMoon/sdxl_PhotorealisticMix
-    python examples/sdxl/generate_diffusers.py --lora OnMoon/loras --lora_weight SomeLora.safetensors
+    python examples/images/sdxl/generate_diffusers.py --prompt "A cat on the floor" --seed 42
+    python examples/images/sdxl/generate_diffusers.py --checkpoint OnMoon/sdxl_PhotorealisticMix
+    python examples/images/sdxl/generate_diffusers.py --lora OnMoon/loras --lora_weight SomeLora.safetensors
 """
 import argparse
 import sys

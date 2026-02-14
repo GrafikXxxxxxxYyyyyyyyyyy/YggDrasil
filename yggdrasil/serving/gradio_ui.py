@@ -1,31 +1,27 @@
 # yggdrasil/serving/gradio_ui.py
-"""Gradio UI для YggDrasil — универсальный интерфейс для любой диффузионной модели.
+"""Gradio UI для YggDrasil — единый интерфейс для любых диффузионных моделей (image, video, audio).
 
-Три вкладки:
-    1. Generate — генерация (любая модальность)
-    2. Models   — управление моделями (загрузка/выгрузка/конструктор)
-    3. Train    — обучение модели / адаптера
-
-Архитектура:
-    UI ↔ ModelManager (shared with API)
-    Один ModelManager обслуживает и Gradio, и REST API одновременно.
+Особенности:
+- Выбор модальности (Изображение / Видео / Аудио) и шаблона пайплайна
+- Динамические входы по графу (prompt, control_image, num_frames и т.д.)
+- Пресеты разрешений и параметров, семя, батч, скачивание результата
+- Информация об устройстве и понятные сообщения об ошибках
 """
 from __future__ import annotations
 
 import io
-import base64
 import time
-import json
+import random
 import torch
 import numpy as np
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Any, Dict, List, Optional, Tuple
 from PIL import Image
 
-from .schema import GenerateRequest, OutputFormat, ServerConfig
+from .schema import ServerConfig
 
 
-# ==================== HELPER ====================
+# ==================== HELPERS ====================
 
 def _get_device_info() -> str:
     if torch.cuda.is_available():
@@ -38,679 +34,445 @@ def _get_device_info() -> str:
     return "CPU"
 
 
-def _tensor_to_pil(tensor: torch.Tensor) -> Image.Image:
-    """Тензор [-1, 1] → PIL Image."""
-    img = (tensor / 2 + 0.5).clamp(0, 1)
-    img = (img * 255).to(torch.uint8).cpu().numpy()
-    if img.ndim == 4:
-        img = img[0]
-    if img.shape[0] in (1, 3, 4):
-        img = img.transpose(1, 2, 0)
-    if img.shape[-1] == 1:
-        img = img.squeeze(-1)
-    return Image.fromarray(img)
+def _best_device() -> str:
+    if torch.cuda.is_available():
+        return "cuda"
+    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def _tensor_to_pil_list(tensor: torch.Tensor) -> List[Image.Image]:
+    """Тензор [B, C, H, W] в [-1,1] или [0,1] → список PIL."""
+    if tensor is None or not isinstance(tensor, torch.Tensor):
+        return []
+    img = tensor.detach().cpu().float()
+    if img.min() < -0.01 or img.max() > 1.01:
+        img = (img / 2 + 0.5).clamp(0, 1)
+    else:
+        img = img.clamp(0, 1)
+    images = []
+    for i in range(img.shape[0]):
+        arr = (img[i].permute(1, 2, 0).numpy() * 255).clip(0, 255).astype(np.uint8)
+        if arr.shape[-1] == 1:
+            arr = arr.squeeze(-1)
+        images.append(Image.fromarray(arr))
+    return images
+
+
+def _video_tensor_to_file(tensor: torch.Tensor, fps: float = 8.0) -> Optional[str]:
+    """Тензор видео [B,C,T,H,W] или [C,T,H,W] → временный файл .mp4."""
+    if tensor is None or not isinstance(tensor, torch.Tensor):
+        return None
+    try:
+        import tempfile
+        t = tensor.detach().cpu().float()
+        if t.min() < -0.01 or t.max() > 1.01:
+            t = (t / 2 + 0.5).clamp(0, 1)
+        if t.dim() == 5:
+            t = t[0]
+        # [C, T, H, W] → frames (T, H, W, C)
+        t = t.permute(1, 2, 3, 0).numpy()
+        t = (t * 255).clip(0, 255).astype(np.uint8)
+        path = tempfile.mktemp(suffix=".mp4")
+        try:
+            import imageio
+            imageio.mimwrite(path, t, fps=fps)
+            return path
+        except ImportError:
+            return None
+    except Exception:
+        return None
+
+
+def _audio_tensor_to_file(tensor: torch.Tensor, sr: int = 44100) -> Optional[Tuple[int, np.ndarray]]:
+    """Тензор аудио [B, C, T] или [C, T] → (sample_rate, np.ndarray)."""
+    if tensor is None or not isinstance(tensor, torch.Tensor):
+        return None
+    try:
+        a = tensor.detach().cpu().float().numpy()
+        if a.ndim == 3:
+            a = a[0]
+        if a.ndim == 2:
+            a = a.mean(axis=0)
+        a = np.clip(a, -1, 1).astype(np.float32)
+        return (sr, a)
+    except Exception:
+        return None
+
+
+def _get_templates_by_modality() -> Dict[str, List[Tuple[str, str]]]:
+    """Возвращает {modality: [(template_id, description), ...]}."""
+    try:
+        from yggdrasil.pipeline import Pipeline
+        available = Pipeline.list_available()
+    except Exception:
+        available = {}
+    result = {"image": [], "video": [], "audio": []}
+    for name, info in available.items():
+        desc = (info.get("description") or name).strip().split("\n")[0][:80]
+        mod = info.get("modality", "image")
+        if mod not in result:
+            result[mod] = []
+        result[mod].append((name, desc))
+    for mod in result:
+        result[mod].sort(key=lambda x: x[0])
+    if not any(result.values()):
+        result["image"] = [("sd15_txt2img", "SD 1.5 Text-to-Image")]
+    return result
 
 
 # ==================== MAIN UI ====================
 
 def create_ui(
-    manager: Optional["ModelManager"] = None,
+    manager: Optional[Any] = None,
     config: Optional[ServerConfig] = None,
     share: bool = False,
 ) -> "gr.Blocks":
-    """Создать Gradio интерфейс.
-    
-    Args:
-        manager: ModelManager (общий с API). Если None — создаём новый.
-        config: Конфигурация сервера.
-        share: Создать публичную ссылку (для удалённого доступа).
-    """
+    """Создать единый Gradio интерфейс для любых диффузионных моделей."""
     import gradio as gr
-    
-    if manager is None:
-        from .api import ModelManager
-        manager = ModelManager(config or ServerConfig())
-    
-    # ==================== GENERATION TAB ====================
-    
-    def generate_image(
-        model_id: str,
+
+    templates_by_mod = _get_templates_by_modality()
+    device = _best_device()
+    device_info = _get_device_info()
+
+    # ---------- Generation logic ----------
+    def run_generation(
+        modality: str,
+        template_name: str,
         prompt: str,
         negative_prompt: str,
-        steps: int,
-        cfg_scale: float,
+        num_steps: int,
+        guidance_scale: float,
         width: int,
         height: int,
+        num_frames: int,
         seed: int,
         batch_size: int,
-    ) -> Tuple[List[Image.Image], str]:
-        """Генерация изображений."""
-        if not model_id or model_id not in manager.samplers:
-            return [], f"Модель '{model_id}' не загружена. Загрузите модель во вкладке Models."
-        
-        sampler = manager.samplers[model_id]
-        model = manager.models[model_id]
-        device = next(model.parameters()).device
-        device_str = str(device)
-        
-        actual_seed = seed if seed >= 0 else int(torch.randint(0, 2**32, (1,)).item())
-        
-        # Generator (MPS не поддерживает)
-        if "mps" in device_str:
-            generator = None
-        else:
-            generator = torch.Generator(device_str).manual_seed(actual_seed)
-        
-        condition = {"text": prompt}
-        if negative_prompt:
-            condition["negative_text"] = negative_prompt
-        
-        h_latent = height // 8
-        w_latent = width // 8
-        shape = (batch_size, 4, h_latent, w_latent)
-        
-        start_time = time.time()
-        
+        control_image: Optional[Any],
+        ip_image: Optional[Any],
+        source_image: Optional[Any],
+        pipeline_state: Optional[Tuple[str, Any]],
+    ) -> Tuple[
+        Optional[List[Image.Image]],
+        Optional[str],
+        Optional[Tuple[int, np.ndarray]],
+        str,
+        Optional[Tuple[str, Any]],
+    ]:
+        """Запуск генерации. Возвращает (images, video_path, audio_tuple, info, new_pipeline_state)."""
+        if not template_name or template_name not in [t[0] for t in templates_by_mod.get(modality, [])]:
+            return [], None, None, "Выберите шаблон пайплайна.", pipeline_state
+
         try:
-            with torch.no_grad():
-                result = sampler.sample(
-                    condition=condition,
-                    shape=shape,
-                    num_inference_steps=steps,
-                    guidance_scale=cfg_scale,
-                    generator=generator,
-                )
-            
-            elapsed = time.time() - start_time
-            
-            # Конвертируем в PIL
-            images = []
-            if result.ndim == 4:
-                for i in range(result.shape[0]):
-                    images.append(_tensor_to_pil(result[i:i+1]))
-            else:
-                images.append(_tensor_to_pil(result))
-            
-            info = (
-                f"Seed: {actual_seed} | Steps: {steps} | CFG: {cfg_scale} | "
-                f"Size: {width}x{height} | Time: {elapsed:.1f}s | Device: {device_str}"
-            )
-            return images, info
-            
-        except Exception as e:
-            return [], f"Ошибка генерации: {e}"
-    
-    # ==================== MODELS TAB ====================
-    
-    def load_model_ui(
-        model_id: str,
-        pretrained_path: str,
-        model_config_json: str,
-    ) -> Tuple[str, str]:
-        """Загрузка модели через UI."""
-        import asyncio
-        
-        if not model_id:
-            return "Введите ID модели", get_model_list()
-        
+            from yggdrasil.pipeline import Pipeline
+        except ImportError as e:
+            return [], None, None, f"Ошибка импорта: {e}", pipeline_state
+
+        # Reuse pipeline if same template
+        pipe = None
+        if pipeline_state and pipeline_state[0] == template_name:
+            pipe = pipeline_state[1]
+        if pipe is None:
+            try:
+                pipe = Pipeline.from_template(template_name, device=device)
+            except Exception as e:
+                return [], None, None, f"Не удалось загрузить пайплайн: {e}", pipeline_state
+            pipeline_state = (template_name, pipe)
+
+        def _pil_to_tensor(pil_img) -> torch.Tensor:
+            if pil_img is None:
+                return None
+            if isinstance(pil_img, dict) and "image" in pil_img:
+                pil_img = pil_img["image"]
+            arr = np.array(pil_img).astype(np.float32) / 255.0
+            if arr.ndim == 2:
+                arr = np.stack([arr] * 3, axis=-1)
+            t = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)
+            return t
+
+        actual_seed = int(seed) if seed >= 0 else random.randint(0, 2**32 - 1)
+        kwargs = {
+            "prompt": prompt or "a beautiful scene",
+            "negative_prompt": negative_prompt or "",
+            "num_steps": num_steps,
+            "guidance_scale": guidance_scale,
+            "width": width,
+            "height": height,
+            "seed": actual_seed,
+            "batch_size": min(max(1, batch_size), 8),
+        }
+        if modality == "video":
+            kwargs["num_frames"] = num_frames
+        if control_image is not None:
+            kwargs["control_image"] = _pil_to_tensor(control_image)
+        if ip_image is not None:
+            kwargs["ip_image"] = ip_image if isinstance(ip_image, dict) else {"image": ip_image}
+        if source_image is not None and modality in ("video", "image"):
+            kwargs["source_image"] = _pil_to_tensor(source_image)
+
+        start = time.time()
         try:
-            config_dict = json.loads(model_config_json) if model_config_json.strip() else None
-            pretrained = pretrained_path.strip() if pretrained_path.strip() else None
-            
-            if not pretrained and not config_dict:
-                return "Укажите pretrained path или JSON конфиг модели", get_model_list()
-            
-            loop = asyncio.new_event_loop()
-            info = loop.run_until_complete(
-                manager.load_model(model_id, config=config_dict, pretrained=pretrained)
-            )
-            loop.close()
-            
-            return f"Модель {model_id} загружена! ({info.num_parameters:,} параметров, {info.device})", get_model_list()
+            out = pipe(**kwargs)
         except Exception as e:
-            return f"Ошибка: {e}", get_model_list()
-    
-    def unload_model_ui(model_id: str) -> Tuple[str, str]:
-        """Выгрузка модели."""
-        import asyncio
-        if model_id and model_id in manager.models:
-            loop = asyncio.new_event_loop()
-            loop.run_until_complete(manager.unload_model(model_id))
-            loop.close()
-            return f"Модель {model_id} выгружена", get_model_list()
-        return "Модель не найдена", get_model_list()
-    
-    def get_model_list() -> str:
-        """Получить список моделей в текстовом формате."""
-        if not manager.model_info:
-            return "Нет загруженных моделей"
-        
-        lines = []
-        for mid, info in manager.model_info.items():
-            status_icon = {"ready": "🟢", "loading": "🟡", "error": "🔴", "unloaded": "⚪"}.get(info.status.value, "❓")
-            lines.append(
-                f"{status_icon} {mid} | {info.status.value} | "
-                f"{info.num_parameters:,} params | {info.device}"
-            )
-        return "\n".join(lines)
-    
-    def get_model_choices() -> List[str]:
-        """Список ID загруженных моделей для dropdown."""
-        return [mid for mid, info in manager.model_info.items() if info.status.value == "ready"]
-    
-    # ==================== TRAINING TAB ====================
-    
-    def start_training_ui(
-        model_id: str,
-        dataset_path: str,
-        train_mode: str,
-        num_epochs: int,
-        batch_size: int,
-        learning_rate: float,
-        mixed_precision: str,
-        use_ema: bool,
-        save_every: int,
-    ) -> str:
-        """Запуск обучения через UI."""
-        if model_id not in manager.models:
-            return f"Модель {model_id} не загружена"
-        
-        if not dataset_path or not Path(dataset_path).exists():
-            return f"Путь к данным не существует: {dataset_path}"
-        
-        try:
-            from ..training.trainer import DiffusionTrainer, TrainingConfig
-            from ..training.data import ImageFolderSource
-            from ..core.diffusion.ddpm import DDPMProcess
-            from ..training.loss import EpsilonLoss
-            
-            config = TrainingConfig(
-                num_epochs=num_epochs,
-                batch_size=batch_size,
-                learning_rate=learning_rate,
-                mixed_precision=mixed_precision,
-                use_ema=use_ema,
-                save_every=save_every,
-                train_mode=train_mode,
-            )
-            
-            model = manager.models[model_id]
-            trainer = DiffusionTrainer(model, DDPMProcess(), EpsilonLoss(), config)
-            dataset = ImageFolderSource(dataset_path)
-            
-            # Запускаем в отдельном потоке
-            import threading
-            def run():
-                try:
-                    trainer.train(dataset)
-                except Exception as e:
-                    print(f"Training error: {e}")
-            
-            thread = threading.Thread(target=run, daemon=True)
-            thread.start()
-            
-            return f"Обучение запущено для {model_id} | Mode: {train_mode} | Epochs: {num_epochs} | BS: {batch_size}"
-        except Exception as e:
-            return f"Ошибка: {e}"
-    
-    # ==================== BUILD UI ====================
-    
+            return [], None, None, f"Ошибка генерации: {e}", pipeline_state
+        elapsed = time.time() - start
+
+        images = None
+        video_path = None
+        audio_data = None
+        if out.images:
+            images = out.images
+        if getattr(out, "video", None) is not None:
+            video_path = _video_tensor_to_file(out.video)
+        if getattr(out, "audio", None) is not None:
+            audio_data = _audio_tensor_to_file(out.audio)
+
+        info = f"Seed: {actual_seed} | Steps: {num_steps} | CFG: {guidance_scale} | {elapsed:.1f}s | {device_info}"
+        return images or [], video_path, audio_data, info, pipeline_state
+
+    def update_template_choices(modality: str):
+        choices = templates_by_mod.get(modality, [])
+        return gr.update(choices=[t[0] for t in choices], value=choices[0][0] if choices else None)
+
+    # ---------- Build UI ----------
     with gr.Blocks(
-        title="YggDrasil — Universal Diffusion Framework",
+        title="YggDrasil — Universal Diffusion",
         theme=gr.themes.Soft(
             primary_hue="indigo",
-            secondary_hue="blue",
+            secondary_hue="slate",
         ),
         css="""
-        .main-title {
-            text-align: center;
-            margin-bottom: 0.5em;
-        }
-        .subtitle {
-            text-align: center;
-            color: #666;
-            margin-bottom: 1.5em;
-        }
+        .hero { text-align: center; margin-bottom: 0.5em; font-size: 1.8em; }
+        .sub { text-align: center; color: #64748b; margin-bottom: 1.2em; }
+        .preset-btn { min-width: 4em; }
+        .footer { text-align: center; margin-top: 1.5em; color: #94a3b8; font-size: 0.9em; }
         """,
     ) as demo:
-        
-        gr.HTML("""
-        <h1 class="main-title">🌳 YggDrasil</h1>
-        <p class="subtitle">Universal Diffusion Framework — Build your diffusion like Lego</p>
-        """)
-        
+
+        gr.HTML('<h1 class="hero">🌳 YggDrasil</h1><p class="sub">Единый интерфейс для генерации изображений, видео и звука</p>')
+
+        pipeline_state = gr.State(value=None)
+
         with gr.Tabs():
-            
-            # =============== TAB 1: GENERATE ===============
-            with gr.Tab("Generate", id="generate"):
+            # ========== TAB: GENERATE ==========
+            with gr.Tab("🎨 Генерация", id="gen"):
                 with gr.Row():
                     with gr.Column(scale=1):
-                        model_dropdown = gr.Dropdown(
-                            label="Model",
-                            choices=get_model_choices(),
-                            value=None,
+                        gr.Markdown("### Модель и модальность")
+                        modality_radio = gr.Radio(
+                            choices=[("Изображение", "image"), ("Видео", "video"), ("Аудио", "audio")],
+                            value="image",
+                            label="Тип",
+                            elem_id="modality",
+                        )
+                        template_dropdown = gr.Dropdown(
+                            label="Пайплайн",
+                            choices=[t[0] for t in templates_by_mod["image"]],
+                            value=templates_by_mod["image"][0][0] if templates_by_mod["image"] else None,
                             interactive=True,
                         )
-                        refresh_models_btn = gr.Button("🔄 Refresh Models", size="sm")
-                        
+                        num_frames_num = gr.Slider(4, 64, value=16, step=1, label="Кадров (видео)", visible=False)
+                        def on_modality(m):
+                            choices = templates_by_mod.get(m, [])
+                            vis = m == "video"
+                            return (
+                                gr.update(choices=[t[0] for t in choices], value=choices[0][0] if choices else None),
+                                gr.update(visible=vis),
+                            )
+                        modality_radio.change(
+                            fn=on_modality,
+                            inputs=[modality_radio],
+                            outputs=[template_dropdown, num_frames_num],
+                        )
+
+                        gr.Markdown("### Текст и параметры")
                         prompt_input = gr.Textbox(
                             label="Prompt",
-                            placeholder="a majestic cyberpunk samurai standing on a rainy neon rooftop...",
+                            placeholder="описание того, что вы хотите получить...",
                             lines=3,
                         )
                         negative_input = gr.Textbox(
                             label="Negative Prompt",
-                            placeholder="blurry, low quality, deformed",
+                            placeholder="размыто, низкое качество...",
                             lines=2,
                         )
-                        
                         with gr.Row():
-                            steps_slider = gr.Slider(1, 150, value=28, step=1, label="Steps")
-                            cfg_slider = gr.Slider(0, 30, value=7.5, step=0.5, label="CFG Scale")
-                        
+                            steps_num = gr.Slider(1, 150, value=28, step=1, label="Шаги")
+                            cfg_num = gr.Slider(0.5, 30, value=7.5, step=0.5, label="CFG")
                         with gr.Row():
-                            width_slider = gr.Slider(128, 2048, value=512, step=64, label="Width")
-                            height_slider = gr.Slider(128, 2048, value=512, step=64, label="Height")
-                        
+                            width_num = gr.Slider(128, 2048, value=512, step=64, label="Ширина")
+                            height_num = gr.Slider(128, 2048, value=512, step=64, label="Высота")
                         with gr.Row():
-                            seed_input = gr.Number(label="Seed (-1 = random)", value=-1, precision=0)
-                            batch_slider = gr.Slider(1, 8, value=1, step=1, label="Batch Size")
-                        
-                        generate_btn = gr.Button("🎨 Generate", variant="primary", size="lg")
-                    
+                            seed_num = gr.Number(label="Seed (-1 = случайный)", value=-1, precision=0)
+                            seed_random_btn = gr.Button("🎲 Случайный", size="sm")
+                            batch_num = gr.Slider(1, 8, value=1, step=1, label="Батч")
+                        seed_random_btn.click(lambda: -1, outputs=[seed_num])
+
+                        gr.Markdown("#### Пресеты")
+                        with gr.Row():
+                            gr.Button("512×512").click(lambda: (512, 512), outputs=[width_num, height_num])
+                            gr.Button("768×768").click(lambda: (768, 768), outputs=[width_num, height_num])
+                            gr.Button("1024×1024").click(lambda: (1024, 1024), outputs=[width_num, height_num])
+                            gr.Button("Быстро (20 шагов)").click(lambda: 20, outputs=[steps_num])
+                            gr.Button("Качество (40 шагов)").click(lambda: 40, outputs=[steps_num])
+                        gr.Markdown("#### Адаптеры (опционально)")
+                        control_image_in = gr.Image(label="Control (depth/canny)", type="pil")
+                        ip_image_in = gr.Image(label="IP-Adapter изображение", type="pil")
+                        source_image_in = gr.Image(label="Исходное изображение (img2vid)", type="pil")
+
+                        gen_btn = gr.Button("🚀 Сгенерировать", variant="primary", size="lg")
+
                     with gr.Column(scale=2):
-                        gallery = gr.Gallery(
-                            label="Results",
-                            columns=2,
-                            height=600,
+                        gr.Markdown("### Результат")
+                        out_gallery = gr.Gallery(
+                            label="Изображения",
+                            columns=3,
+                            height=500,
                             object_fit="contain",
                         )
-                        gen_info = gr.Textbox(label="Info", interactive=False)
-                
-                # Events
-                generate_btn.click(
-                    fn=generate_image,
-                    inputs=[model_dropdown, prompt_input, negative_input, steps_slider,
-                            cfg_slider, width_slider, height_slider, seed_input, batch_slider],
-                    outputs=[gallery, gen_info],
-                )
-                refresh_models_btn.click(
-                    fn=lambda: gr.update(choices=get_model_choices()),
-                    outputs=[model_dropdown],
-                )
-            
-            # =============== TAB 2: MODELS ===============
-            with gr.Tab("Models", id="models"):
-                gr.Markdown("### Model Management")
-                
-                with gr.Row():
-                    with gr.Column():
-                        new_model_id = gr.Textbox(label="Model ID", placeholder="my-sd15")
-                        pretrained_input = gr.Textbox(
-                            label="Pretrained Path / HuggingFace ID",
-                            placeholder="runwayml/stable-diffusion-v1-5",
-                        )
-                        model_config_input = gr.Code(
-                            label="Model Config (JSON, optional)",
-                            language="json",
-                            value="",
-                            lines=8,
-                        )
-                        
-                        with gr.Row():
-                            load_btn = gr.Button("📥 Load Model", variant="primary")
-                            unload_btn = gr.Button("📤 Unload Model", variant="stop")
-                    
-                    with gr.Column():
-                        model_status_text = gr.Textbox(
-                            label="Status",
-                            interactive=False,
-                            lines=2,
-                        )
-                        model_list_text = gr.Textbox(
-                            label="Loaded Models",
-                            value=get_model_list(),
-                            interactive=False,
-                            lines=10,
-                        )
-                        device_info = gr.Textbox(
-                            label="Device",
-                            value=_get_device_info(),
-                            interactive=False,
-                        )
-                
-                gr.Markdown("### Quick Load Presets")
-                with gr.Row():
-                    gr.Button("SD 1.5").click(
-                        fn=lambda: ("sd15", "runwayml/stable-diffusion-v1-5", ""),
-                        outputs=[new_model_id, pretrained_input, model_config_input],
+                        out_video = gr.Video(label="Видео", visible=False)
+                        out_audio = gr.Audio(label="Аудио", visible=False)
+                        gen_info = gr.Textbox(label="Инфо", interactive=False)
+                        download_btn = gr.DownloadButton(label="Скачать первый результат", visible=True)
+
+                def run_and_show(
+                    mod, tpl, prompt, neg, steps, cfg, w, h, nf, seed, batch,
+                    ctrl_img, ip_img, src_img, state,
+                ):
+                    images, video_path, audio_data, info, new_state = run_generation(
+                        mod, tpl, prompt, neg, steps, cfg, w, h, nf, seed, batch,
+                        ctrl_img, ip_img, src_img, state,
                     )
-                    gr.Button("SDXL").click(
-                        fn=lambda: ("sdxl", "stabilityai/stable-diffusion-xl-base-1.0", ""),
-                        outputs=[new_model_id, pretrained_input, model_config_input],
+                    vis_img = bool(images and len(images) > 0)
+                    vis_vid = video_path is not None
+                    vis_aud = audio_data is not None
+                    # Download: first image as bytes or video path
+                    download_file = None
+                    if images and len(images) > 0:
+                        buf = io.BytesIO()
+                        images[0].save(buf, format="PNG")
+                        buf.seek(0)
+                        download_file = (buf.getvalue(), "yggdrasil_output.png")
+                    elif video_path:
+                        download_file = video_path
+                    return (
+                        gr.update(value=images or [], visible=vis_img),
+                        gr.update(value=video_path, visible=vis_vid),
+                        gr.update(value=audio_data, visible=vis_aud),
+                        info,
+                        new_state,
+                        download_file,
                     )
-                    gr.Button("Flux Dev").click(
-                        fn=lambda: ("flux", "black-forest-labs/FLUX.1-dev", ""),
-                        outputs=[new_model_id, pretrained_input, model_config_input],
-                    )
-                
-                # Events
-                load_btn.click(
-                    fn=load_model_ui,
-                    inputs=[new_model_id, pretrained_input, model_config_input],
-                    outputs=[model_status_text, model_list_text],
-                )
-                unload_btn.click(
-                    fn=unload_model_ui,
-                    inputs=[new_model_id],
-                    outputs=[model_status_text, model_list_text],
-                )
-            
-            # =============== TAB 3: TRAIN ===============
-            with gr.Tab("Train", id="train"):
-                gr.Markdown("### Train Model / Adapter")
-                
-                with gr.Row():
-                    with gr.Column():
-                        train_model_dropdown = gr.Dropdown(
-                            label="Model to Train",
-                            choices=get_model_choices(),
-                        )
-                        train_dataset_path = gr.Textbox(
-                            label="Dataset Path",
-                            placeholder="/path/to/images/",
-                        )
-                        train_mode_dropdown = gr.Dropdown(
-                            label="Training Mode",
-                            choices=["full", "adapter", "finetune"],
-                            value="adapter",
-                        )
-                    
-                    with gr.Column():
-                        train_epochs = gr.Slider(1, 1000, value=10, step=1, label="Epochs")
-                        train_batch = gr.Slider(1, 32, value=1, step=1, label="Batch Size")
-                        train_lr = gr.Number(label="Learning Rate", value=1e-4)
-                        train_precision = gr.Dropdown(
-                            label="Mixed Precision",
-                            choices=["no", "fp16", "bf16"],
-                            value="fp16",
-                        )
-                        train_ema = gr.Checkbox(label="Use EMA", value=False)
-                        train_save_every = gr.Slider(100, 5000, value=500, step=100, label="Save Every N Steps")
-                
-                train_btn = gr.Button("🚀 Start Training", variant="primary", size="lg")
-                train_status = gr.Textbox(label="Training Status", interactive=False, lines=3)
-                
-                train_btn.click(
-                    fn=start_training_ui,
+
+                gen_btn.click(
+                    fn=run_and_show,
                     inputs=[
-                        train_model_dropdown, train_dataset_path, train_mode_dropdown,
-                        train_epochs, train_batch, train_lr, train_precision,
-                        train_ema, train_save_every,
+                        modality_radio, template_dropdown,
+                        prompt_input, negative_input,
+                        steps_num, cfg_num, width_num, height_num, num_frames_num,
+                        seed_num, batch_num,
+                        control_image_in, ip_image_in, source_image_in,
+                        pipeline_state,
                     ],
-                    outputs=[train_status],
+                    outputs=[
+                        out_gallery,
+                        out_video,
+                        out_audio,
+                        gen_info,
+                        pipeline_state,
+                        download_btn,
+                    ],
                 )
-            
-            # =============== TAB 4: GRAPH EDITOR ===============
-            with gr.Tab("Graph Editor", id="graph"):
-                gr.Markdown("### ComputeGraph — Visual Pipeline Builder")
-                gr.Markdown("Build custom diffusion pipelines by selecting templates, adding/replacing blocks, and wiring connections.")
-                
-                with gr.Row():
-                    with gr.Column(scale=1):
-                        # Template selector
-                        def get_template_names():
-                            try:
-                                from ..core.graph.templates import list_templates
-                                return list_templates()
-                            except Exception:
-                                return ["sd15_txt2img", "sdxl_txt2img", "sd3_txt2img", "flux_txt2img", "controlnet_txt2img"]
-                        
-                        template_dropdown = gr.Dropdown(
-                            label="Pipeline Template",
-                            choices=get_template_names(),
-                            value="sd15_txt2img",
-                            interactive=True,
-                        )
-                        load_template_btn = gr.Button("Load Template", variant="primary")
-                        
-                        gr.Markdown("#### Node Operations")
-                        node_name_input = gr.Textbox(label="Node Name", placeholder="my_controlnet")
-                        node_type_input = gr.Textbox(label="Block Type", placeholder="adapter/controlnet")
-                        node_config_input = gr.Code(label="Node Config (JSON)", language="json", value="{}", lines=5)
-                        
-                        with gr.Row():
-                            add_node_btn = gr.Button("Add Node")
-                            replace_node_btn = gr.Button("Replace Node")
-                            remove_node_btn = gr.Button("Remove Node", variant="stop")
-                        
-                        gr.Markdown("#### Connections")
-                        src_node_input = gr.Textbox(label="Source (node.port)", placeholder="backbone.output")
-                        dst_node_input = gr.Textbox(label="Destination (node.port)", placeholder="guidance.model_output")
-                        connect_btn = gr.Button("Connect")
-                    
-                    with gr.Column(scale=2):
-                        graph_mermaid = gr.Code(label="Graph Visualization (Mermaid)", language="markdown", lines=20)
-                        graph_info = gr.Textbox(label="Graph Info", interactive=False, lines=5)
-                        graph_yaml = gr.Code(label="Graph YAML", language="yaml", lines=15)
-                
-                # Graph state (stored as JSON)
-                graph_state = gr.State(value=None)
-                
-                def load_template(template_name):
-                    try:
-                        from ..core.graph.graph import ComputeGraph
-                        graph = ComputeGraph.from_template(template_name)
-                        mermaid = graph.visualize()
-                        info = repr(graph)
-                        nodes_info = "\n".join([f"  {n}: {getattr(b, 'block_type', '?')}" for n, b in graph.nodes.items()])
-                        return graph, mermaid, f"{info}\n\nNodes:\n{nodes_info}", ""
-                    except Exception as e:
-                        return None, "", f"Error: {e}", ""
-                
-                def add_node_to_graph(graph_obj, name, block_type, config_json):
-                    if graph_obj is None:
-                        return graph_obj, "No graph loaded", "", ""
-                    try:
-                        from ..core.block.builder import BlockBuilder
-                        config = json.loads(config_json) if config_json.strip() else {}
-                        config["type"] = block_type
-                        block = BlockBuilder.build(config)
-                        graph_obj.add_node(name, block)
-                        return graph_obj, graph_obj.visualize(), repr(graph_obj), ""
-                    except Exception as e:
-                        return graph_obj, graph_obj.visualize(), f"Error: {e}", ""
-                
-                def remove_node_from_graph(graph_obj, name):
-                    if graph_obj is None:
-                        return graph_obj, "No graph loaded", "", ""
-                    try:
-                        graph_obj.remove_node(name)
-                        return graph_obj, graph_obj.visualize(), repr(graph_obj), ""
-                    except Exception as e:
-                        return graph_obj, graph_obj.visualize(), f"Error: {e}", ""
-                
-                def connect_nodes(graph_obj, src_spec, dst_spec):
-                    if graph_obj is None:
-                        return graph_obj, "No graph loaded", "", ""
-                    try:
-                        src_node, src_port = src_spec.split(".", 1)
-                        dst_node, dst_port = dst_spec.split(".", 1)
-                        graph_obj.connect(src_node, src_port, dst_node, dst_port)
-                        return graph_obj, graph_obj.visualize(), repr(graph_obj), ""
-                    except Exception as e:
-                        return graph_obj, graph_obj.visualize(), f"Error: {e}", ""
-                
-                load_template_btn.click(
-                    fn=load_template,
-                    inputs=[template_dropdown],
-                    outputs=[graph_state, graph_mermaid, graph_info, graph_yaml],
-                )
-                add_node_btn.click(
-                    fn=add_node_to_graph,
-                    inputs=[graph_state, node_name_input, node_type_input, node_config_input],
-                    outputs=[graph_state, graph_mermaid, graph_info, graph_yaml],
-                )
-                remove_node_btn.click(
-                    fn=remove_node_from_graph,
-                    inputs=[graph_state, node_name_input],
-                    outputs=[graph_state, graph_mermaid, graph_info, graph_yaml],
-                )
-                connect_btn.click(
-                    fn=connect_nodes,
-                    inputs=[graph_state, src_node_input, dst_node_input],
-                    outputs=[graph_state, graph_mermaid, graph_info, graph_yaml],
-                )
-            
-            # =============== TAB 5: GRAPH TRAINING ===============
-            with gr.Tab("Graph Training", id="graph_train"):
-                gr.Markdown("### Train Any Node in Your Graph")
-                gr.Markdown("Select which nodes to train — the rest will be frozen automatically.")
-                
+
+            # ========== TAB: PIPELINES ==========
+            with gr.Tab("📦 Пайплайны", id="pipelines"):
+                gr.Markdown("### Доступные шаблоны по типу")
                 with gr.Row():
                     with gr.Column():
-                        gt_template = gr.Dropdown(
-                            label="Pipeline Template",
-                            choices=get_template_names(),
-                            value="sd15_txt2img",
-                        )
-                        gt_train_nodes = gr.Textbox(
-                            label="Train Nodes (comma-separated)",
-                            placeholder="backbone, my_adapter",
-                            value="backbone",
-                        )
-                        gt_dataset_path = gr.Textbox(label="Dataset Path", placeholder="/path/to/data/")
-                        gt_loss = gr.Dropdown(label="Loss Type", choices=["epsilon", "velocity", "flow_matching", "x0"], value="epsilon")
-                    
+                        gr.Markdown("#### Изображения")
+                        img_list = "\n".join(f"- **{t[0]}** — {t[1]}" for t in templates_by_mod.get("image", [])[:20])
+                        gr.Markdown(img_list or "Нет шаблонов")
                     with gr.Column():
-                        gt_epochs = gr.Slider(1, 1000, value=10, step=1, label="Epochs")
-                        gt_batch = gr.Slider(1, 32, value=1, step=1, label="Batch Size")
-                        gt_lr = gr.Number(label="Learning Rate", value=1e-4)
-                        gt_optimizer = gr.Dropdown(label="Optimizer", choices=["adamw", "adam", "sgd"], value="adamw")
-                        gt_precision = gr.Dropdown(label="Mixed Precision", choices=["no", "fp16", "bf16"], value="fp16")
-                        gt_ema = gr.Checkbox(label="Use EMA", value=False)
-                
-                gt_start_btn = gr.Button("Start Graph Training", variant="primary", size="lg")
-                gt_status = gr.Textbox(label="Status", interactive=False, lines=3)
-                
-                def start_graph_training(template, train_nodes_str, dataset_path, loss_type, epochs, batch, lr, optimizer, precision, use_ema):
+                        gr.Markdown("#### Видео")
+                        vid_list = "\n".join(f"- **{t[0]}** — {t[1]}" for t in templates_by_mod.get("video", [])[:20])
+                        gr.Markdown(vid_list or "Нет шаблонов")
+                    with gr.Column():
+                        gr.Markdown("#### Аудио")
+                        aud_list = "\n".join(f"- **{t[0]}** — {t[1]}" for t in templates_by_mod.get("audio", [])[:20])
+                        gr.Markdown(aud_list or "Нет шаблонов")
+                gr.Markdown("Выберите шаблон во вкладке **Генерация** и нажмите Сгенерировать. Модели подгружаются при первом запуске.")
+
+            # ========== TAB: BLOCKS ==========
+            with gr.Tab("🧱 Блоки", id="blocks"):
+                gr.Markdown("### Зарегистрированные блоки (Lego)")
+                def get_blocks_md():
                     try:
-                        from ..core.graph.graph import ComputeGraph
-                        from ..training.graph_trainer import GraphTrainer, GraphTrainingConfig
-                        from ..training.data import ImageFolderSource
-                        
-                        graph = ComputeGraph.from_template(template)
-                        train_nodes = [n.strip() for n in train_nodes_str.split(",")]
-                        
-                        config = GraphTrainingConfig(
-                            num_epochs=int(epochs),
-                            batch_size=int(batch),
-                            learning_rate=float(lr),
-                            optimizer=optimizer,
-                            mixed_precision=precision,
-                            use_ema=use_ema,
-                            loss_type=loss_type,
+                        from yggdrasil.core.block.registry import list_blocks
+                        blocks = list_blocks()
+                        if not blocks:
+                            return "Нет зарегистрированных блоков."
+                        by_cat = {}
+                        for k, cls in sorted(blocks.items()):
+                            cat = k.split("/")[0] if "/" in k else "other"
+                            by_cat.setdefault(cat, []).append((k, cls))
+                        lines = []
+                        for cat, items in sorted(by_cat.items()):
+                            lines.append(f"\n### {cat.upper()}")
+                            for k, cls in items:
+                                doc = (cls.__doc__ or "").split("\n")[0].strip()[:70]
+                                lines.append(f"- `{k}` — {doc}")
+                        return "\n".join(lines)
+                    except Exception as e:
+                        return f"Ошибка: {e}"
+                blocks_md = gr.Markdown(value=get_blocks_md())
+                gr.Button("Обновить").click(fn=get_blocks_md, outputs=[blocks_md])
+
+            # ========== TAB: TRAIN ==========
+            with gr.Tab("🎓 Обучение", id="train"):
+                gr.Markdown("### Обучение адаптера / дообучение графа")
+                with gr.Row():
+                    with gr.Column():
+                        train_template = gr.Dropdown(
+                            label="Шаблон графа",
+                            choices=[t[0] for t in (templates_by_mod["image"] + templates_by_mod.get("video", []) + templates_by_mod.get("audio", []))],
+                            value=templates_by_mod["image"][0][0] if templates_by_mod["image"] else None,
                         )
-                        
-                        trainer = GraphTrainer(graph=graph, train_nodes=train_nodes, config=config)
-                        dataset = ImageFolderSource(dataset_path)
-                        
+                        train_nodes = gr.Textbox(label="Обучаемые узлы (через запятую)", value="lora_adapter", placeholder="backbone, lora_adapter")
+                        train_data = gr.Textbox(label="Путь к данным", placeholder="/path/to/images/")
+                        train_epochs = gr.Slider(1, 500, value=10, step=1, label="Эпохи")
+                        train_lr = gr.Number(label="Learning rate", value=1e-4)
+                    with gr.Column():
+                        train_btn = gr.Button("Запустить обучение", variant="primary")
+                        train_status = gr.Textbox(label="Статус", interactive=False, lines=5)
+                def start_train(tpl, nodes, data, epochs, lr):
+                    if not data or not Path(data).exists():
+                        return f"Путь не найден: {data}"
+                    try:
+                        from yggdrasil.core.graph.graph import ComputeGraph
+                        from yggdrasil.training.graph_trainer import GraphTrainer, GraphTrainingConfig
+                        from yggdrasil.training.data import ImageFolderSource
+                        g = ComputeGraph.from_template(tpl)
+                        nlist = [n.strip() for n in nodes.split(",") if n.strip()]
+                        cfg = GraphTrainingConfig(num_epochs=int(epochs), batch_size=1, learning_rate=float(lr))
+                        trainer = GraphTrainer(graph=g, train_nodes=nlist, config=cfg)
+                        ds = ImageFolderSource(data)
                         import threading
                         def run():
                             try:
-                                trainer.train(dataset)
+                                trainer.train(ds)
                             except Exception as e:
-                                print(f"Graph training error: {e}")
-                        
-                        thread = threading.Thread(target=run, daemon=True)
-                        thread.start()
-                        
-                        return f"Graph training started | Template: {template} | Train nodes: {train_nodes} | Epochs: {epochs}"
+                                print(f"Train error: {e}")
+                        threading.Thread(target=run, daemon=True).start()
+                        return f"Обучение запущено: {tpl}, узлы {nlist}, эпох {epochs}"
                     except Exception as e:
-                        return f"Error: {e}"
-                
-                gt_start_btn.click(
-                    fn=start_graph_training,
-                    inputs=[gt_template, gt_train_nodes, gt_dataset_path, gt_loss, gt_epochs, gt_batch, gt_lr, gt_optimizer, gt_precision, gt_ema],
-                    outputs=[gt_status],
+                        return f"Ошибка: {e}"
+                train_btn.click(
+                    fn=start_train,
+                    inputs=[train_template, train_nodes, train_data, train_epochs, train_lr],
+                    outputs=[train_status],
                 )
-            
-            # =============== TAB 6: BLOCKS ===============
-            with gr.Tab("Blocks", id="blocks"):
-                gr.Markdown("### Registered Blocks (Lego Bricks)")
-                gr.Markdown("All available blocks in the registry. You can use these to build custom models and graphs.")
-                
-                def get_blocks_info() -> str:
-                    from ..core.block.registry import list_blocks
-                    blocks = list_blocks()
-                    if not blocks:
-                        return "No blocks registered"
-                    
-                    lines = []
-                    categories = {}
-                    for key, cls in sorted(blocks.items()):
-                        cat = key.split("/")[0] if "/" in key else "other"
-                        categories.setdefault(cat, []).append((key, cls))
-                    
-                    for cat, items in sorted(categories.items()):
-                        lines.append(f"\n### {cat.upper()}")
-                        for key, cls in items:
-                            doc = (cls.__doc__ or "").split("\n")[0].strip()
-                            # Show ports if available
-                            ports = ""
-                            try:
-                                io_ports = cls.declare_io()
-                                if io_ports:
-                                    in_ports = [p.name for p in io_ports.values() if p.direction == "input"]
-                                    out_ports = [p.name for p in io_ports.values() if p.direction == "output"]
-                                    ports = f" | In: {in_ports} | Out: {out_ports}"
-                            except Exception:
-                                pass
-                            lines.append(f"- `{key}` — {doc}{ports}")
-                    
-                    return "\n".join(lines)
-                
-                blocks_display = gr.Markdown(value=get_blocks_info())
-                gr.Button("Refresh").click(fn=get_blocks_info, outputs=[blocks_display])
-            
-            # =============== TAB 7: DEPLOY ===============
-            with gr.Tab("Deploy", id="deploy"):
-                gr.Markdown("### One-Click Deployment")
-                
-                with gr.Row():
-                    with gr.Column():
-                        deploy_target = gr.Dropdown(
-                            label="Deploy Target",
-                            choices=["Local Server", "RunPod Serverless", "Vast.ai"],
-                            value="Local Server",
-                        )
-                        deploy_graph_template = gr.Dropdown(
-                            label="Pipeline Template",
-                            choices=get_template_names(),
-                            value="sd15_txt2img",
-                        )
-                        deploy_port = gr.Number(label="Port (Local)", value=8000, precision=0)
-                        deploy_api_key = gr.Textbox(label="API Key (for cloud)", type="password", placeholder="your-api-key")
-                        deploy_gpu_type = gr.Textbox(label="GPU Type (cloud)", placeholder="RTX_4090")
-                    
-                    with gr.Column():
-                        deploy_btn = gr.Button("Deploy", variant="primary", size="lg")
-                        deploy_status = gr.Textbox(label="Deployment Status", interactive=False, lines=5)
-                
-                def deploy_graph(target, template, port, api_key, gpu_type):
-                    return f"Deployment configured: {target} | Template: {template} | Port: {port}"
-                
-                deploy_btn.click(
-                    fn=deploy_graph,
-                    inputs=[deploy_target, deploy_graph_template, deploy_port, deploy_api_key, deploy_gpu_type],
-                    outputs=[deploy_status],
-                )
-        
-        # Footer
-        gr.HTML("""
-        <div style="text-align: center; margin-top: 2em; color: #888; font-size: 0.85em;">
-            YggDrasil v2.0 — True Lego Constructor for Diffusion Models
-        </div>
-        """)
-    
+
+        gr.HTML(f'<div class="footer">YggDrasil — Lego для диффузии · {device_info}</div>')
+
     return demo

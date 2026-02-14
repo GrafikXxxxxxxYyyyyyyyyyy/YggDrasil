@@ -5,7 +5,7 @@
 пресетов ("sd15") и HF ID ("runwayml/stable-diffusion-v1-5").
 
 Запуск:
-    python examples/sd15/02_from_pretrained.py
+    python examples/images/sd15/02_from_pretrained.py
 """
 import torch
 from yggdrasil.pipeline import Pipeline

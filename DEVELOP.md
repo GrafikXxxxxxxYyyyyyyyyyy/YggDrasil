@@ -49,7 +49,7 @@ pip install -e ".[full,dev]"
 ## Структура
 
 - `yggdrasil/` — исходный код фреймворка
-- `examples/` — примеры (в т.ч. `examples/sd15`)
+- `examples/` — примеры: `examples/images/sd15`, `examples/images/sdxl`, `examples/audio`
 - `tests/` — тесты
 - `configs/` — конфиги и пресеты
 

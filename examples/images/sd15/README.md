@@ -45,7 +45,7 @@
 **Как запустить:**
 ```bash
 cd /path/to/YggDrasil
-python examples/sd15/generate.py
+python examples/images/sd15/generate.py
 ```
 
 **Возможности для разработки:**
@@ -60,7 +60,7 @@ python examples/sd15/generate.py
 
 **Как запустить:**
 ```bash
-python examples/sd15/generate_diffusers.py
+python examples/images/sd15/generate_diffusers.py
 ```
 
 **Возможности для разработки:**
@@ -74,7 +74,7 @@ python examples/sd15/generate_diffusers.py
 
 **Как запустить:**
 ```bash
-python examples/sd15/02_from_pretrained.py
+python examples/images/sd15/02_from_pretrained.py
 ```
 
 **Возможности для разработки:**
@@ -88,7 +88,7 @@ python examples/sd15/02_from_pretrained.py
 
 **Как запустить:**
 ```bash
-python examples/sd15/03_img2img.py
+python examples/images/sd15/03_img2img.py
 # При необходимости указать путь к изображению через аргумент.
 ```
 
@@ -103,7 +103,7 @@ python examples/sd15/03_img2img.py
 
 **Как запустить:**
 ```bash
-python examples/sd15/04_custom_parameters.py
+python examples/images/sd15/04_custom_parameters.py
 ```
 
 **Возможности для разработки:**
@@ -117,7 +117,7 @@ python examples/sd15/04_custom_parameters.py
 
 **Как запустить:**
 ```bash
-python examples/sd15/05_replace_solver.py
+python examples/images/sd15/05_replace_solver.py
 ```
 
 **Возможности для разработки:**
@@ -131,7 +131,7 @@ python examples/sd15/05_replace_solver.py
 
 **Как запустить:**
 ```bash
-python examples/sd15/06_replace_guidance.py
+python examples/images/sd15/06_replace_guidance.py
 ```
 
 **Возможности для разработки:**
@@ -145,7 +145,7 @@ python examples/sd15/06_replace_guidance.py
 
 **Как запустить:**
 ```bash
-python examples/sd15/07_build_minimal_graph.py
+python examples/images/sd15/07_build_minimal_graph.py
 ```
 
 **Возможности для разработки:**
@@ -159,7 +159,7 @@ python examples/sd15/07_build_minimal_graph.py
 
 **Как запустить:**
 ```bash
-python examples/sd15/08_execute_graph_directly.py
+python examples/images/sd15/08_execute_graph_directly.py
 ```
 
 **Возможности для разработки:**
@@ -173,7 +173,7 @@ python examples/sd15/08_execute_graph_directly.py
 
 **Как запустить:**
 ```bash
-python examples/sd15/09_controlnet.py
+python examples/images/sd15/09_controlnet.py
 # При необходимости указать путь к контрольному изображению.
 ```
 
@@ -188,7 +188,7 @@ python examples/sd15/09_controlnet.py
 
 **Как запустить:**
 ```bash
-python examples/sd15/10_list_templates_blocks.py
+python examples/images/sd15/10_list_templates_blocks.py
 ```
 
 **Возможности для разработки:**
@@ -208,7 +208,7 @@ python examples/sd15/10_list_templates_blocks.py
 ```bash
 cd /path/to/YggDrasil
 export PYTHONPATH=.   # при необходимости
-python examples/sd15/<script>.py
+python examples/images/sd15/<script>.py
 ```
 
 ---

@@ -6,7 +6,7 @@
 интеграции в свои скрипты и для отладки.
 
 Запуск:
-    python examples/sd15/08_execute_graph_directly.py
+    python examples/images/sd15/08_execute_graph_directly.py
 """
 import torch
 from yggdrasil.core.graph.graph import ComputeGraph

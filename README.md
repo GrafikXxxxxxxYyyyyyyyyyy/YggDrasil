@@ -1,5 +1,57 @@
 # YggDrasil
 
+Универсальный Lego-фреймворк для диффузионных моделей: изображения, видео, аудио — любые модальности и любые модели.
+
+## Установка
+
+**Из PyPI (после публикации):**
+```bash
+pip install yggdrasil
+```
+
+**Из исходников (клонированный репозиторий):**
+```bash
+cd YggDrasil
+pip install .
+```
+
+**Режим разработки (editable):**
+```bash
+pip install -e .
+```
+
+**Из Git:**
+```bash
+pip install git+https://github.com/your-org/YggDrasil.git
+```
+
+**Публикация на PyPI** (чтобы работало `pip install yggdrasil` для всех):
+```bash
+pip install build twine
+python -m build
+twine upload dist/*
+# или для Test PyPI: twine upload --repository testpypi dist/*
+```
+
+После установки доступна команда `yggdrasil`:
+```bash
+yggdrasil ui          # Gradio-интерфейс
+yggdrasil ui --share  # с публичной ссылкой
+yggdrasil api         # REST API
+python -m yggdrasil ui  # то же через модуль
+```
+
+Дополнительные зависимости (обучение, LoRA, графы):
+```bash
+pip install yggdrasil[full]   # networkx, safetensors, peft, torchvision, ...
+pip install yggdrasil[train]  # для обучения
+pip install yggdrasil[dev]    # pytest, ruff, mypy
+```
+
+---
+
+## Структура проекта
+
 YggDrasil/
 │
 ├── core/                          # 🔨 ФУНДАМЕНТ LEGO (только интерфейсы и инструменты сборки)

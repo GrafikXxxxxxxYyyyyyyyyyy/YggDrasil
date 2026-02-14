@@ -193,6 +193,7 @@ def _build_txt2img_graph(
     default_width: int = 512,
     default_height: int = 512,
     use_batched_cfg: bool = False,
+    use_euler_scale_input: bool = False,
 ) -> ComputeGraph:
     """Build a complete txt2img pipeline with denoising loop.
     
@@ -222,15 +223,19 @@ def _build_txt2img_graph(
         "spatial_scale_factor": codec_config.get("spatial_scale_factor", 8),
         "init_noise_sigma": solver_config.get("init_noise_sigma", 1.0),
     }
-    
+    if use_euler_scale_input:
+        graph.metadata["use_euler_init_sigma"] = True
+
     # Build blocks
     backbone = BlockBuilder.build(backbone_config)
     codec = BlockBuilder.build(codec_config)
     guidance = BlockBuilder.build(guidance_config)
     solver = BlockBuilder.build(solver_config)
 
-    # Build inner step: batched CFG (one UNet forward) for diffusers parity, or dual-pass
-    if use_cfg and use_batched_cfg:
+    # Build inner step: Euler+scale (SD 1.5/SDXL parity), batched CFG, or dual-pass
+    if use_cfg and use_batched_cfg and use_euler_scale_input:
+        step_graph = _build_denoise_step_batched_cfg_euler(backbone_config, guidance_config, solver)
+    elif use_cfg and use_batched_cfg:
         step_graph = _build_denoise_step_batched_cfg(backbone_config, guidance_config, solver)
     else:
         step_graph = _build_denoise_step(backbone, guidance, solver, use_cfg=use_cfg)
@@ -305,6 +310,9 @@ def _build_txt2img_graph(
 def sd15_txt2img(**kwargs) -> ComputeGraph:
     """Stable Diffusion 1.5 text-to-image pipeline (full, with denoising loop).
     
+    Uses PNDMScheduler (как в diffusers StableDiffusionPipeline) для консистентности
+    с output_diffusers.png при тех же prompt/seed/steps.
+    
     Использование::
     
         graph = ComputeGraph.from_template("sd15_txt2img", device="cuda")
@@ -312,7 +320,7 @@ def sd15_txt2img(**kwargs) -> ComputeGraph:
         image = outputs["decoded"]
     """
     pretrained = kwargs.get("pretrained", "runwayml/stable-diffusion-v1-5")
-    return _build_txt2img_graph(
+    graph = _build_txt2img_graph(
         name="sd15_txt2img",
         backbone_config={"type": "backbone/unet2d_condition", "pretrained": pretrained, "fp16": True},
         codec_config={"type": "codec/autoencoder_kl", "pretrained": pretrained, "fp16": True, "scaling_factor": 0.18215, "latent_channels": 4, "spatial_scale_factor": 8},
@@ -323,13 +331,13 @@ def sd15_txt2img(**kwargs) -> ComputeGraph:
             "guidance_rescale": 0.7,
         },
         solver_config={
-            "type": "diffusion/solver/ddim",
-            "eta": 0.0,
-            "beta_schedule": "scaled_linear",
+            "type": "solver/pndm_diffusers",
+            "num_train_timesteps": 1000,
             "beta_start": 0.00085,
             "beta_end": 0.012,
-            "num_train_timesteps": 1000,
-            "clip_sample_range": 1.0,
+            "beta_schedule": "scaled_linear",
+            "skip_prk_steps": True,
+            "set_alpha_to_one": False,
             "steps_offset": 1,
         },
         schedule_config={"type": "noise/schedule/linear", "num_train_timesteps": 1000},
@@ -338,7 +346,10 @@ def sd15_txt2img(**kwargs) -> ComputeGraph:
         default_width=512,
         default_height=512,
         use_batched_cfg=True,
+        use_euler_scale_input=False,
     )
+    graph.metadata["use_scheduler_timesteps"] = True
+    return graph
 
 
 @register_template("sd15_txt2img_nobatch")
@@ -412,6 +423,7 @@ def _build_sdxl_txt2img_graph(
         "latent_channels": 4,
         "spatial_scale_factor": 8,
         "modality": "image",
+        "use_euler_init_sigma": True,  # init_noise_sigma taken from Euler solver at runtime
     }
 
     backbone_config = {"type": "backbone/unet2d_condition", "pretrained": pretrained, "fp16": True}
@@ -436,19 +448,20 @@ def _build_sdxl_txt2img_graph(
     })
     codec = BlockBuilder.build(codec_config)
 
+    # SDXL in diffusers uses EulerDiscreteScheduler + scale_model_input; DDIM without scaling produces noise.
     solver_config = {
-        "type": "diffusion/solver/ddim",
-        "eta": 0.0,
-        "beta_schedule": "scaled_linear",
+        "type": "solver/euler_discrete",
+        "num_train_timesteps": 1000,
         "beta_start": 0.00085,
         "beta_end": 0.012,
-        "num_train_timesteps": 1000,
+        "beta_schedule": "scaled_linear",
         "steps_offset": 1,
+        "timestep_spacing": "leading",
     }
     solver = BlockBuilder.build(solver_config)
 
     if use_batched_cfg:
-        step_graph = _build_denoise_step_batched_cfg(backbone_config, guidance_config, solver)
+        step_graph = _build_denoise_step_batched_cfg_euler(backbone_config, guidance_config, solver)
     else:
         backbone = BlockBuilder.build(backbone_config)
         guidance = BlockBuilder.build(guidance_config)

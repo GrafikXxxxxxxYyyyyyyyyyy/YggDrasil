@@ -88,7 +88,16 @@ class DiffusersBridge:
         "PixArtTransformer2DModel": "backbone/dit",
         "CogVideoXTransformer3DModel": "backbone/dit",
         "HunyuanDiT2DModel": "backbone/mmdit",
+        "HunyuanVideoTransformer3DModel": "backbone/unet3d_condition",
+        "HunyuanVideo15Transformer3DModel": "backbone/unet3d_condition",
         "LatteTransformer3DModel": "backbone/dit",
+        "EasyAnimateTransformer3DModel": "backbone/dit",
+        "SanaVideoTransformer3DModel": "backbone/dit",
+        "SkyReelsV2Transformer3DModel": "backbone/dit",
+        "LTXVideoTransformer3DModel": "backbone/dit",
+        "WanTransformer3DModel": "backbone/wan_transformer",
+        "WanAnimateTransformer3DModel": "backbone/wan_transformer",
+        "I2VGenXLUNet": "backbone/unet3d_condition",
         "UNetSpatioTemporalConditionModel": "backbone/unet3d_condition",
         "StableAudioDiTModel": "backbone/dit",  # Stable Audio transformer
     }
@@ -106,14 +115,39 @@ class DiffusersBridge:
         "StableDiffusionControlNetPipeline": "controlnet_txt2img",
         "StableDiffusionXLControlNetPipeline": "controlnet_txt2img",
         "AnimateDiffPipeline": "animatediff_txt2vid",
+        "AnimateDiffControlNetPipeline": "animatediff_txt2vid",
+        "AnimateDiffVideoToVideoPipeline": "animatediff_txt2vid",
         "CogVideoXPipeline": "cogvideox_txt2vid",
+        "CogVideoXImageToVideoPipeline": "cogvideox_img2vid",
+        "CogVideoXVideoToVideoPipeline": "cogvideox_txt2vid",
+        "EasyAnimatePipeline": "easyanimate_txt2vid",
+        "LattePipeline": "latte_txt2vid",
+        "TextToVideoSDPipeline": "text_to_video_sd",
+        "TextToVideoZeroPipeline": "text_to_video_sd",
+        "TextToVideoZeroSDXLPipeline": "text_to_video_sd",
+        "VideoToVideoSDPipeline": "stable_video_diffusion",
         "StableVideoDiffusionPipeline": "stable_video_diffusion",
         "I2VGenXLPipeline": "i2vgen_xl",
+        "WanPipeline": "wan_txt2vid",
+        "WanImageToVideoPipeline": "wan_img2vid",
+        "WanAnimatePipeline": "wan_animate",
+        "WanVideoToVideoPipeline": "wan_txt2vid",
+        "SanaVideoPipeline": "sana_video_txt2vid",
+        "SanaImageToVideoPipeline": "sana_video_txt2vid",
+        "HunyuanVideoPipeline": "hunyuan_video_txt2vid",
+        "HunyuanVideo15Pipeline": "hunyuan_video_txt2vid",
+        "HunyuanVideoImageToVideoPipeline": "i2vgen_xl",
+        "HunyuanVideo15ImageToVideoPipeline": "i2vgen_xl",
+        "LTXPipeline": "ltx_txt2vid",
+        "LTXImageToVideoPipeline": "ltx_txt2vid",
+        "SkyReelsV2Pipeline": "text_to_video_sd",
+        "SkyReelsV2ImageToVideoPipeline": "i2vgen_xl",
         "AudioLDMPipeline": "audioldm_txt2audio",
         "AudioLDM2Pipeline": "audioldm2_txt2audio",
         "StableAudioPipeline": "stable_audio",
         "MusicLDMPipeline": "musicldm_txt2audio",
         "DanceDiffusionPipeline": "dance_diffusion_audio",
+        "AuraFlowPipeline": "aura_flow_audio",
         "ShapEPipeline": "shap_e_txt2_3d",
         "KandinskyV22Pipeline": "kandinsky_txt2img",
         "IFPipeline": "deepfloyd_txt2img",
@@ -178,10 +212,36 @@ class DiffusersBridge:
             template = "stable_audio"
         elif "dance" in model_id_lower and "diffusion" in model_id_lower:
             template = "dance_diffusion_audio"
+        elif "auraflow" in model_id_lower or "aura_flow" in model_id_lower:
+            template = "aura_flow_audio"
         elif "animatediff" in model_id_lower:
             template = "animatediff_txt2vid"
+        elif "cogvideo" in model_id_lower and "image" in model_id_lower:
+            template = "cogvideox_img2vid"
         elif "cogvideo" in model_id_lower:
             template = "cogvideox_txt2vid"
+        elif "i2vgen" in model_id_lower or "i2vgen-xl" in model_id_lower:
+            template = "i2vgen_xl"
+        elif "stable-video" in model_id_lower or "stable_video" in model_id_lower or "svd" in model_id_lower:
+            template = "stable_video_diffusion"
+        elif "wan" in model_id_lower and "animate" in model_id_lower:
+            template = "wan_animate"
+        elif "wan" in model_id_lower and ("img2vid" in model_id_lower or "image" in model_id_lower):
+            template = "wan_img2vid"
+        elif "wan" in model_id_lower:
+            template = "wan_txt2vid"
+        elif "easyanimate" in model_id_lower:
+            template = "easyanimate_txt2vid"
+        elif "latte" in model_id_lower and "video" in model_id_lower:
+            template = "latte_txt2vid"
+        elif "sana" in model_id_lower and "video" in model_id_lower:
+            template = "sana_video_txt2vid"
+        elif "hunyuan" in model_id_lower and "video" in model_id_lower:
+            template = "hunyuan_video_txt2vid"
+        elif "ltx" in model_id_lower and "video" in model_id_lower:
+            template = "ltx_txt2vid"
+        elif "text-to-video" in model_id_lower or "text2video" in model_id_lower:
+            template = "text_to_video_sd"
         elif "shap-e" in model_id_lower:
             template = "shap_e_txt2_3d"
         else:
