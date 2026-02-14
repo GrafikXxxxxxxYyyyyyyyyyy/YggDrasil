@@ -96,6 +96,44 @@ def _build_denoise_step(
     return step
 
 
+def _build_denoise_step_batched_cfg(
+    backbone_config: dict,
+    guidance_config: dict,
+    solver,
+) -> ComputeGraph:
+    """Build per-step graph with single batched UNet+CFG forward (diffusers parity).
+    
+    One backbone call with cat([latents, latents]) and cat([uncond_emb, cond_emb]),
+    then chunk + CFG + optional guidance_rescale inside the block.
+    """
+    from yggdrasil.core.block.builder import BlockBuilder
+
+    batched_config = {
+        **backbone_config,
+        "type": "backbone/unet2d_batched_cfg",
+        "scale": guidance_config.get("scale", 7.5),
+        "guidance_rescale": guidance_config.get("guidance_rescale", 0.0),
+    }
+    batched_backbone = BlockBuilder.build(batched_config)
+
+    step = ComputeGraph("denoise_step")
+    step.add_node("backbone", batched_backbone)
+    step.add_node("solver", solver)
+
+    step.connect("backbone", "output", "solver", "model_output")
+    step.expose_input("latents", "backbone", "x")
+    step.expose_input("latents", "solver", "current_latents")
+    step.expose_input("timestep", "backbone", "timestep")
+    step.expose_input("timestep", "solver", "timestep")
+    step.expose_input("condition", "backbone", "condition")
+    step.expose_input("uncond", "backbone", "uncond")
+    step.expose_input("next_timestep", "solver", "next_timestep")
+    step.expose_output("next_latents", "solver", "next_latents")
+    step.expose_output("latents", "solver", "next_latents")
+
+    return step
+
+
 # ==================== HELPER: BUILD FULL PIPELINE ====================
 
 def _build_txt2img_graph(
@@ -111,6 +149,7 @@ def _build_txt2img_graph(
     num_steps: int = 50,
     default_width: int = 512,
     default_height: int = 512,
+    use_batched_cfg: bool = False,
 ) -> ComputeGraph:
     """Build a complete txt2img pipeline with denoising loop.
     
@@ -138,6 +177,7 @@ def _build_txt2img_graph(
         "default_height": default_height,
         "latent_channels": codec_config.get("latent_channels", 4),
         "spatial_scale_factor": codec_config.get("spatial_scale_factor", 8),
+        "init_noise_sigma": solver_config.get("init_noise_sigma", 1.0),
     }
     
     # Build blocks
@@ -145,15 +185,23 @@ def _build_txt2img_graph(
     codec = BlockBuilder.build(codec_config)
     guidance = BlockBuilder.build(guidance_config)
     solver = BlockBuilder.build(solver_config)
+
+    # Build inner step: batched CFG (one UNet forward) for diffusers parity, or dual-pass
+    if use_cfg and use_batched_cfg:
+        step_graph = _build_denoise_step_batched_cfg(backbone_config, guidance_config, solver)
+    else:
+        step_graph = _build_denoise_step(backbone, guidance, solver, use_cfg=use_cfg)
     
-    # Build inner step graph (explicit dual-pass, no _backbone_ref)
-    step_graph = _build_denoise_step(backbone, guidance, solver, use_cfg=use_cfg)
-    
-    # Wrap in denoising loop
+    # Wrap in denoising loop (leading + steps_offset to match diffusers DDIM)
+    num_train_t = int(schedule_config.get("num_train_timesteps", 1000))
+    steps_offset = int(solver_config.get("steps_offset", 0))
     loop = LoopSubGraph.create(
         inner_graph=step_graph,
         num_iterations=num_steps,
         carry_vars=["latents"],
+        num_train_timesteps=num_train_t,
+        timestep_spacing="leading",
+        steps_offset=steps_offset,
     )
     
     # Add conditioners
@@ -163,17 +211,10 @@ def _build_txt2img_graph(
         conditioners.append(cond)
         graph.add_node(f"conditioner_{i}", cond)
     
-    # Null conditioner for CFG unconditional pass
+    # CFG unconditional = same text encoder with empty string (diffusers does this; zeros give wrong quality)
     if use_cfg:
-        # Infer embedding shape from first conditioner config
-        emb_dim = conditioner_configs[0].get("embedding_dim", 768)
-        seq_len = conditioner_configs[0].get("max_length", 77)
-        null_cond = BlockBuilder.build({
-            "type": "conditioner/null",
-            "embedding_dim": emb_dim,
-            "seq_length": seq_len,
-        })
-        graph.add_node("null_conditioner", null_cond)
+        cond_neg = BlockBuilder.build(conditioner_configs[0])
+        graph.add_node("conditioner_negative", cond_neg)
     
     # Position embedder (if needed)
     if position_config:
@@ -194,11 +235,10 @@ def _build_txt2img_graph(
     # Condition path: conditioner -> loop.condition
     graph.connect("conditioner_0", "embedding", "denoise_loop", "condition")
     
-    # Unconditional path: null_conditioner -> loop.uncond
+    # Unconditional path: same CLIP with negative_prompt ("" = empty string, like diffusers)
     if use_cfg:
-        # null_conditioner also needs a dummy input to trigger process()
-        graph.expose_input("prompt", "null_conditioner", "raw_condition")
-        graph.connect("null_conditioner", "embedding", "denoise_loop", "uncond")
+        graph.expose_input("negative_prompt", "conditioner_negative", "raw_condition")
+        graph.connect("conditioner_negative", "embedding", "denoise_loop", "uncond")
     
     # Noise input -> loop
     graph.expose_input("latents", "denoise_loop", "initial_latents")
@@ -228,19 +268,33 @@ def sd15_txt2img(**kwargs) -> ComputeGraph:
         outputs = graph.execute(prompt="a cat", guidance_scale=7.5, num_steps=28, seed=42)
         image = outputs["decoded"]
     """
-    pretrained = kwargs.get("pretrained", "stable-diffusion-v1-5/stable-diffusion-v1-5")
+    pretrained = kwargs.get("pretrained", "runwayml/stable-diffusion-v1-5")
     return _build_txt2img_graph(
         name="sd15_txt2img",
         backbone_config={"type": "backbone/unet2d_condition", "pretrained": pretrained, "fp16": True},
         codec_config={"type": "codec/autoencoder_kl", "pretrained": pretrained, "fp16": True, "scaling_factor": 0.18215, "latent_channels": 4, "spatial_scale_factor": 8},
         conditioner_configs=[{"type": "conditioner/clip_text", "pretrained": pretrained, "tokenizer_subfolder": "tokenizer", "text_encoder_subfolder": "text_encoder", "max_length": 77}],
-        guidance_config={"type": "guidance/cfg", "scale": 7.5},
-        solver_config={"type": "diffusion/solver/ddim", "eta": 0.0},
+        guidance_config={
+            "type": "guidance/cfg",
+            "scale": 7.5,
+            "guidance_rescale": 0.7,
+        },
+        solver_config={
+            "type": "diffusion/solver/ddim",
+            "eta": 0.0,
+            "beta_schedule": "scaled_linear",
+            "beta_start": 0.00085,
+            "beta_end": 0.012,
+            "num_train_timesteps": 1000,
+            "clip_sample_range": 1.0,
+            "steps_offset": 1,
+        },
         schedule_config={"type": "noise/schedule/linear", "num_train_timesteps": 1000},
         process_config={"type": "diffusion/process/ddpm"},
         num_steps=kwargs.get("num_steps", 50),
         default_width=512,
         default_height=512,
+        use_batched_cfg=True,
     )
 
 

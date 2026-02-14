@@ -292,6 +292,10 @@ class Pipeline:
             if isinstance(prompt, str):
                 prompt = {"text": prompt}
             kwargs["prompt"] = prompt
+        if "negative_prompt" in graph_input_names:
+            kwargs.setdefault("negative_prompt", "")
+            if isinstance(kwargs["negative_prompt"], dict):
+                kwargs["negative_prompt"] = kwargs["negative_prompt"].get("text", "")
         
         # ── Generate noise (only if graph expects latents and none provided) ──
         if "latents" in graph_input_names and "latents" not in kwargs:
@@ -337,17 +341,23 @@ class Pipeline:
         device = self.graph._device or torch.device("cpu")
         device_type = device.type if hasattr(device, 'type') else str(device)
         
+        # Use float32 for initial noise so the denoising loop accumulates in float32 (avoids banding; diffusers does this on MPS)
+        dtype = torch.float32 if device_type == "mps" else torch.get_default_dtype()
         if seed is not None:
             if device_type == "mps":
                 g = torch.Generator().manual_seed(seed)
-                noise = torch.randn(batch_size, channels, h, w, generator=g)
+                noise = torch.randn(batch_size, channels, h, w, dtype=dtype, generator=g)
             else:
                 g = torch.Generator(device).manual_seed(seed)
-                noise = torch.randn(batch_size, channels, h, w, device=device, generator=g)
+                noise = torch.randn(batch_size, channels, h, w, device=device, dtype=dtype, generator=g)
         else:
-            noise = torch.randn(batch_size, channels, h, w)
-        
-        return noise.to(device)
+            noise = torch.randn(batch_size, channels, h, w, dtype=dtype)
+
+        init_sigma = meta.get("init_noise_sigma", 1.0)
+        if init_sigma != 1.0:
+            noise = noise * init_sigma
+
+        return noise.to(device=device, dtype=dtype)
     
     def _build_output(self, raw: Dict[str, Any]) -> PipelineOutput:
         """Convert raw graph output to PipelineOutput."""
@@ -385,7 +395,8 @@ class Pipeline:
             return None
         
         img = tensor.cpu().float()
-        if img.min() < -0.5:
+        # VAE outputs [-1, 1]; denormalize to [0, 1] for PIL
+        if img.min() < -0.01 or img.max() > 1.01:
             img = (img / 2 + 0.5)
         img = img.clamp(0, 1)
         

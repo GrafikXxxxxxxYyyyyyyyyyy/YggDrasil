@@ -9,7 +9,12 @@ from ...core.model.codec import AbstractLatentCodec
 
 @register_block("codec/autoencoder_kl")
 class AutoencoderKLCodec(AbstractLatentCodec):
-    """VAE для SD 1.5 / SDXL (KL-regularized autoencoder)."""
+    """VAE для SD 1.5 / SDXL (KL-regularized autoencoder).
+    
+    Загружается в float16 для экономии памяти.
+    Декодирование на MPS выполняется в float32 для стабильности
+    (GroupNorm/upsample в float16 на MPS может давать NaN).
+    """
     
     block_type = "codec/autoencoder_kl"
     is_trainable = False
@@ -24,6 +29,7 @@ class AutoencoderKLCodec(AbstractLatentCodec):
             subfolder="vae",
             torch_dtype=torch.float16 if config.get("fp16", True) else torch.float32,
         )
+        self.vae.requires_grad_(False)
         self.scaling_factor = config.get("scaling_factor", 0.18215)
         self.latent_channels = int(config.get("latent_channels", 4))
         self.spatial_scale_factor = int(config.get("spatial_scale_factor", 8))
@@ -43,13 +49,28 @@ class AutoencoderKLCodec(AbstractLatentCodec):
         )
     
     def encode(self, x: torch.Tensor) -> torch.Tensor:
+        vae_device = next(self.vae.parameters()).device
+        x = x.to(device=vae_device, dtype=self.vae.dtype)
         x = x * 2.0 - 1.0  # [0, 1] -> [-1, 1], VAE expects [-1, 1]
-        latents = self.vae.encode(x).latent_dist.sample()
+        with torch.no_grad():
+            latents = self.vae.encode(x).latent_dist.sample()
         latents = latents * self.scaling_factor
         return latents
     
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         z = z / self.scaling_factor
-        # Cast to VAE dtype (latents after solver may be float32 while VAE is float16)
-        z = z.to(dtype=self.vae.dtype)
-        return self.vae.decode(z).sample
+        vae_device = next(self.vae.parameters()).device
+        
+        # On MPS: decode in float32 for stability (GroupNorm/conv in fp16 can artifact)
+        # Keep VAE in float32 after first decode to avoid repeated dtype toggling
+        if vae_device.type == "mps":
+            z = z.to(device=vae_device, dtype=torch.float32)
+            with torch.no_grad():
+                self.vae.to(dtype=torch.float32)
+                decoded = self.vae.decode(z).sample
+        else:
+            z = z.to(device=vae_device, dtype=self.vae.dtype)
+            with torch.no_grad():
+                decoded = self.vae.decode(z).sample
+        # Return float32 for stable postprocess (denorm to [0,1])
+        return decoded.float()

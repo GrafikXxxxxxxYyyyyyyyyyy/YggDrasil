@@ -82,12 +82,16 @@ class ComputeGraph:
         """Перенести весь граф на устройство.
         
         Рекурсивно переносит все узлы, включая вложенные SubGraph.
-        На MPS автоматически использует float32 (fp16 нестабилен).
+        
+        Когда dtype=None (по умолчанию), каждый блок сохраняет свой
+        оригинальный dtype. Это позволяет UNet оставаться в float16
+        на MPS (быстрее и экономичнее), а CLIP — в float32
+        (нужен для LayerNorm).
         
         Args:
             device: Устройство ("cuda", "mps", "cpu", torch.device).
-            dtype: Тип данных (torch.float16, torch.float32).
-                   Если None — выбирается автоматически по устройству.
+            dtype: Тип данных. Если None — блоки сохраняют свой dtype.
+                   Если указан — все блоки конвертируются.
         
         Returns:
             self (для chaining).
@@ -98,15 +102,7 @@ class ComputeGraph:
             device = torch.device(device)
         
         self._device = device
-        
-        # Auto-resolve dtype: MPS/CPU → float32, CUDA → float16
-        if dtype is None and device is not None:
-            device_type = device.type if hasattr(device, 'type') else str(device)
-            if device_type in ("mps", "cpu"):
-                dtype = torch.float32
-            else:
-                dtype = torch.float16
-        self._dtype = dtype
+        self._dtype = dtype  # None means "keep original per-block dtype"
         
         # Move all nodes recursively
         for name, block in self.nodes.items():
@@ -120,6 +116,9 @@ class ComputeGraph:
     @staticmethod
     def _move_block(block, device, dtype):
         """Move a single block to device/dtype."""
+        import logging
+        _logger = logging.getLogger(__name__)
+        
         if not hasattr(block, 'to'):
             return
         try:
@@ -128,11 +127,19 @@ class ComputeGraph:
             else:
                 block.to(device)
         except TypeError:
-            # Some blocks don't accept dtype
+            # Some blocks don't accept dtype kwarg — retry with device only
             try:
                 block.to(device)
-            except Exception:
-                pass
+            except Exception as e:
+                _logger.warning(
+                    f"Failed to move block {getattr(block, 'block_type', type(block).__name__)} "
+                    f"to {device}: {e}"
+                )
+        except Exception as e:
+            _logger.warning(
+                f"Failed to move block {getattr(block, 'block_type', type(block).__name__)} "
+                f"to {device}/{dtype}: {e}"
+            )
     
     @property
     def device(self):

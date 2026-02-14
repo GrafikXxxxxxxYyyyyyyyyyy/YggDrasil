@@ -136,6 +136,9 @@ class LoopSubGraph(AbstractBlock):
         self.num_iterations = self.config.get("num_iterations", 50)
         self.carry_vars = list(self.config.get("carry_vars", ["latents"]))
         self.show_progress = self.config.get("show_progress", True)
+        self.num_train_timesteps = int(self.config.get("num_train_timesteps", 1000))
+        self.timestep_spacing = self.config.get("timestep_spacing", "leading")
+        self.steps_offset = int(self.config.get("steps_offset", 0))
     
     @classmethod
     def create(
@@ -144,6 +147,9 @@ class LoopSubGraph(AbstractBlock):
         num_iterations: int = 50,
         carry_vars: list | None = None,
         show_progress: bool = True,
+        num_train_timesteps: int = 1000,
+        timestep_spacing: str = "leading",
+        steps_offset: int = 0,
     ) -> LoopSubGraph:
         """Создать LoopSubGraph."""
         config = {
@@ -151,6 +157,9 @@ class LoopSubGraph(AbstractBlock):
             "num_iterations": num_iterations,
             "carry_vars": carry_vars or ["latents"],
             "show_progress": show_progress,
+            "num_train_timesteps": num_train_timesteps,
+            "timestep_spacing": timestep_spacing,
+            "steps_offset": steps_offset,
         }
         instance = cls(config)
         instance._inner_graph = inner_graph
@@ -200,9 +209,16 @@ class LoopSubGraph(AbstractBlock):
         device = latents.device if latents is not None and hasattr(latents, 'device') else torch.device("cpu")
         
         if timesteps is None:
-            # Default: uniform timestep schedule
+            # Match diffusers set_timesteps (leading / linspace) + steps_offset
             num_steps = self.num_iterations
-            timesteps = torch.linspace(999, 0, num_steps, device=device).long()
+            T = self.num_train_timesteps
+            if self.timestep_spacing == "leading":
+                step_ratio = T // num_steps
+                timesteps = torch.arange(0, num_steps, device=device).long() * step_ratio
+                timesteps = timesteps.flip(0)
+            else:
+                timesteps = torch.linspace(T - 1, 0, num_steps, device=device).long()
+            timesteps = (timesteps + self.steps_offset).clamp(0, T - 1)
         elif not isinstance(timesteps, torch.Tensor):
             timesteps = torch.tensor(timesteps, device=device).long()
         else:
