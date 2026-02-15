@@ -1,11 +1,11 @@
-"""High-level Pipeline API — like HuggingFace Diffusers but with full Lego access.
+"""High-level InferencePipeline API — like HuggingFace Diffusers but with full Lego access.
 
     # One-liner
-    pipe = Pipeline.from_pretrained("stable-diffusion-v1-5/stable-diffusion-v1-5", device="cuda")
+    pipe = InferencePipeline.from_pretrained("stable-diffusion-v1-5/stable-diffusion-v1-5", device="cuda")
     image = pipe("a beautiful cat", num_steps=28, seed=42).images[0]
 
     # From template
-    pipe = Pipeline.from_template("sd15_txt2img", device="cuda")
+    pipe = InferencePipeline.from_template("sd15_txt2img", device="cuda")
     image = pipe("a cat").images[0]
 
     # Full graph access underneath
@@ -20,7 +20,7 @@ import io
 import torch
 import numpy as np
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 from pathlib import Path
 from urllib.request import urlopen
 from urllib.error import URLError
@@ -61,7 +61,7 @@ def _pil_to_tensor(pil_img: Any) -> torch.Tensor:
 
 @dataclass
 class PipelineOutput:
-    """Structured output from Pipeline execution.
+    """Structured output from InferencePipeline execution.
     
     Attributes:
         images:  List of PIL Images (for image pipelines)
@@ -77,21 +77,21 @@ class PipelineOutput:
     raw: Dict[str, Any] = field(default_factory=dict)
 
 
-class Pipeline:
-    """High-level pipeline wrapping a ComputeGraph.
-    
+class InferencePipeline:
+    """High-level inference pipeline wrapping a ComputeGraph.
+
     Provides a diffusers-like interface while maintaining full Lego access
     to the underlying graph.
     """
-    
+
     def __init__(self, graph, *, device=None, dtype=None):
         from yggdrasil.core.graph.graph import ComputeGraph
         self.graph: ComputeGraph = graph
         if device is not None:
             self.graph.to(device, dtype)
-    
+
     @classmethod
-    def from_template(cls, template_name: str, *, device=None, dtype=None, **kwargs) -> Pipeline:
+    def from_template(cls, template_name: str, *, device=None, dtype=None, **kwargs) -> "InferencePipeline":
         """Create pipeline from a named template.
         
         Args:
@@ -101,11 +101,11 @@ class Pipeline:
             **kwargs: Extra args for template builder (e.g. pretrained="...")
         
         Returns:
-            Pipeline ready for generation.
-        
+            InferencePipeline ready for generation.
+
         Example::
-        
-            pipe = Pipeline.from_template("sd15_txt2img", device="cuda")
+
+            pipe = InferencePipeline.from_template("sd15_txt2img", device="cuda")
             output = pipe("a cat")
         """
         from yggdrasil.core.graph.graph import ComputeGraph
@@ -116,13 +116,13 @@ class Pipeline:
         return cls(graph, device=device, dtype=dtype)
     
     @classmethod
-    def from_pretrained(cls, model_id: str, *, device=None, dtype=None, **kwargs) -> Pipeline:
+    def from_pretrained(cls, model_id: str, *, device=None, dtype=None, **kwargs) -> "InferencePipeline":
         """Load pipeline from HuggingFace model ID or local path.
         
-        Resolution chain (tries in order, collects all errors):
-        1. DiffusersBridge.from_pretrained()
-        2. Hub registry (resolve_model)
-        3. Template string matching
+        Prefer native YggDrasil graph (from template). Resolution order:
+        1. Hub registry (resolve_model) → ComputeGraph.from_template
+        2. Template matching from model_id (sd15/sdxl/sd3/flux, stable-diffusion-*)
+        3. DiffusersBridge.from_pretrained (load diffusers then import to graph) — last resort
         
         Args:
             model_id: HuggingFace model ID or local path
@@ -130,29 +130,21 @@ class Pipeline:
             dtype: Data type
         
         Returns:
-            Pipeline ready for generation.
-        
+            InferencePipeline with a YggDrasil ComputeGraph.
+
         Raises:
             ValueError: If model cannot be resolved (with full error chain).
         
         Example::
         
-            pipe = Pipeline.from_pretrained(
-                "stable-diffusion-v1-5/stable-diffusion-v1-5",
+            pipe = InferencePipeline.from_pretrained(
+                "stabilityai/stable-diffusion-xl-base-1.0",
                 device="cuda"
             )
         """
         errors = []
         
-        # 1. Try DiffusersBridge
-        try:
-            from yggdrasil.integration.diffusers import DiffusersBridge
-            graph = DiffusersBridge.from_pretrained(model_id, **kwargs)
-            return cls(graph, device=device, dtype=dtype)
-        except Exception as e:
-            errors.append(f"DiffusersBridge: {type(e).__name__}: {e}")
-        
-        # 2. Try hub registry
+        # 1. Prefer native YggDrasil graph: hub registry
         try:
             from yggdrasil.hub import resolve_model
             template_name, template_kwargs = resolve_model(model_id)
@@ -160,7 +152,7 @@ class Pipeline:
         except Exception as e:
             errors.append(f"Hub registry: {type(e).__name__}: {e}")
         
-        # 3. Fallback: guess template from model_id (preset names or HF-style ids)
+        # 2. Prefer native YggDrasil graph: template from model_id (preset or keyword)
         preset_to_template = {"sd15": "sd15_txt2img", "sdxl": "sdxl_txt2img", "sd3": "sd3_txt2img", "flux": "flux_txt2img"}
         if model_id.lower() in preset_to_template:
             try:
@@ -188,22 +180,137 @@ class Pipeline:
                 except Exception as e:
                     errors.append(f"Template match '{template}': {type(e).__name__}: {e}")
         
+        # 3. Fallback: load via diffusers and convert to YggDrasil graph
+        try:
+            from yggdrasil.integration.diffusers import DiffusersBridge
+            graph = DiffusersBridge.from_pretrained(model_id, **kwargs)
+            return cls(graph, device=device, dtype=dtype)
+        except Exception as e:
+            errors.append(f"DiffusersBridge: {type(e).__name__}: {e}")
+        
         # All methods failed — raise informative error
         error_chain = "\n  ".join(f"{i+1}. {e}" for i, e in enumerate(errors))
         raise ValueError(
             f"Cannot resolve model '{model_id}'. "
             f"Tried {len(errors)} methods:\n  {error_chain}\n"
-            f"Tip: Use Pipeline.from_template('template_name') for direct template access, "
-            f"or Pipeline.from_graph(graph) for a custom graph."
+            f"Tip: Use InferencePipeline.from_template('template_name') for direct template access, "
+            f"or InferencePipeline.from_graph(graph) for a custom graph."
         )
     
     @classmethod
-    def from_graph(cls, graph, *, device=None, dtype=None) -> Pipeline:
+    def from_graph(cls, graph, *, device=None, dtype=None) -> "InferencePipeline":
         """Create pipeline from an existing ComputeGraph."""
         return cls(graph, device=device, dtype=dtype)
-    
+
     @classmethod
-    def from_workflow(cls, path: str, *, device=None, dtype=None, **overrides) -> Pipeline:
+    def from_diffusers(cls, pipe: Any, *, device=None, dtype=None) -> "InferencePipeline":
+        """Wrap an already-loaded HuggingFace Diffusers pipeline as InferencePipeline.
+        
+        Uses DiffusersBridge.import_pipeline to build a ComputeGraph (single Solver,
+        no separate Scheduler). The resulting graph is \"flat\" (one step per execute);
+        InferencePipeline runs the denoising loop automatically.
+        
+        Example::
+        
+            from diffusers import StableDiffusionPipeline
+            pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5")
+            ygg = InferencePipeline.from_diffusers(pipe, device="cuda")
+            image = ygg("a cat", num_steps=28).images[0]
+        """
+        from yggdrasil.integration.diffusers import DiffusersBridge
+        graph = DiffusersBridge.import_pipeline(pipe)
+        return cls(graph, device=device, dtype=dtype)
+
+    @classmethod
+    def from_config(cls, path: Union[str, Path], *, device=None, dtype=None, **overrides) -> "InferencePipeline":
+        """Load pipeline from YAML/JSON config.
+        
+        Supports:
+        - Single graph: nodes/edges/inputs/outputs.
+        - Combined pipeline: kind: combined_pipeline, stages + links (each node is an AbstractStage).
+        
+        Args:
+            path: Path to .yaml or .json config file
+            device: Target device
+            dtype: Data type
+            **overrides: Not used; reserved for future overrides
+        
+        Returns:
+            InferencePipeline
+        """
+        from yggdrasil.core.graph.graph import ComputeGraph
+        path = Path(path)
+        graph = ComputeGraph.from_yaml(path)
+        return cls(graph, device=device, dtype=dtype)
+
+    @classmethod
+    def from_combined(
+        cls,
+        stages: List[Union[Tuple[str, Any], Tuple[str, str], Tuple[str, str, Dict]]],
+        links: Optional[List[Tuple[str, str, str, str]]] = None,
+        inputs: Optional[Dict[str, Union[str, List]]] = None,
+        outputs: Optional[Dict[str, Union[str, List]]] = None,
+        *,
+        name: str = "combined",
+        device=None,
+        dtype=None,
+    ) -> "InferencePipeline":
+        """Build pipeline from a list of stages (graphs or templates) and optional links.
+        
+        Args:
+            stages: List of (stage_name, graph_or_template) or (stage_name, template_name, kwargs).
+                   Each stage is wrapped in AbstractStage.
+            links: List of (src_node, src_port, dst_node, dst_port). Default: chain stage0.output -> stage1.input.
+            inputs: Graph inputs, e.g. {"prompt": ["stage0", "text"]} or {"prompt": "stage0.prompt"}.
+            outputs: Graph outputs, e.g. {"images": ["stage_last", "output"]}.
+            name: Pipeline graph name.
+            device, dtype: Target device/dtype.
+        
+        Returns:
+            InferencePipeline
+        """
+        from yggdrasil.core.graph.graph import ComputeGraph
+        from yggdrasil.core.graph.stage import AbstractStage
+
+        graph = ComputeGraph(name)
+        for i, stage_def in enumerate(stages):
+            stage_name = stage_def[0]
+            if len(stage_def) == 2:
+                _, graph_or_tpl = stage_def
+                if isinstance(graph_or_tpl, str):
+                    inner = ComputeGraph.from_template(graph_or_tpl)
+                else:
+                    inner = graph_or_tpl  # already ComputeGraph
+            else:
+                inner = ComputeGraph.from_template(stage_def[1], **(stage_def[2] if len(stage_def) > 2 else {}))
+            stage_block = AbstractStage(config={"type": "stage/abstract"}, graph=inner)
+            graph.add_node(stage_name, stage_block)
+        if links:
+            for edge in links:
+                if len(edge) >= 4:
+                    graph.connect(edge[0], edge[1], edge[2], edge[3])
+        else:
+            names = list(graph.nodes.keys())
+            for i in range(len(names) - 1):
+                graph.connect(names[i], "output", names[i + 1], "input")
+        inputs = inputs or {}
+        outputs = outputs or {}
+        for input_name, mapping in inputs.items():
+            if isinstance(mapping, (list, tuple)) and len(mapping) >= 2:
+                graph.expose_input(input_name, str(mapping[0]), str(mapping[1]))
+            elif isinstance(mapping, str) and "." in mapping:
+                node, port = mapping.split(".", 1)
+                graph.expose_input(input_name, node.strip(), port.strip())
+        for output_name, mapping in outputs.items():
+            if isinstance(mapping, (list, tuple)) and len(mapping) >= 2:
+                graph.expose_output(output_name, str(mapping[0]), str(mapping[1]))
+            elif isinstance(mapping, str) and "." in mapping:
+                node, port = mapping.split(".", 1)
+                graph.expose_output(output_name, node.strip(), port.strip())
+        return cls(graph, device=device, dtype=dtype)
+
+    @classmethod
+    def from_workflow(cls, path: str, *, device=None, dtype=None, **overrides) -> "InferencePipeline":
         """Load pipeline from a saved workflow file.
         
         Args:
@@ -213,7 +320,7 @@ class Pipeline:
             **overrides: Override saved parameters
         
         Returns:
-            Pipeline ready for generation.
+            InferencePipeline ready for generation.
         """
         from yggdrasil.core.graph.graph import ComputeGraph
         graph, params = ComputeGraph.from_workflow(path)
@@ -230,7 +337,7 @@ class Pipeline:
         
         Example::
         
-            templates = Pipeline.list_available()
+            templates = InferencePipeline.list_available()
             for name, info in templates.items():
                 print(f"{name}: {info.get('description', '')}")
         """
@@ -293,7 +400,7 @@ class Pipeline:
         except ImportError:
             return {
                 k: v.get("description", k)
-                for k, v in Pipeline.list_available().items()
+                for k, v in InferencePipeline.list_available().items()
                 if v.get("modality") == "audio"
             }
 
@@ -306,7 +413,7 @@ class Pipeline:
         except ImportError:
             return {
                 k: v.get("description", k)
-                for k, v in Pipeline.list_available().items()
+                for k, v in InferencePipeline.list_available().items()
                 if v.get("modality") == "video"
             }
 
@@ -364,6 +471,7 @@ class Pipeline:
             self._apply_guidance_scale(guidance_scale)
         if num_steps is not None:
             self._apply_num_steps(num_steps)
+            kwargs["num_steps"] = num_steps  # so flat diffusers loop can use it
         
         # ── Prepare prompt (only if graph expects it) ──
         if prompt is not None:
@@ -412,21 +520,34 @@ class Pipeline:
                     t = t.to(self.graph._device)
                 kwargs[key] = t
 
-        # ── Use scheduler's timesteps in the loop (diffusers parity: Euler, PNDM, etc.)
+        # ── Use scheduler's timesteps in the loop (diffusers parity: Euler, PNDM, SD3 flow, etc.)
         if "timesteps" not in kwargs and "timesteps" in graph_input_names:
+            num_steps = meta.get("default_num_steps", 50)
+            for _, block in self.graph._iter_all_blocks():
+                if hasattr(block, "num_iterations"):
+                    num_steps = block.num_iterations
+                    break
+            device = self.graph._device or torch.device("cpu")
             use_scheduler = meta.get("use_euler_init_sigma") or meta.get("use_scheduler_timesteps")
             if use_scheduler:
-                num_steps = meta.get("default_num_steps", 50)
-                for _, block in self.graph._iter_all_blocks():
-                    if hasattr(block, "num_iterations"):
-                        num_steps = block.num_iterations
-                        break
-                device = self.graph._device or torch.device("cpu")
                 for _, block in self.graph._iter_all_blocks():
                     if hasattr(block, "set_timesteps") and hasattr(block, "scheduler"):
                         block.set_timesteps(num_steps, device)
                         kwargs["timesteps"] = block.scheduler.timesteps.clone().to(device=device)
                         break
+            elif meta.get("base_model") == "sd3":
+                # SD3: use FlowMatchEulerDiscreteScheduler from model repo (shift=3.0, same as Diffusers)
+                try:
+                    from diffusers import FlowMatchEulerDiscreteScheduler
+                    pretrained = meta.get("pretrained", "stabilityai/stable-diffusion-3-medium-diffusers")
+                    sched = FlowMatchEulerDiscreteScheduler.from_pretrained(pretrained, subfolder="scheduler")
+                    sched.set_timesteps(num_steps, device=device)
+                    kwargs["timesteps"] = sched.timesteps.clone().to(device=device)
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "SD3: could not set FlowMatchEulerDiscreteScheduler timesteps: %s. Loop will use default.", e
+                    )
 
         # ── Generate noise or I2V/V2V initial latents (only if graph expects latents and none provided) ──
         if "latents" in graph_input_names and "latents" not in kwargs:
@@ -459,13 +580,16 @@ class Pipeline:
                 )
         
         # ── Execute graph (non-strict: tolerate missing optional inputs) ──
-        from yggdrasil.core.graph.executor import GraphExecutor
-        raw = GraphExecutor(strict=False).execute(self.graph, **kwargs)
+        if self._is_flat_diffusers_graph():
+            raw = self._run_flat_diffusers_loop(**kwargs)
+        else:
+            from yggdrasil.core.graph.executor import GraphExecutor
+            raw = GraphExecutor(strict=False).execute(self.graph, **kwargs)
         
         # ── Build output ──
         return self._build_output(raw)
     
-    def to(self, device=None, dtype=None) -> Pipeline:
+    def to(self, device=None, dtype=None) -> "InferencePipeline":
         """Move pipeline to device."""
         self.graph.to(device, dtype)
         return self
@@ -513,6 +637,57 @@ class Pipeline:
         for _, block in self.graph._iter_all_blocks():
             if hasattr(block, 'num_iterations'):
                 block.num_iterations = num_steps
+
+    def _is_flat_diffusers_graph(self) -> bool:
+        """True if graph is a flat diffusers-imported graph (backbone + solver, no LoopSubGraph)."""
+        if "denoise_loop" in self.graph.nodes:
+            return False
+        if "solver" not in self.graph.nodes or "backbone" not in self.graph.nodes:
+            return False
+        outs = getattr(self.graph, "graph_outputs", None) or {}
+        return "next_latents" in outs or "decoded" in outs
+
+    def _run_flat_diffusers_loop(self, **kwargs: Any) -> Dict[str, Any]:
+        """Run denoising loop for a flat diffusers-style graph (one step per execute)."""
+        from yggdrasil.core.graph.executor import GraphExecutor
+        executor = GraphExecutor(strict=False, no_grad=True)
+        graph = self.graph
+        device = graph._device or torch.device("cpu")
+        num_steps = int(kwargs.pop("num_steps", None) or graph.metadata.get("default_num_steps", 28))
+        latents = kwargs.get("latents")
+        if latents is None:
+            raise ValueError("flat diffusers graph requires latents (set by InferencePipeline)")
+        # Set timesteps on solver if available (Euler, PNDM, etc.)
+        solver = graph.nodes.get("solver")
+        if solver is not None and hasattr(solver, "set_timesteps"):
+            solver.set_timesteps(num_steps, device)
+        # Build timesteps (leading spacing like diffusers)
+        num_train_t = int(getattr(solver, "num_train_timesteps", None) or graph.metadata.get("num_train_timesteps", 1000))
+        steps_offset = int(getattr(solver, "steps_offset", None) or 0)
+        step_ratio = num_train_t // num_steps
+        timesteps = torch.arange(0, num_steps, device=device).long() * step_ratio
+        timesteps = timesteps.flip(0)
+        timesteps = (timesteps + steps_offset).clamp(0, num_train_t - 1)
+        out: Dict[str, Any] = {}
+        for i in range(len(timesteps)):
+            t = timesteps[i].unsqueeze(0) if timesteps[i].dim() == 0 else timesteps[i]
+            next_t = timesteps[i + 1].unsqueeze(0) if i + 1 < len(timesteps) else torch.tensor(0, device=device)
+            if next_t.dim() == 0:
+                next_t = next_t.unsqueeze(0)
+            step_kw = {**kwargs, "latents": latents, "timestep": t}
+            if "next_timestep" in graph.graph_inputs:
+                step_kw["next_timestep"] = next_t
+            if i == 0 and "num_steps" in graph.graph_inputs:
+                step_kw["num_steps"] = num_steps
+            out = executor.execute(graph, **step_kw)
+            latents = out.get("next_latents")
+            if latents is None:
+                latents = out.get("latents")
+            if latents is None:
+                latents = out.get("output")
+            if latents is None:
+                break
+        return out
     
     def _make_noise(self, batch_size=1, width=512, height=512, seed=None):
         meta = self.graph.metadata
@@ -538,8 +713,13 @@ class Pipeline:
         if init_sigma is None:
             init_sigma = 1.0
 
-        # Use float32 for initial noise so the denoising loop accumulates in float32 (avoids banding; diffusers does this on MPS)
-        dtype = torch.float32 if device_type == "mps" else torch.get_default_dtype()
+        # Match Diffusers: SD3 on cuda uses pipeline dtype float16 for prepare_latents (same randn sequence)
+        if meta.get("base_model") == "sd3" and device_type == "cuda":
+            dtype = torch.float16
+        elif device_type == "mps":
+            dtype = torch.float32
+        else:
+            dtype = torch.get_default_dtype()
         if seed is not None:
             if device_type == "mps":
                 g = torch.Generator().manual_seed(seed)
@@ -736,7 +916,7 @@ class Pipeline:
     
     def __repr__(self):
         device = self.graph._device or "cpu"
-        return f"<Pipeline '{self.graph.name}' device={device} nodes={len(self.graph.nodes)}>"
+        return f"<InferencePipeline '{self.graph.name}' device={device} nodes={len(self.graph.nodes)}>"
 
 
 def _guess_modality(template_name: str) -> str:
@@ -751,3 +931,128 @@ def _guess_modality(template_name: str) -> str:
     if any(k in name for k in ["3d", "mesh", "point_cloud"]):
         return "3d"
     return "image"  # default
+
+
+class TrainingPipeline:
+    """High-level train API: train a ComputeGraph (subset of nodes or full graph).
+
+    Example::
+        train_pipe = TrainingPipeline.from_pretrained("runwayml/stable-diffusion-v1-5", train_nodes=["lora_adapter"])
+        train_pipe.train(data_path="./data", epochs=10, lr=1e-4)
+        train_pipe.save_checkpoint("checkpoints/sd15_lora")
+    """
+
+    def __init__(self, graph, *, train_nodes=None, train_stages=None, device=None, **config):
+        from yggdrasil.core.graph.graph import ComputeGraph
+        self.graph: ComputeGraph = graph
+        self.train_nodes = train_nodes or []
+        self.train_stages = train_stages  # for multi-stage; reserved
+        self._config = config
+        if device is not None:
+            self.graph.to(device)
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        model_id: str,
+        *,
+        train_nodes=None,
+        train_stages=None,
+        device=None,
+        **kwargs,
+    ) -> "TrainingPipeline":
+        """Build training pipeline from HuggingFace model ID or template."""
+        from yggdrasil.integration.diffusers import DiffusersBridge
+        try:
+            graph = DiffusersBridge.from_pretrained(model_id, **kwargs)
+        except Exception:
+            from yggdrasil.core.graph.graph import ComputeGraph
+            from yggdrasil.hub import resolve_model
+            template_name, template_kwargs = resolve_model(model_id)
+            graph = ComputeGraph.from_template(template_name, **template_kwargs)
+        return cls(graph, train_nodes=train_nodes, train_stages=train_stages, device=device)
+
+    @classmethod
+    def from_template(
+        cls,
+        template_name: str,
+        *,
+        train_nodes=None,
+        train_stages=None,
+        device=None,
+        **kwargs,
+    ) -> "TrainingPipeline":
+        """Build training pipeline from a named template (TZ §6.2).
+
+        Supports inference templates (e.g. sd15_txt2img, sdxl_txt2img) and training
+        templates (e.g. train_lora_sd15, train_controlnet). When train_nodes is not
+        set and the template has metadata default_train_nodes, those are used.
+
+        Example::
+            train_pipe = TrainingPipeline.from_template("train_lora_sd15", device="cuda")
+            train_pipe.train(data_path="./data", epochs=10)
+        """
+        from yggdrasil.core.graph.graph import ComputeGraph
+        graph = ComputeGraph.from_template(template_name, **kwargs)
+        if train_nodes is None and isinstance(getattr(graph, "metadata", None), dict):
+            default = graph.metadata.get("default_train_nodes")
+            if default is not None:
+                train_nodes = default if isinstance(default, (list, tuple)) else [default]
+        return cls(graph, train_nodes=train_nodes, train_stages=train_stages, device=device)
+
+    @classmethod
+    def from_config(cls, path: str, *, train_nodes=None, train_stages=None, device=None, **overrides) -> "TrainingPipeline":
+        """Build training pipeline from YAML/JSON config."""
+        from yggdrasil.core.graph.graph import ComputeGraph
+        graph = ComputeGraph.from_yaml(path)
+        return cls(graph, train_nodes=train_nodes, train_stages=train_stages, device=device, **overrides)
+
+    @classmethod
+    def from_graph(cls, graph, *, train_nodes=None, train_stages=None, device=None, **config) -> "TrainingPipeline":
+        """Build training pipeline from an existing ComputeGraph."""
+        return cls(graph, train_nodes=train_nodes, train_stages=train_stages, device=device, **config)
+
+    def train(
+        self,
+        data_path: str = None,
+        dataset=None,
+        *,
+        epochs: int = 10,
+        lr: float = 1e-4,
+        batch_size: int = 1,
+        **kwargs,
+    ):
+        """Run training. Uses GraphTrainer with self.graph and self.train_nodes (or train_stages)."""
+        from yggdrasil.training.graph_trainer import GraphTrainer, GraphTrainingConfig
+        from yggdrasil.core.graph.stage import AbstractStage
+
+        if dataset is None and data_path:
+            from yggdrasil.training.data import ImageFolderSource
+            dataset = ImageFolderSource(data_path)
+        if dataset is None:
+            raise ValueError("Provide data_path=... or dataset=...")
+        cfg = GraphTrainingConfig(
+            num_epochs=epochs,
+            learning_rate=lr,
+            batch_size=batch_size,
+            **{k: v for k, v in (self._config or {}).items() if k in GraphTrainingConfig.__dataclass_fields__},
+        )
+        train_nodes = self.train_nodes
+        if self.train_stages is not None and not train_nodes:
+            # Combined pipeline: train_stages = [0, 1] -> train first two stage nodes
+            names = list(self.graph.nodes.keys())
+            train_nodes = [names[i] for i in self.train_stages if 0 <= i < len(names)]
+        if not train_nodes:
+            train_nodes = list(self.graph.nodes)
+        trainer = GraphTrainer(graph=self.graph, train_nodes=train_nodes, config=cfg)
+        trainer.train(dataset, **kwargs)
+        self._trainer = trainer
+        return self
+
+    def save_checkpoint(self, path: str):
+        """Save checkpoint (trainable nodes or full graph)."""
+        if hasattr(self, "_trainer") and self._trainer is not None:
+            self._trainer.save_checkpoint(path)
+        else:
+            Path(path).mkdir(parents=True, exist_ok=True)
+            self.graph.to_yaml(Path(path) / "graph.yaml")

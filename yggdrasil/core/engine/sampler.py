@@ -6,7 +6,7 @@ from omegaconf import DictConfig, OmegaConf
 from typing import Dict, Any, Optional, Callable, List, Generator
 from pathlib import Path
 
-from ...core.block.base import AbstractBlock
+from ...core.block.base import AbstractBaseBlock
 from ...core.block.registry import register_block
 from ...core.block.slot import Slot
 from ...core.block.port import Port, InputPort, OutputPort, TensorSpec
@@ -21,7 +21,7 @@ from ...core.engine.state import DiffusionState
 
 
 @register_block("engine/sampler")
-class DiffusionSampler(AbstractBlock):
+class DiffusionSampler(AbstractBaseBlock):
     """Универсальный DiffusionSampler — Lego-оркестратор генерации.
     
     Работает с ЛЮБОЙ моделью, ЛЮБОЙ модальностью и ЛЮБЫМ процессом.
@@ -106,7 +106,7 @@ class DiffusionSampler(AbstractBlock):
         }
     
     def _forward_impl(self, condition: Dict[str, Any], shape=None, **kwargs):
-        """Требуется AbstractBlock; делегирует в sample()."""
+        """Требуется AbstractBaseBlock; делегирует в sample()."""
         return self.sample(condition=condition, shape=shape, **kwargs)
 
     # ==================== ОСНОВНОЙ ИНТЕРФЕЙС ====================

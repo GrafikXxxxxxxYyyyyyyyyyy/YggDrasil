@@ -1,7 +1,7 @@
 from omegaconf import DictConfig, OmegaConf
 from typing import Any
 
-from .base import AbstractBlock
+from .base import AbstractBaseBlock
 from .registry import get_block_class
 
 
@@ -9,7 +9,7 @@ class BlockBuilder:
     """Main Lego assembler. Turns YAML config -> live block graph."""
     
     @classmethod
-    def build(cls, config: DictConfig | dict | str) -> AbstractBlock:
+    def build(cls, config: DictConfig | dict | str) -> AbstractBaseBlock:
         """Build a block from config.
         
         Raises:

@@ -7,6 +7,9 @@ from .conditioner import AbstractConditioner
 from .guidance import AbstractGuidance
 from .position import AbstractPositionEmbedder
 from .postprocess import AbstractPostProcessor
+from .inner_module import AbstractInnerModule
+from .outer_module import AbstractOuterModule
+from .processor import AbstractProcessor
 
 __all__ = [
     "ModularDiffusionModel",
@@ -16,4 +19,7 @@ __all__ = [
     "AbstractGuidance",
     "AbstractPositionEmbedder",
     "AbstractPostProcessor",
+    "AbstractInnerModule",
+    "AbstractOuterModule",
+    "AbstractProcessor",
 ]

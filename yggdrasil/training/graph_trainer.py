@@ -260,16 +260,16 @@ class GraphTrainer:
                 for p in block.parameters():
                     p.requires_grad = False
         
-        # Unfreeze train_nodes
+        # Unfreeze train_nodes (supports stage/inner_node for combined pipeline)
         total_params = 0
         trainable_params = 0
         for name in self.train_nodes:
             if name in self._frozen_nodes:
                 continue
-            if name not in self.graph.nodes:
+            block, _ = self._resolve_trainable_block(name)
+            if block is None:
                 logger.warning(f"Train node '{name}' not found in graph. Skipping.")
                 continue
-            block = self.graph.nodes[name]
             if hasattr(block, 'parameters'):
                 for p in block.parameters():
                     p.requires_grad = True
@@ -296,7 +296,7 @@ class GraphTrainer:
         for name in self.train_nodes:
             if name in self._frozen_nodes:
                 continue
-            block = self.graph.nodes.get(name)
+            block, _ = self._resolve_trainable_block(name)
             if block is None or not hasattr(block, 'parameters'):
                 continue
             
@@ -394,9 +394,9 @@ class GraphTrainer:
             logger.info(f"Schedule: set LR for {node_name} to {lr}")
     
     def _freeze_node(self, name: str):
-        """Freeze a specific node."""
+        """Freeze a specific node (supports stage/inner_node)."""
         self._frozen_nodes.add(name)
-        block = self.graph.nodes.get(name)
+        block, _ = self._resolve_trainable_block(name)
         if block is not None and hasattr(block, 'parameters'):
             for p in block.parameters():
                 p.requires_grad = False
@@ -404,9 +404,9 @@ class GraphTrainer:
                 block.eval()
     
     def _unfreeze_node(self, name: str):
-        """Unfreeze a specific node."""
+        """Unfreeze a specific node (supports stage/inner_node)."""
         self._frozen_nodes.discard(name)
-        block = self.graph.nodes.get(name)
+        block, _ = self._resolve_trainable_block(name)
         if block is not None and hasattr(block, 'parameters'):
             for p in block.parameters():
                 p.requires_grad = True
@@ -574,7 +574,7 @@ class GraphTrainer:
         """Run validation on a dataset."""
         was_training = {}
         for name in self.train_nodes:
-            block = self.graph.nodes.get(name)
+            block, _ = self._resolve_trainable_block(name)
             if block is not None and hasattr(block, 'training'):
                 was_training[name] = block.training
                 if hasattr(block, 'eval'):
@@ -594,7 +594,7 @@ class GraphTrainer:
         
         # Restore training mode
         for name, was_train in was_training.items():
-            block = self.graph.nodes.get(name)
+            block, _ = self._resolve_trainable_block(name)
             if block is not None and was_train and hasattr(block, 'train'):
                 block.train()
         
@@ -610,13 +610,28 @@ class GraphTrainer:
                 inputs[key] = value
         return inputs
     
+    def _resolve_trainable_block(self, name: str):
+        """Resolve train node name to (block, checkpoint_key). Supports stage/inner (e.g. stage0/lora_adapter)."""
+        if "/" in name:
+            stage_name, inner_name = name.split("/", 1)
+            stage_name = stage_name.strip()
+            inner_name = inner_name.strip()
+            block = self.graph.nodes.get(stage_name)
+            if block is not None and hasattr(block, "graph") and hasattr(block.graph, "nodes"):
+                inner = block.graph.nodes.get(inner_name)
+                if inner is not None:
+                    return inner, name
+            return None, name
+        block = self.graph.nodes.get(name)
+        return block, name
+
     def _get_all_trainable_params(self) -> List[torch.nn.Parameter]:
-        """Collect all trainable parameters from train_nodes."""
+        """Collect all trainable parameters from train_nodes (supports stage/inner_node)."""
         params = []
         for name in self.train_nodes:
             if name in self._frozen_nodes:
                 continue
-            block = self.graph.nodes.get(name)
+            block, _ = self._resolve_trainable_block(name)
             if block is not None and hasattr(block, 'parameters'):
                 params.extend(p for p in block.parameters() if p.requires_grad)
         return params
@@ -642,12 +657,12 @@ class GraphTrainer:
         path = Path(self.config.checkpoint_dir) / name
         path.mkdir(parents=True, exist_ok=True)
         
-        # Save only train_nodes weights
+        # Save only train_nodes weights (supports stage/inner_node)
         state = {}
         for node_name in self.train_nodes:
-            block = self.graph.nodes.get(node_name)
+            block, key = self._resolve_trainable_block(node_name)
             if block is not None and hasattr(block, 'state_dict'):
-                state[node_name] = block.state_dict()
+                state[key] = block.state_dict()
         
         checkpoint = {
             "step": self._step_count,
@@ -684,7 +699,7 @@ class GraphTrainer:
         self.node_lr = checkpoint.get("node_lr", {})
         
         for node_name, state in checkpoint.get("train_nodes_state", {}).items():
-            block = self.graph.nodes.get(node_name)
+            block, _ = self._resolve_trainable_block(node_name)
             if block is not None and hasattr(block, 'load_state_dict'):
                 block.load_state_dict(state)
         
@@ -696,19 +711,21 @@ class GraphTrainer:
         path.mkdir(parents=True, exist_ok=True)
         
         for node_name in self.train_nodes:
-            block = self.graph.nodes.get(node_name)
+            block, _ = self._resolve_trainable_block(node_name)
             if block is not None and hasattr(block, 'state_dict'):
-                torch.save(block.state_dict(), path / f"{node_name}.pt")
+                safe_name = node_name.replace("/", "_")
+                torch.save(block.state_dict(), path / f"{safe_name}.pt")
         
         logger.info(f"Trained nodes exported: {path}")
     
     def load_trained_nodes(self, path: str):
-        """Import trained node weights."""
+        """Import trained node weights (supports stage/inner_node)."""
         path = Path(path)
         for node_name in self.train_nodes:
-            weight_file = path / f"{node_name}.pt"
+            safe_name = node_name.replace("/", "_")
+            weight_file = path / f"{safe_name}.pt"
             if weight_file.exists():
-                block = self.graph.nodes.get(node_name)
+                block, _ = self._resolve_trainable_block(node_name)
                 if block is not None and hasattr(block, 'load_state_dict'):
                     state = torch.load(weight_file, map_location=self.device, weights_only=True)
                     block.load_state_dict(state)
@@ -727,7 +744,7 @@ class GraphTrainer:
             f"Frozen nodes: {self._frozen_nodes}",
         ]
         for name in self.train_nodes:
-            block = self.graph.nodes.get(name)
+            block, _ = self._resolve_trainable_block(name)
             if block is not None and hasattr(block, 'parameters'):
                 n_params = sum(p.numel() for p in block.parameters())
                 n_train = sum(p.numel() for p in block.parameters() if p.requires_grad)
@@ -741,47 +758,59 @@ class GraphTrainer:
         return "\n".join(lines)
 
 
+def _resolve_block_for_ema(graph: ComputeGraph, name: str):
+    """Resolve train node name to block (for EMA). Supports stage/inner_node."""
+    if "/" in name:
+        stage_name, inner_name = name.split("/", 1)
+        stage_name, inner_name = stage_name.strip(), inner_name.strip()
+        block = graph.nodes.get(stage_name)
+        if block is not None and hasattr(block, "graph") and hasattr(block.graph, "nodes"):
+            return block.graph.nodes.get(inner_name)
+        return None
+    return graph.nodes.get(name)
+
+
 class _GraphEMA:
-    """EMA for specific nodes in a ComputeGraph."""
-    
+    """EMA for specific nodes in a ComputeGraph (supports stage/inner_node)."""
+
     def __init__(self, graph: ComputeGraph, train_nodes: List[str], decay: float = 0.9999):
         self.graph = graph
         self.train_nodes = train_nodes
         self.decay = decay
         self.shadow = {}
-        
+
         for node_name in train_nodes:
-            block = graph.nodes.get(node_name)
+            block = _resolve_block_for_ema(graph, node_name)
             if block is not None and hasattr(block, 'named_parameters'):
                 for pname, param in block.named_parameters():
                     if param.requires_grad:
                         key = f"{node_name}.{pname}"
                         self.shadow[key] = param.data.clone()
-    
+
     @torch.no_grad()
     def update(self):
         for node_name in self.train_nodes:
-            block = self.graph.nodes.get(node_name)
+            block = _resolve_block_for_ema(self.graph, node_name)
             if block is not None and hasattr(block, 'named_parameters'):
                 for pname, param in block.named_parameters():
                     key = f"{node_name}.{pname}"
                     if key in self.shadow:
                         self.shadow[key] = self.decay * self.shadow[key] + (1 - self.decay) * param.data
-    
+
     def apply(self):
         self._backup = {}
         for node_name in self.train_nodes:
-            block = self.graph.nodes.get(node_name)
+            block = _resolve_block_for_ema(self.graph, node_name)
             if block is not None and hasattr(block, 'named_parameters'):
                 for pname, param in block.named_parameters():
                     key = f"{node_name}.{pname}"
                     if key in self.shadow:
                         self._backup[key] = param.data.clone()
                         param.data = self.shadow[key]
-    
+
     def restore(self):
         for node_name in self.train_nodes:
-            block = self.graph.nodes.get(node_name)
+            block = _resolve_block_for_ema(self.graph, node_name)
             if block is not None and hasattr(block, 'named_parameters'):
                 for pname, param in block.named_parameters():
                     key = f"{node_name}.{pname}"

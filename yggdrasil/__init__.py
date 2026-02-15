@@ -36,8 +36,8 @@ _patch_tensorflow_compat()
 from yggdrasil.core.block.registry import auto_discover as _auto_discover
 _auto_discover()
 
-# === Pipeline API ===
-from yggdrasil.pipeline import Pipeline, PipelineOutput  # noqa
+# === InferencePipeline / TrainingPipeline API ===
+from yggdrasil.pipeline import InferencePipeline, TrainingPipeline, PipelineOutput  # noqa
 
 # === Удобные функции верхнего уровня ===
 

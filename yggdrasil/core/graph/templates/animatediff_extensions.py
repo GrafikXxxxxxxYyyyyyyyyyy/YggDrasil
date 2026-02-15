@@ -22,7 +22,7 @@ def animatediff_i2v(**kwargs) -> ComputeGraph:
     """AnimateDiff Image-to-Video: анимация статичного изображения.
 
     Тот же граф, что animatediff_txt2vid, с явным входом source_image.
-    При вызове Pipeline.__call__(source_image=..., strength=0.7) начальные
+    При вызове InferencePipeline.__call__(source_image=..., strength=0.7) начальные
     латенты строятся из кодированного изображения + шум (I2V).
     """
     pretrained = kwargs.get("pretrained", "runwayml/stable-diffusion-v1-5")
@@ -63,7 +63,7 @@ def animatediff_v2v(**kwargs) -> ComputeGraph:
     """AnimateDiff Video-to-Video: модификация существующего видео.
 
     Тот же граф, что animatediff_txt2vid; при вызове с source_video и strength
-    Pipeline строит начальные латенты из кодированного видео и передаёт их как latents.
+    InferencePipeline строит начальные латенты из кодированного видео и передаёт их как latents.
     """
     pretrained = kwargs.get("pretrained", "runwayml/stable-diffusion-v1-5")
     graph = _build_video_txt2vid_graph(

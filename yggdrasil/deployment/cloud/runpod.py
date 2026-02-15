@@ -44,65 +44,70 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _handle_graph(input_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle graph-based generation."""
-    from yggdrasil.core.graph.graph import ComputeGraph
-    from yggdrasil.core.graph.executor import GraphExecutor
+    """Handle graph-based generation via InferencePipeline (unified API)."""
+    from yggdrasil.pipeline import InferencePipeline
     
-    # Load or build graph
+    # Load or build pipeline (template or graph YAML)
     if not hasattr(_handle_graph, "_cache"):
         _handle_graph._cache = {}
     
     template = input_data.get("template", "sd15_txt2img")
     graph_yaml = input_data.get("graph_yaml")
+    model_id = input_data.get("model_id")
     
-    cache_key = template or "custom"
+    cache_key = (template or "custom", model_id or "")
     
     if cache_key not in _handle_graph._cache:
-        if graph_yaml:
-            import tempfile, os
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if model_id:
+            pipe = InferencePipeline.from_pretrained(model_id, device=device)
+        elif graph_yaml:
+            import tempfile
+            import os
+            from yggdrasil.core.graph.graph import ComputeGraph
             with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
                 f.write(graph_yaml)
                 graph = ComputeGraph.from_yaml(f.name)
                 os.unlink(f.name)
+            graph.to(device)
+            pipe = InferencePipeline.from_graph(graph, device=device)
         else:
-            graph = ComputeGraph.from_template(template)
-        
-        # Move to GPU
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        for name, block in graph.nodes.items():
-            if hasattr(block, 'to'):
-                block.to(device)
-        
-        _handle_graph._cache[cache_key] = graph
+            pipe = InferencePipeline.from_template(template, device=device)
+        _handle_graph._cache[cache_key] = pipe
     
-    graph = _handle_graph._cache[cache_key]
+    pipe = _handle_graph._cache[cache_key]
     
-    # Prepare inputs
     prompt = input_data.get("prompt", "")
     width = input_data.get("width", 512)
     height = input_data.get("height", 512)
     seed = input_data.get("seed", -1)
+    num_steps = input_data.get("num_steps", 50)
+    guidance_scale = input_data.get("guidance_scale", 7.5)
     
-    graph_inputs = {
-        "prompt": {"text": prompt},
-        "latents": _generate_noise(1, 4, height // 8, width // 8, seed),
-        "timestep": torch.tensor([999]),
-    }
+    out = pipe(
+        prompt,
+        num_steps=num_steps,
+        guidance_scale=guidance_scale,
+        width=width,
+        height=height,
+        seed=seed if seed >= 0 else None,
+    )
     
-    # Execute graph
-    executor = GraphExecutor()
-    outputs = executor.execute(graph, **graph_inputs)
-    
-    # Convert output to image
-    result = outputs.get("decoded", outputs.get("image", outputs.get("next_latents")))
+    if out.images and len(out.images) > 0:
+        img_b64 = _pil_to_base64(out.images[0])
+        return {
+            "output": {"image_base64": img_b64, "width": width, "height": height},
+            "status": "success",
+        }
+    raw = out.raw
+    result = raw.get("decoded", raw.get("image", raw.get("next_latents")))
     if result is not None:
         img_b64 = _tensor_to_base64(result)
         return {
             "output": {"image_base64": img_b64, "width": width, "height": height},
             "status": "success",
         }
-    
-    return {"output": outputs, "status": "success"}
+    return {"output": raw, "status": "success"}
 
 
 def _handle_legacy(input_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -175,6 +180,15 @@ def _tensor_to_base64(tensor):
     image = (image * 255).clip(0, 255).astype(np.uint8)
     
     pil_image = Image.fromarray(image)
+    buffer = BytesIO()
+    pil_image.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode()
+
+
+def _pil_to_base64(pil_image):
+    """Convert PIL Image to base64 PNG."""
+    import base64
+    from io import BytesIO
     buffer = BytesIO()
     pil_image.save(buffer, format="PNG")
     return base64.b64encode(buffer.getvalue()).decode()

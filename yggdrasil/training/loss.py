@@ -12,12 +12,12 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 from omegaconf import DictConfig
 
-from ..core.block.base import AbstractBlock
+from ..core.block.base import AbstractBaseBlock
 from ..core.block.registry import register_block
 
 
 @register_block("training/loss/abstract")
-class DiffusionLoss(AbstractBlock, ABC):
+class DiffusionLoss(AbstractBaseBlock, ABC):
     """Базовый loss для обучения диффузии.
     
     Поддерживает любую параметризацию: epsilon, v-prediction, flow matching, score.

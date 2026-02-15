@@ -38,38 +38,37 @@ try:
         height: int = 512,
         seed: int = -1,
     ) -> bytes:
-        """Generate an image and return PNG bytes."""
-        import torch
+        """Generate an image and return PNG bytes. Uses InferencePipeline (unified API)."""
         import numpy as np
         from PIL import Image
         from io import BytesIO
         
-        from yggdrasil.assemblers import ModelAssembler, PipelineAssembler
+        from yggdrasil.pipeline import InferencePipeline
         
-        model = ModelAssembler.from_pretrained(model_id)
-        model = model.to("cuda")
-        
-        sampler = PipelineAssembler.for_generation(
-            model=model, num_steps=num_steps, guidance_scale=guidance_scale,
+        pipe = InferencePipeline.from_pretrained(model_id, device="cuda")
+        out = pipe(
+            prompt,
+            num_steps=num_steps,
+            guidance_scale=guidance_scale,
+            width=width,
+            height=height,
+            seed=seed if seed >= 0 else None,
         )
-        
-        condition = {"text": prompt}
-        codec = model._slot_children.get("codec")
-        if codec and hasattr(codec, "get_latent_shape"):
-            shape = codec.get_latent_shape(1, height, width)
+        if out.images and len(out.images) > 0:
+            pil_img = out.images[0]
         else:
-            shape = (1, 4, height // 8, width // 8)
-        
-        generator = torch.Generator(device="cuda").manual_seed(seed) if seed >= 0 else None
-        result = sampler.sample(condition=condition, shape=shape, generator=generator)
-        
-        image = result[0].cpu()
-        image = (image / 2 + 0.5).clamp(0, 1)
-        image = image.permute(1, 2, 0).numpy()
-        image = (image * 255).clip(0, 255).astype(np.uint8)
-        
+            # Fallback: raw tensor from latents/decoded
+            raw = out.raw
+            tensor = raw.get("decoded") or raw.get("image")
+            if tensor is not None:
+                if tensor.dim() == 4:
+                    tensor = tensor[0]
+                arr = (tensor.cpu().float() / 2 + 0.5).clamp(0, 1).permute(1, 2, 0).numpy()
+                pil_img = Image.fromarray((arr * 255).clip(0, 255).astype(np.uint8))
+            else:
+                raise RuntimeError("No image output from pipeline")
         buf = BytesIO()
-        Image.fromarray(image).save(buf, format="PNG")
+        pil_img.save(buf, format="PNG")
         return buf.getvalue()
     
     @app.local_entrypoint()

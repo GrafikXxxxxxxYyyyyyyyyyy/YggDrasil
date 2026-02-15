@@ -4,13 +4,13 @@ from abc import abstractmethod
 from typing import Optional
 from omegaconf import DictConfig
 
-from ....core.block.base import AbstractBlock
+from ....core.block.base import AbstractBaseBlock
 from ....core.block.registry import register_block
 from ....core.block.port import Port, InputPort, OutputPort, TensorSpec
 
 
 @register_block("noise/schedule/abstract")
-class NoiseSchedule(AbstractBlock):
+class NoiseSchedule(AbstractBaseBlock):
     """Abstract noise schedule (cosine, linear, sigmoid, custom)."""
     
     block_type = "noise/schedule/abstract"

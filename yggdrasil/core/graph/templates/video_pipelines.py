@@ -79,12 +79,14 @@ def _build_video_txt2vid_graph(
     )
     loop.show_progress = True
 
+    first_cond = None
     for i, cond_config in enumerate(conditioner_configs):
         cond = BlockBuilder.build(cond_config)
+        if i == 0:
+            first_cond = cond
         graph.add_node(f"conditioner_{i}", cond)
     if use_cfg:
-        cond_neg = BlockBuilder.build(conditioner_configs[0])
-        graph.add_node("conditioner_negative", cond_neg)
+        graph.add_node("conditioner_negative", first_cond)
 
     graph.add_node("denoise_loop", loop)
     graph.add_node("codec", codec)

@@ -4,13 +4,13 @@ import torch
 from typing import Dict, Any
 from omegaconf import DictConfig
 
-from ...core.block.base import AbstractBlock
+from ...core.block.base import AbstractBaseBlock
 from ...core.block.registry import register_block
 from ...core.block.port import Port, InputPort, OutputPort, TensorSpec
 
 
 @register_block("conditioner/abstract")
-class AbstractConditioner(AbstractBlock):
+class AbstractConditioner(AbstractBaseBlock):
     """Абстрактный conditioner (CLIP, T5, CLAP, VL, custom).
     
     Контракт: реализовать ``process()`` или ``__call__(condition)``.

@@ -22,13 +22,13 @@ from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 from omegaconf import DictConfig
 
-from yggdrasil.core.block.base import AbstractBlock
+from yggdrasil.core.block.base import AbstractBaseBlock
 from yggdrasil.core.block.registry import register_block
 from yggdrasil.core.block.port import InputPort, OutputPort, Port
 
 
 @register_block("graph/for_loop")
-class ForLoopNode(AbstractBlock):
+class ForLoopNode(AbstractBaseBlock):
     """Generic for-loop: executes inner graph N times with carry variables."""
     
     block_type = "graph/for_loop"

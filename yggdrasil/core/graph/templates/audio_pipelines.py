@@ -79,8 +79,7 @@ def _build_audio_txt2audio_graph(
     cond = BlockBuilder.build(conditioner_config)
     graph.add_node("conditioner_0", cond)
     if use_cfg:
-        cond_neg = BlockBuilder.build(conditioner_config)
-        graph.add_node("conditioner_negative", cond_neg)
+        graph.add_node("conditioner_negative", cond)
 
     graph.add_node("denoise_loop", loop)
     graph.add_node("codec", codec)

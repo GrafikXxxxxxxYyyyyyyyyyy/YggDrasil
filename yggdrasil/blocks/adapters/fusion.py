@@ -39,7 +39,7 @@ class CrossAttentionFusionAdapter(AbstractAdapter):
         return {
             "conditioners": Slot(
                 name="conditioners",
-                accepts=AbstractBlock,
+                accepts=AbstractBaseBlock,
                 multiple=True,
                 optional=True
             )

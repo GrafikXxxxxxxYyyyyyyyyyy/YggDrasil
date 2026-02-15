@@ -15,13 +15,13 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 from omegaconf import DictConfig
 
-from yggdrasil.core.block.base import AbstractBlock
+from yggdrasil.core.block.base import AbstractBaseBlock
 from yggdrasil.core.block.registry import register_block
 from yggdrasil.core.block.port import InputPort, OutputPort, Port
 
 
 @register_block("graph/conditional")
-class ConditionalNode(AbstractBlock):
+class ConditionalNode(AbstractBaseBlock):
     """If/else branching: runs true_graph or false_graph based on condition port."""
     
     block_type = "graph/conditional"

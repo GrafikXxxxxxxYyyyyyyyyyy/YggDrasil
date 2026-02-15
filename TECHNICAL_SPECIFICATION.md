@@ -4,6 +4,12 @@
 **Дата:** 15 февраля 2025  
 **Цель:** Универсальный Lego-конструктор **любых** диффузионных решений **любой** модальности: единая иерархия (блок = узел графа, стадия = граф блоков, пайплайн = граф стадий), максимальная гибкость для разработчиков, возможность создавать собственную модальность, модель, пайплайн и обучать всё это.
 
+### Статус реализации (по ТЗ)
+
+- **Сделано:** AbstractBaseBlock — единый базовый блок; абстракции уровня 1 (Backbone, Codec, Conditioner, Guidance, Solver, Adapter, InnerModule, OuterModule, Processor); AbstractStage; ComputeGraph с `add_node(type="...", auto_connect=True)` и `add_stage(..., auto_connect_to_previous=..., auto_connect_by_ports=...)` (п. 4.2: авто-подключение стадий по портам — последняя стадия без исходящего «output» соединяется с новой); InferencePipeline (from_config, from_pretrained, from_template, from_graph, **from_diffusers**, from_combined); TrainingPipeline (from_config, from_pretrained, **from_template**, from_graph, train_stages, train_nodes с префиксом стадии `stage0/lora`); составной пайплайн (YAML `kind: combined_pipeline`, stages + links); **from_workflow** и **Runner** поддерживают combined pipeline; **to_yaml** и **to_workflow** сериализуют combined pipeline (AbstractStage → kind: combined_pipeline, stages с вложенным graph); пример конфига `combined_t2i_img2img.yaml`; в графе только узлы типа solver/…, параметры расписания в solver_config (п. 2.9); шаблоны первой очереди зарегистрированы и покрыты тестами. **Интеграция Diffusers (п. 15):** единый Solver (без отдельного Scheduler), копирование config из diffusers scheduler в solver; DiffusersBridge.import_pipeline задаёт metadata; InferencePipeline.from_diffusers(pipe); для «плоского» графа (без denoise_loop) автоматический цикл сэмплинга в InferencePipeline. **Деплой (п. 16):** Modal и RunPod переведены на единый интерфейс InferencePipeline (from_pretrained / from_template / from_graph).
+- **Полная поддержка моделей (п. 13, первая очередь):** SD 1.5 (txt2img, img2img, inpainting, nobatch), SDXL (txt2img, img2img, inpainting, refiner), SD3 (txt2img, img2img), FLUX.1 (txt2img, img2img), FLUX.2 (txt2img, schnell, fill, canny, depth, redux, kontext, klein). Адаптеры: ControlNet для SD 1.5 и SDXL (controlnet_txt2img, controlnet_sdxl_txt2img), add_controlnet_to_graph; IP-Adapter с автоопределением cross_attention_dim (768/2048) по base_model; T2I-Adapter. LoRA: загрузка в UNet (SD 1.5/SDXL) и в transformer (FLUX/SD3 при backbone с ._model и load_lora_weights). Шаблоны обучения: train_lora_sd15, train_lora_sdxl, train_lora_flux, train_lora_sd3. Метаданные base_model в шаблонах для корректной работы адаптеров. Тесты: tests/test_model_families.py (регистрация шаблонов, base_model, ControlNet, IP-Adapter, LoRA).
+- **Рефакторинг закрыт.** Все 12 критериев приёмки (раздел 9) и этапы фаз 1–5 выполнены. Детальный чеклист — в REFACTORING_STATUS.md. Дополнительные сценарии и тяжёлые E2E-тесты — по мере необходимости при наличии зависимостей.
+
 ---
 
 ## 1. Цели и границы проекта
@@ -36,7 +42,11 @@
 - **Собственный пайплайн:** возможность **собрать собственный пайплайн** (граф стадий и графы блоков внутри стадий) из стандартных и собственных блоков, сохранить в конфиг и запускать через InferencePipeline / TrainingPipeline.
 - **Обучить всё:** возможность **обучить** любой обучаемый блок, любую стадию, любой набор стадий или весь пайплайн через TrainingPipeline с явным выбором обучаемых узлов и стадий.
 
-### 1.4 Первая очередь моделей
+### 1.4 Принцип Lego-конструктора (философия кода)
+
+Код должен быть **максимально похож на Lego-конструктор**: предельная гибкость, масштабируемость, возможность собрать и обучить **что угодно**, реализовать **любые смелые идеи** разработчика. Блоки стыкуются, комбинируются и масштабируются без жёстких ограничений; пользователь свободен в своих решениях.
+
+### 1.5 Первая очередь моделей
 
 На первом этапе фокус на полной поддержке и стабильной работе с:
 

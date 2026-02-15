@@ -14,13 +14,13 @@ import math
 from typing import Any, Dict
 from omegaconf import DictConfig
 
-from yggdrasil.core.block.base import AbstractBlock
+from yggdrasil.core.block.base import AbstractBaseBlock
 from yggdrasil.core.block.registry import register_block
 from yggdrasil.core.block.port import InputPort, OutputPort, Port
 
 
 @register_block("schedule/diffusion")
-class DiffusionScheduleBlock(AbstractBlock):
+class DiffusionScheduleBlock(AbstractBaseBlock):
     """Generate timestep schedules for diffusion denoising loops."""
     
     block_type = "schedule/diffusion"

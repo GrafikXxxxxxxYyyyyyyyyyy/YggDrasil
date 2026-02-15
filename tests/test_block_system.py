@@ -1,23 +1,23 @@
-"""Tests for the block system: AbstractBlock, Slot, Builder, Registry."""
+"""Tests for the block system: AbstractBaseBlock, Slot, Builder, Registry."""
 import pytest
 import torch
 from omegaconf import OmegaConf
 
-from yggdrasil.core.block.base import AbstractBlock
+from yggdrasil.core.block.base import AbstractBaseBlock
 from yggdrasil.core.block.slot import Slot
 from yggdrasil.core.block.registry import BlockRegistry, register_block, auto_discover
 from yggdrasil.core.block.builder import BlockBuilder
 
 
-# === Test AbstractBlock ===
+# === Test AbstractBaseBlock ===
 
-class TestAbstractBlock:
+class TestAbstractBaseBlock:
     def test_block_has_id(self):
         """Each block should get a unique ID."""
         auto_discover()
         
         @register_block("test/dummy_a")
-        class DummyBlockA(AbstractBlock):
+        class DummyBlockA(AbstractBaseBlock):
             block_type = "test/dummy_a"
             def _forward_impl(self, *args, **kwargs):
                 return None
@@ -30,7 +30,7 @@ class TestAbstractBlock:
         auto_discover()
         
         @register_block("test/dummy_b")
-        class DummyBlockB(AbstractBlock):
+        class DummyBlockB(AbstractBaseBlock):
             block_type = "test/dummy_b"
             def _forward_impl(self, *args, **kwargs):
                 return None
@@ -44,10 +44,10 @@ class TestAbstractBlock:
 
 class TestSlot:
     def test_slot_check_compatible(self):
-        slot = Slot(name="test", accepts=AbstractBlock, multiple=False)
+        slot = Slot(name="test", accepts=AbstractBaseBlock, multiple=False)
         
         @register_block("test/compat")
-        class CompatBlock(AbstractBlock):
+        class CompatBlock(AbstractBaseBlock):
             block_type = "test/compat"
             def _forward_impl(self, *args, **kwargs):
                 return None
@@ -56,14 +56,14 @@ class TestSlot:
         assert slot.check_compatible(block) is True
     
     def test_slot_rejects_class(self):
-        slot = Slot(name="test", accepts=AbstractBlock, multiple=False)
-        assert slot.check_compatible(AbstractBlock) is False
+        slot = Slot(name="test", accepts=AbstractBaseBlock, multiple=False)
+        assert slot.check_compatible(AbstractBaseBlock) is False
     
     def test_slot_string_accepts(self):
         slot = Slot(name="test", accepts="backbone/", multiple=False)
         
         @register_block("backbone/test_str")
-        class StrBlock(AbstractBlock):
+        class StrBlock(AbstractBaseBlock):
             block_type = "backbone/test_str"
             def _forward_impl(self, *args, **kwargs):
                 return None
@@ -77,7 +77,7 @@ class TestSlot:
 class TestRegistry:
     def test_register_and_get(self):
         @register_block("test/registry_test")
-        class RegTestBlock(AbstractBlock):
+        class RegTestBlock(AbstractBaseBlock):
             block_type = "test/registry_test"
             def _forward_impl(self, *args, **kwargs):
                 return None
@@ -102,7 +102,7 @@ class TestBuilder:
         auto_discover()
         
         @register_block("test/buildable")
-        class BuildableBlock(AbstractBlock):
+        class BuildableBlock(AbstractBaseBlock):
             block_type = "test/buildable"
             def _forward_impl(self, *args, **kwargs):
                 return None
@@ -114,7 +114,7 @@ class TestBuilder:
         auto_discover()
         
         @register_block("test/buildable_oc")
-        class BuildableOCBlock(AbstractBlock):
+        class BuildableOCBlock(AbstractBaseBlock):
             block_type = "test/buildable_oc"
             def _forward_impl(self, *args, **kwargs):
                 return None

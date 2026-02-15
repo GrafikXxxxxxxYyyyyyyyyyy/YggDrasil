@@ -10,13 +10,13 @@ import torch
 from typing import Any, Dict, Optional
 from omegaconf import DictConfig
 
-from ...core.block.base import AbstractBlock
+from ...core.block.base import AbstractBaseBlock
 from ...core.block.registry import register_block
 from ...core.block.port import InputPort, OutputPort, Port
 
 
 @register_block("metric/psnr")
-class PSNRBlock(AbstractBlock):
+class PSNRBlock(AbstractBaseBlock):
     """Peak Signal-to-Noise Ratio metric."""
     
     block_type = "metric/psnr"
@@ -56,7 +56,7 @@ class PSNRBlock(AbstractBlock):
 
 
 @register_block("metric/ssim")
-class SSIMBlock(AbstractBlock):
+class SSIMBlock(AbstractBaseBlock):
     """Structural Similarity Index (stub — full impl needs gaussian kernel)."""
     
     block_type = "metric/ssim"
@@ -103,7 +103,7 @@ class SSIMBlock(AbstractBlock):
 
 
 @register_block("metric/fid_accumulator")
-class FIDAccumulatorBlock(AbstractBlock):
+class FIDAccumulatorBlock(AbstractBaseBlock):
     """FID metric accumulator — collects features for computing FID.
     
     FID is computed offline after accumulating enough features.

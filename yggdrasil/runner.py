@@ -77,7 +77,7 @@ class Runner:
             output = Runner.execute("workflow.yaml", prompt={"text": "new prompt"})
         """
         from yggdrasil.core.graph.graph import ComputeGraph
-        from yggdrasil.pipeline import Pipeline
+        from yggdrasil.pipeline import InferencePipeline
         
         graph, parameters = ComputeGraph.from_workflow(config_path)
         
@@ -87,14 +87,14 @@ class Runner:
         logger.info(f"Running workflow '{graph.name}' with {len(graph.nodes)} nodes")
         logger.info(f"Parameters: {list(parameters.keys())}")
         
-        pipe = Pipeline.from_graph(graph)
+        pipe = InferencePipeline.from_graph(graph)
         return pipe(**parameters)
     
     @staticmethod
     def execute_raw(config_path: str | Path, **overrides) -> Dict[str, Any]:
-        """Execute a workflow and return raw graph outputs (no Pipeline wrapping).
-        
-        Useful for non-standard pipelines that don't fit the Pipeline model.
+        """Execute a workflow and return raw graph outputs (no InferencePipeline wrapping).
+
+        Useful for non-standard pipelines that don't fit the InferencePipeline model.
         
         Args:
             config_path: Path to workflow file

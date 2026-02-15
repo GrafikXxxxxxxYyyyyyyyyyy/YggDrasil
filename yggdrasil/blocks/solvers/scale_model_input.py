@@ -12,12 +12,12 @@ from typing import Any, Dict
 from omegaconf import DictConfig
 
 from yggdrasil.core.block.registry import register_block
-from yggdrasil.core.block.base import AbstractBlock
+from yggdrasil.core.block.base import AbstractBaseBlock
 from yggdrasil.core.block.port import InputPort, OutputPort, TensorSpec
 
 
 @register_block("solver/scale_model_input")
-class ScaleModelInputBlock(AbstractBlock):
+class ScaleModelInputBlock(AbstractBaseBlock):
     """Calls solver.scale_model_input() — must receive the same solver instance as the step.
 
     Config: "solver" — the EulerDiscreteSolver block (passed at build time).

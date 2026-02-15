@@ -5,13 +5,13 @@ import torch
 from typing import Optional, Dict, Any
 from omegaconf import DictConfig
 
-from yggdrasil.core.block.base import AbstractBlock
+from yggdrasil.core.block.base import AbstractBaseBlock
 from yggdrasil.core.block.registry import register_block
 from yggdrasil.core.block.port import Port, InputPort, OutputPort, TensorSpec
 
 
 @register_block("guidance/abstract")
-class AbstractGuidance(AbstractBlock):
+class AbstractGuidance(AbstractBaseBlock):
     """Абстрактный guidance-блок (CFG, PAG, SAG, FreeU, custom).
     
     Контракт: реализовать ``process()`` (port-based) или ``__call__()`` (legacy).

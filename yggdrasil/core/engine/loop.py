@@ -5,7 +5,7 @@ from typing import Callable, List, Optional, Any, Dict
 from tqdm.auto import tqdm
 from omegaconf import DictConfig
 
-from ...core.block.base import AbstractBlock
+from ...core.block.base import AbstractBaseBlock
 from ...core.block.registry import register_block
 from ...core.block.slot import Slot
 
@@ -15,7 +15,7 @@ from ...core.model.modular import ModularDiffusionModel
 
 
 @register_block("engine/loop")
-class SamplingLoop(AbstractBlock):
+class SamplingLoop(AbstractBaseBlock):
     """Универсальный цикл сэмплирования с хуками.
     
     Используется внутри sampler и pipeline для максимальной гибкости.

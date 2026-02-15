@@ -104,8 +104,8 @@ def _audio_tensor_to_file(tensor: torch.Tensor, sr: int = 44100) -> Optional[Tup
 def _get_templates_by_modality() -> Dict[str, List[Tuple[str, str]]]:
     """Возвращает {modality: [(template_id, description), ...]}."""
     try:
-        from yggdrasil.pipeline import Pipeline
-        available = Pipeline.list_available()
+        from yggdrasil.pipeline import InferencePipeline
+        available = InferencePipeline.list_available()
     except Exception:
         available = {}
     result = {"image": [], "video": [], "audio": []}
@@ -165,7 +165,7 @@ def create_ui(
             return [], None, None, "Выберите шаблон пайплайна.", pipeline_state
 
         try:
-            from yggdrasil.pipeline import Pipeline
+            from yggdrasil.pipeline import InferencePipeline
         except ImportError as e:
             return [], None, None, f"Ошибка импорта: {e}", pipeline_state
 
@@ -175,7 +175,7 @@ def create_ui(
             pipe = pipeline_state[1]
         if pipe is None:
             try:
-                pipe = Pipeline.from_template(template_name, device=device)
+                pipe = InferencePipeline.from_template(template_name, device=device)
             except Exception as e:
                 return [], None, None, f"Не удалось загрузить пайплайн: {e}", pipeline_state
             pipeline_state = (template_name, pipe)

@@ -4,13 +4,13 @@ from abc import abstractmethod
 from typing import Optional, Tuple
 from omegaconf import DictConfig
 
-from ....core.block.base import AbstractBlock
+from ....core.block.base import AbstractBaseBlock
 from ....core.block.registry import register_block
 from ....core.block.port import Port, InputPort, OutputPort, TensorSpec
 
 
 @register_block("noise/sampler/abstract")
-class NoiseSampler(AbstractBlock):
+class NoiseSampler(AbstractBaseBlock):
     """Abstract noise generator (Gaussian, Pyramid, Offset, etc.)."""
     
     block_type = "noise/sampler/abstract"

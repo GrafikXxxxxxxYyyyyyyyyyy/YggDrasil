@@ -10,18 +10,17 @@ from omegaconf import DictConfig, OmegaConf
 from pathlib import Path
 
 
-class AbstractBlock(ABC, nn.Module):
+class AbstractBaseBlock(ABC, nn.Module):
     """Базовый Lego-кирпичик всего фреймворка.
-    
+
     Контракт блока (два обязательных метода):
-    
     1. ``declare_io()`` — декларация типизированных портов ввода/вывода.
     2. ``process(**port_inputs) -> dict`` — обработка данных.
-    
+
     Пример минимального блока::
-    
+
         @register_block("my/super_res")
-        class SuperRes(AbstractBlock):
+        class SuperRes(AbstractBaseBlock):
             block_type = "my/super_res"
             
             def __init__(self, config=None):
@@ -84,12 +83,12 @@ class AbstractBlock(ABC, nn.Module):
             # Handle list configs for multiple-accept slots
             if isinstance(child_config, (list, tuple)):
                 for item in child_config:
-                    if isinstance(item, AbstractBlock):
+                    if isinstance(item, AbstractBaseBlock):
                         self.attach_slot(slot_name, item)
                     elif isinstance(item, dict) and "type" in item:
                         child = BlockBuilder.build(item)
                         self.attach_slot(slot_name, child)
-            elif isinstance(child_config, AbstractBlock):
+            elif isinstance(child_config, AbstractBaseBlock):
                 self.attach_slot(slot_name, child_config)
             elif isinstance(child_config, dict) and "type" in child_config:
                 child = BlockBuilder.build(child_config)
@@ -101,7 +100,7 @@ class AbstractBlock(ABC, nn.Module):
                 except Exception:
                     pass  # Skip non-block configs
     
-    def attach_slot(self, slot_name: str, block: "AbstractBlock"):
+    def attach_slot(self, slot_name: str, block: "AbstractBaseBlock"):
         """Attach a block to a slot (Lego action)."""
         if slot_name not in self.slots:
             raise KeyError(f"Slot {slot_name} does not exist in {self.block_type}")
@@ -234,7 +233,7 @@ class AbstractBlock(ABC, nn.Module):
         OmegaConf.save(self.config, path / "config.yaml")
     
     @classmethod
-    def load(cls, path: Path | str) -> "AbstractBlock":
+    def load(cls, path: Path | str) -> "AbstractBaseBlock":
         path = Path(path)
         config = OmegaConf.load(path / "config.yaml")
         instance = cls(config)
@@ -243,3 +242,4 @@ class AbstractBlock(ABC, nn.Module):
     
     def __repr__(self):
         return f"<{self.block_type} id={self.block_id}>"
+

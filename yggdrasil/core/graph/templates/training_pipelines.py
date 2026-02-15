@@ -72,6 +72,123 @@ def build_train_lora_sd15(**kwargs) -> ComputeGraph:
     return graph
 
 
+@register_template("train_lora_sdxl")
+def build_train_lora_sdxl(**kwargs) -> ComputeGraph:
+    """LoRA training graph for Stable Diffusion XL."""
+    from yggdrasil.core.block.builder import BlockBuilder
+
+    graph = ComputeGraph("train_lora_sdxl")
+    graph.metadata.update({
+        "task": "training",
+        "method": "lora",
+        "base_model": "sdxl",
+        "default_train_nodes": ["lora_adapter"],
+        "default_lr": 1e-4,
+        "default_epochs": 100,
+    })
+
+    pretrained = kwargs.get("pretrained_backbone", "stabilityai/stable-diffusion-xl-base-1.0")
+    graph.add_node("conditioner", BlockBuilder.build({
+        "type": "conditioner/clip_sdxl",
+        "pretrained": pretrained,
+    }))
+    graph.add_node("backbone", BlockBuilder.build({
+        "type": "backbone/unet2d_condition",
+        "pretrained": pretrained,
+    }))
+    graph.add_node("loss", BlockBuilder.build({"type": "loss/mse"}))
+
+    graph.connect("conditioner", "condition", "backbone", "condition")
+    graph.connect("backbone", "output", "loss", "prediction")
+    graph.expose_input("prompt", "conditioner", "prompt")
+    graph.expose_input("latents", "backbone", "x")
+    graph.expose_input("timestep", "backbone", "timestep")
+    graph.expose_input("target", "loss", "target")
+    graph.expose_output("loss", "loss", "loss")
+    graph.expose_output("prediction", "backbone", "output")
+    return graph
+
+
+@register_template("train_lora_flux")
+def build_train_lora_flux(**kwargs) -> ComputeGraph:
+    """LoRA training graph for FLUX.1 (transformer backbone)."""
+    from yggdrasil.core.block.builder import BlockBuilder
+
+    graph = ComputeGraph("train_lora_flux")
+    graph.metadata.update({
+        "task": "training",
+        "method": "lora",
+        "base_model": "flux",
+        "default_train_nodes": ["backbone"],
+        "default_lr": 1e-4,
+        "default_epochs": 100,
+    })
+
+    pretrained = kwargs.get("pretrained_backbone", "black-forest-labs/FLUX.1-dev")
+    graph.add_node("conditioner", BlockBuilder.build({
+        "type": "conditioner/clip_text",
+        "pretrained": "openai/clip-vit-large-patch14",
+        "max_length": 77,
+    }))
+    graph.add_node("backbone", BlockBuilder.build({
+        "type": "backbone/flux_transformer",
+        "pretrained": pretrained,
+        "fp16": kwargs.get("fp16", True),
+    }))
+    graph.add_node("loss", BlockBuilder.build({"type": "loss/mse"}))
+
+    graph.connect("conditioner", "embedding", "backbone", "condition")
+    graph.connect("backbone", "output", "loss", "prediction")
+    graph.expose_input("prompt", "conditioner", "raw_condition")
+    graph.expose_input("latents", "backbone", "x")
+    graph.expose_input("timestep", "backbone", "timestep")
+    graph.expose_input("target", "loss", "target")
+    graph.expose_output("loss", "loss", "loss")
+    graph.expose_output("prediction", "backbone", "output")
+    return graph
+
+
+@register_template("train_lora_sd3")
+def build_train_lora_sd3(**kwargs) -> ComputeGraph:
+    """LoRA training graph for Stable Diffusion 3 (MMDiT backbone)."""
+    from yggdrasil.core.block.builder import BlockBuilder
+
+    graph = ComputeGraph("train_lora_sd3")
+    graph.metadata.update({
+        "task": "training",
+        "method": "lora",
+        "base_model": "sd3",
+        "default_train_nodes": ["backbone"],
+        "default_lr": 1e-4,
+        "default_epochs": 100,
+    })
+
+    graph.add_node("conditioner", BlockBuilder.build({
+        "type": "conditioner/clip_text",
+        "pretrained": "openai/clip-vit-large-patch14",
+        "max_length": 77,
+    }))
+    graph.add_node("backbone", BlockBuilder.build({
+        "type": "backbone/mmdit",
+        "hidden_dim": 1536,
+        "num_layers": 24,
+        "num_heads": 24,
+        "in_channels": 16,
+        "patch_size": 2,
+    }))
+    graph.add_node("loss", BlockBuilder.build({"type": "loss/mse"}))
+
+    graph.connect("conditioner", "embedding", "backbone", "condition")
+    graph.connect("backbone", "output", "loss", "prediction")
+    graph.expose_input("prompt", "conditioner", "raw_condition")
+    graph.expose_input("latents", "backbone", "x")
+    graph.expose_input("timestep", "backbone", "timestep")
+    graph.expose_input("target", "loss", "target")
+    graph.expose_output("loss", "loss", "loss")
+    graph.expose_output("prediction", "backbone", "output")
+    return graph
+
+
 @register_template("train_textual_inversion")
 def build_train_textual_inversion(**kwargs) -> ComputeGraph:
     """Textual Inversion training graph.

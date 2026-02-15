@@ -6,14 +6,14 @@ import torch.nn as nn
 from omegaconf import DictConfig
 from typing import Any, Dict, Optional, Tuple, List
 
-from yggdrasil.core.block.base import AbstractBlock
+from yggdrasil.core.block.base import AbstractBaseBlock
 from yggdrasil.core.block.registry import register_block
 from yggdrasil.core.block.slot import Slot
 from yggdrasil.core.block.port import Port, InputPort, OutputPort, TensorSpec
 
 
 @register_block("model/modular")
-class ModularDiffusionModel(AbstractBlock, nn.Module):
+class ModularDiffusionModel(AbstractBaseBlock, nn.Module):
     """Модульная диффузионная модель — Lego-конструктор.
     
     Поддерживает два режима выполнения:
@@ -27,7 +27,7 @@ class ModularDiffusionModel(AbstractBlock, nn.Module):
     block_version = "2.0.0"
     
     def __init__(self, config: DictConfig | dict):
-        AbstractBlock.__init__(self, config)
+        AbstractBaseBlock.__init__(self, config)
         self._cached_timestep_emb = None
         self.is_training = False
         self._compute_graph = None  # Optional graph for graph-based execution
@@ -68,7 +68,7 @@ class ModularDiffusionModel(AbstractBlock, nn.Module):
             "conditioner": Slot(name="conditioner", accepts=AbstractConditioner, multiple=True, optional=True),
             "guidance": Slot(name="guidance", accepts=AbstractGuidance, multiple=True, optional=True, default={"type": "guidance/cfg"}),
             "position": Slot(name="position", accepts=AbstractPositionEmbedder, multiple=False, optional=True, default={"type": "position/rope_nd"}),
-            "adapters": Slot(name="adapters", accepts=AbstractBlock, multiple=True, optional=True),
+            "adapters": Slot(name="adapters", accepts=AbstractBaseBlock, multiple=True, optional=True),
             "diffusion_process": Slot(name="diffusion_process", accepts=AbstractDiffusionProcess, multiple=False, optional=True),
         }
     

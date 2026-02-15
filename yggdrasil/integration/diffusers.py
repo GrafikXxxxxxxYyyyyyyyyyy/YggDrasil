@@ -102,7 +102,7 @@ class DiffusersBridge:
         "StableAudioDiTModel": "backbone/dit",  # Stable Audio transformer
     }
     
-    # Pipeline type → template name mapping
+    # InferencePipeline type → template name mapping
     PIPELINE_MAP: Dict[str, str] = {
         "StableDiffusionPipeline": "sd15_txt2img",
         "StableDiffusionImg2ImgPipeline": "sd15_img2img",
@@ -295,12 +295,18 @@ class DiffusersBridge:
             graph.expose_input("prompt_2", "conditioner_1", "raw_condition")
             graph.connect("conditioner_1", "embedding", "backbone", "condition")
         
-        # 4. Extract scheduler
+        # 4. Extract scheduler (single Solver — no separate Scheduler type per TZ §2.9)
         if hasattr(pipe, 'scheduler') and pipe.scheduler is not None:
             scheduler_class = type(pipe.scheduler).__name__
             solver_type = cls.SCHEDULER_MAP.get(scheduler_class, "diffusion/solver/ddim")
+            solver_config = {"type": solver_type}
+            # Copy scheduler config for parity with diffusers (num_train_timesteps, etc.)
+            sched_config = getattr(pipe.scheduler, "config", None) or {}
+            for key in ("num_train_timesteps", "beta_start", "beta_end", "beta_schedule", "steps_offset", "set_alpha_to_one", "skip_prk_steps"):
+                if key in sched_config:
+                    solver_config[key] = sched_config[key]
             try:
-                solver = BlockBuilder.build({"type": solver_type})
+                solver = BlockBuilder.build(solver_config)
                 graph.add_node("solver", solver)
             except Exception:
                 solver = BlockBuilder.build({"type": "diffusion/solver/ddim"})
@@ -329,6 +335,16 @@ class DiffusersBridge:
                 graph.connect("solver", "next_latents", "codec", "latent")
             graph.expose_output("decoded", "codec", "decoded")
         
+        # Metadata for InferencePipeline (default_num_steps, latent shape, etc.)
+        graph.metadata = dict(graph.metadata) if getattr(graph, "metadata", None) else {}
+        graph.metadata.setdefault("default_num_steps", 28)
+        graph.metadata.setdefault("default_width", 512)
+        graph.metadata.setdefault("default_height", 512)
+        if "codec" in graph.nodes and hasattr(graph.nodes["codec"], "scaling_factor"):
+            graph.metadata.setdefault("spatial_scale_factor", 8)
+        graph.metadata.setdefault("latent_channels", 4)
+        graph.metadata.setdefault("init_noise_sigma", 1.0)
+        
         logger.info(f"Graph assembled: {graph}")
         return graph
     
@@ -355,7 +371,7 @@ class DiffusersBridge:
 # ==================== Wrappers ====================
 
 class _DiffusersModelWrapper:
-    """Wraps a diffusers model to act as an AbstractBlock-like object."""
+    """Wraps a diffusers model to act as an AbstractBaseBlock-like object."""
     
     def __init__(self, model, block_type: str):
         self._model = model
@@ -369,7 +385,7 @@ class _DiffusersModelWrapper:
         return {
             "x": InputPort("x", spec=TensorSpec(space="latent")),
             "timestep": InputPort("timestep", data_type="tensor"),
-            "condition": InputPort("condition", data_type="dict", optional=True),
+            "condition": InputPort("condition", data_type="any", optional=True),
             "adapter_features": InputPort("adapter_features", data_type="any", optional=True),
             "output": OutputPort("output", spec=TensorSpec(space="latent")),
         }

@@ -5,14 +5,14 @@ import torch.nn as nn
 from typing import Optional, Any, Dict
 from omegaconf import DictConfig
 
-from ...core.block.base import AbstractBlock
+from ...core.block.base import AbstractBaseBlock
 from ...core.block.registry import register_block
 from ...core.block.slot import Slot
 from ...core.block.port import Port, InputPort, OutputPort, TensorSpec
 
 
 @register_block("backbone/abstract")
-class AbstractBackbone(AbstractBlock, nn.Module):
+class AbstractBackbone(AbstractBaseBlock, nn.Module):
     """Абстрактный backbone (UNet, DiT, Transformer, GNN и т.д.).
     
     Контракт: реализовать ``process()`` или ``_forward_impl()``.
@@ -40,7 +40,7 @@ class AbstractBackbone(AbstractBlock, nn.Module):
         return {
             "x": InputPort("x", spec=TensorSpec(space="latent"), description="Latent input"),
             "timestep": InputPort("timestep", data_type="tensor", description="Timestep"),
-            "condition": InputPort("condition", data_type="dict", optional=True, description="Condition embeddings"),
+            "condition": InputPort("condition", data_type="any", optional=True, description="Condition embeddings (dict or tensor; tensor is wrapped as encoder_hidden_states)"),
             "position_embedding": InputPort("position_embedding", optional=True, description="Position embedding"),
             "adapter_features": InputPort("adapter_features", data_type="any", optional=True, description="Adapter features (ControlNet, T2I) — dict or list of dicts"),
             "output": OutputPort("output", spec=TensorSpec(space="latent"), description="Denoised output"),
@@ -68,7 +68,7 @@ class AbstractBackbone(AbstractBlock, nn.Module):
         return {
             "adapters": Slot(
                 name="adapters",
-                accepts=AbstractBlock,
+                accepts=AbstractBaseBlock,
                 multiple=True,
                 optional=True
             )
@@ -94,5 +94,5 @@ class AbstractBackbone(AbstractBlock, nn.Module):
                 output = adapter.apply(output, self)
         return output
     
-    def inject_adapter(self, adapter: AbstractBlock):
+    def inject_adapter(self, adapter: AbstractBaseBlock):
         self.attach_slot("adapters", adapter)

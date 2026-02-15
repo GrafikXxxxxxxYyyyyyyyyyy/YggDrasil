@@ -2,7 +2,7 @@ import torch
 from abc import abstractmethod
 from omegaconf import DictConfig
 
-from ...core.block.base import AbstractBlock
+from ...core.block.base import AbstractBaseBlock
 from ...core.block.registry import register_block
 from .process import AbstractDiffusionProcess
 

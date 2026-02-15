@@ -13,13 +13,13 @@ import torch
 from typing import Any, Dict, Optional, Iterator
 from omegaconf import DictConfig
 
-from ...core.block.base import AbstractBlock
+from ...core.block.base import AbstractBaseBlock
 from ...core.block.registry import register_block
 from ...core.block.port import InputPort, OutputPort, Port
 
 
 @register_block("data/dataset")
-class DatasetBlock(AbstractBlock):
+class DatasetBlock(AbstractBaseBlock):
     """Wraps a dataset as a graph node.
     
     Provides one batch at a time via process().

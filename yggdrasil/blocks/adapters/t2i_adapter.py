@@ -11,7 +11,7 @@ from diffusers.models import UNet2DConditionModel
 from yggdrasil.core.block.registry import register_block
 from yggdrasil.core.block.port import InputPort, OutputPort
 from yggdrasil.core.block.slot import Slot
-from yggdrasil.core.block.base import AbstractBlock
+from yggdrasil.core.block.base import AbstractBaseBlock
 from .base import AbstractAdapter
 from yggdrasil.core.model.backbone import AbstractBackbone
 
@@ -74,7 +74,7 @@ class T2IAdapter(AbstractAdapter):
         return {
             "conditioner": Slot(
                 name="conditioner",
-                accepts=AbstractBlock,
+                accepts=AbstractBaseBlock,
                 multiple=True,
                 optional=True
             )

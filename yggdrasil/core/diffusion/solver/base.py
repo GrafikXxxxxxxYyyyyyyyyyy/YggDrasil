@@ -1,14 +1,14 @@
 import torch
 from typing import Any, Dict
 
-from ....core.block.base import AbstractBlock
+from ....core.block.base import AbstractBaseBlock
 from ....core.block.registry import register_block
 from ....core.block.port import Port, InputPort, OutputPort, TensorSpec
 from ..process import AbstractDiffusionProcess
 
 
 @register_block("diffusion/solver/abstract")
-class AbstractSolver(AbstractBlock):
+class AbstractSolver(AbstractBaseBlock):
     """Абстрактный солвер (DDIM, Heun, Euler, DPM и т.д.).
     
     Контракт: реализовать ``process()`` или ``step()``.

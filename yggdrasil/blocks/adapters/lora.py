@@ -40,7 +40,7 @@ from pathlib import Path
 from omegaconf import DictConfig
 
 from .base import AbstractAdapter
-from ...core.block.base import AbstractBlock
+from ...core.block.base import AbstractBaseBlock
 from ...core.block.registry import register_block
 
 logger = logging.getLogger(__name__)
@@ -198,7 +198,7 @@ class LoRAAdapter(AbstractAdapter):
         and wraps them with LoRA.
         
         Args:
-            target: Any nn.Module (AbstractBlock, AbstractBackbone, etc.)
+            target: Any nn.Module (AbstractBaseBlock, AbstractBackbone, etc.)
             
         Returns:
             self for chaining

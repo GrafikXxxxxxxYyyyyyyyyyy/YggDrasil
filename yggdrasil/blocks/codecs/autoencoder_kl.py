@@ -35,7 +35,15 @@ class AutoencoderKLCodec(AbstractLatentCodec):
             **load_kwargs,
         )
         self.vae.requires_grad_(False)
-        self.scaling_factor = config.get("scaling_factor", 0.18215)
+        # Prefer config; else VAE's config (SD3 uses 1.5305 + shift 0.0609; SD 1.5 default 0.18215)
+        scaling = config.get("scaling_factor")
+        if scaling is None and getattr(self.vae, "config", None) is not None:
+            scaling = getattr(self.vae.config, "scaling_factor", None)
+        self.scaling_factor = float(scaling if scaling is not None else 0.18215)
+        shift = config.get("shift_factor")
+        if shift is None and getattr(self.vae, "config", None) is not None:
+            shift = getattr(self.vae.config, "shift_factor", None)
+        self.shift_factor = float(shift) if shift is not None else 0.0
         self.latent_channels = int(config.get("latent_channels", 4))
         self.spatial_scale_factor = int(config.get("spatial_scale_factor", 8))
     
@@ -58,8 +66,9 @@ class AutoencoderKLCodec(AbstractLatentCodec):
         x = x.to(device=vae_device, dtype=self.vae.dtype)
         x = x * 2.0 - 1.0  # [0, 1] -> [-1, 1], VAE expects [-1, 1]
         with torch.no_grad():
-            latents = self.vae.encode(x).latent_dist.sample()
-        latents = latents * self.scaling_factor
+            sample = self.vae.encode(x).latent_dist.sample()
+        # Stored latent: (vae_sample - shift) * scale (Diffusers SD3 convention)
+        latents = (sample - self.shift_factor) * self.scaling_factor
         return latents
     
     def decode(self, z: torch.Tensor) -> torch.Tensor:
@@ -69,14 +78,16 @@ class AutoencoderKLCodec(AbstractLatentCodec):
             z_2d = z.permute(0, 2, 1, 3, 4).reshape(B * T, C, h, w)
             out_2d = self.decode(z_2d)
             return out_2d.reshape(B, T, *out_2d.shape[1:]).permute(0, 2, 1, 3, 4)
-        z = z / self.scaling_factor
+        # Inverse of stored latent -> VAE input (Diffusers: latents/scale + shift)
+        z = (z / self.scaling_factor) + self.shift_factor
         vae_device = next(self.vae.parameters()).device
 
         # SDXL VAE in float16 produces NaN (overflow); use float32 for decode.
-        # MPS: float32 for stability (GroupNorm/conv in fp16 can artifact).
+        # SD3 (scale 1.53): float32 for correct decode; MPS: float32 for stability.
         use_fp32_decode = (
             vae_device.type == "mps"
             or self.scaling_factor == 0.13025  # SDXL
+            or self.scaling_factor >= 1.0  # SD3 (1.53), Flux — correct range, less artifact
         )
         if use_fp32_decode:
             z = z.to(device=vae_device, dtype=torch.float32)

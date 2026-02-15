@@ -13,13 +13,13 @@ import torch
 from typing import Any, Dict, Optional
 from omegaconf import DictConfig
 
-from yggdrasil.core.block.base import AbstractBlock
+from yggdrasil.core.block.base import AbstractBaseBlock
 from yggdrasil.core.block.registry import register_block
 from yggdrasil.core.block.port import InputPort, OutputPort, Port
 
 
 @register_block("graph/parallel")
-class ParallelNode(AbstractBlock):
+class ParallelNode(AbstractBaseBlock):
     """Execute branches in parallel (sequentially in practice) and merge outputs."""
     
     block_type = "graph/parallel"

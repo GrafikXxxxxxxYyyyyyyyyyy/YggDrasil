@@ -6,7 +6,7 @@ from typing import Dict, Any, Optional, Callable
 from omegaconf import DictConfig, OmegaConf
 from pathlib import Path
 
-from ...core.block.base import AbstractBlock
+from ...core.block.base import AbstractBaseBlock
 from ...core.block.registry import register_block
 from ...core.block.slot import Slot
 
@@ -16,7 +16,7 @@ from ...core.model.modular import ModularDiffusionModel
 
 
 @register_block("engine/pipeline/abstract")
-class AbstractPipeline(AbstractBlock):
+class AbstractPipeline(AbstractBaseBlock):
     """Базовый пайплайн (train / infer / distillation / multi-modal).
     
     Один класс — все режимы. Наследники реализуют конкретные сценарии.

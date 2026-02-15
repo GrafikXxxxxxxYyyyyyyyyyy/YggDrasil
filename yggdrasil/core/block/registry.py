@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Type, Any
 from pathlib import Path
 from difflib import get_close_matches
 
-from .base import AbstractBlock
+from .base import AbstractBaseBlock
 
 logger = logging.getLogger(__name__)
 
@@ -17,21 +17,21 @@ class BlockRegistry:
     Auto-discovery scans yggdrasil.blocks and yggdrasil.plugins
     packages, logging any import failures (not silently swallowing them).
     """
-    _registry: Dict[str, Type[AbstractBlock]] = {}
+    _registry: Dict[str, Type[AbstractBaseBlock]] = {}
     _import_errors: Dict[str, str] = {}  # module -> error message
     _discovered: bool = False
     
     @classmethod
     def register(cls, block_type: str):
         """Decorator: @register_block("model/modular")"""
-        def decorator(block_cls: Type[AbstractBlock]):
+        def decorator(block_cls: Type[AbstractBaseBlock]):
             cls._registry[block_type] = block_cls
             block_cls.block_type = block_type
             return block_cls
         return decorator
     
     @classmethod
-    def get(cls, key: str) -> Type[AbstractBlock]:
+    def get(cls, key: str) -> Type[AbstractBaseBlock]:
         """Get block class by key. Raises informative KeyError with suggestions."""
         if key not in cls._registry:
             cls._auto_discover()
@@ -50,7 +50,7 @@ class BlockRegistry:
         return cls._registry[key]
     
     @classmethod
-    def list_blocks(cls) -> Dict[str, Type[AbstractBlock]]:
+    def list_blocks(cls) -> Dict[str, Type[AbstractBaseBlock]]:
         cls._auto_discover()
         return cls._registry.copy()
     

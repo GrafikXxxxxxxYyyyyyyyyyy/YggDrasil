@@ -1,17 +1,17 @@
 from typing import Dict, List
 import networkx as nx
-from .base import AbstractBlock
+from .base import AbstractBaseBlock
 
 
 class BlockGraph:
     """Визуализация и анализ графа блоков."""
     
     @staticmethod
-    def build_from_block(root: AbstractBlock) -> nx.DiGraph:
+    def build_from_block(root: AbstractBaseBlock) -> nx.DiGraph:
         """Строит граф зависимостей."""
         G = nx.DiGraph()
         
-        def add_node(block: AbstractBlock):
+        def add_node(block: AbstractBaseBlock):
             G.add_node(block.block_id, type=block.block_type)
             for slot_name, child in block._slot_children.items():
                 if isinstance(child, list):
@@ -26,7 +26,7 @@ class BlockGraph:
         return G
     
     @staticmethod
-    def to_mermaid(root: AbstractBlock) -> str:
+    def to_mermaid(root: AbstractBaseBlock) -> str:
         """Генерирует Mermaid-диаграмму (можно вставить в docs)."""
         G = BlockGraph.build_from_block(root)
         lines = ["graph TD"]

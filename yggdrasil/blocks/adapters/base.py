@@ -6,14 +6,14 @@ from abc import abstractmethod
 from typing import Dict, Any, Optional
 from omegaconf import DictConfig
 
-from ...core.block.base import AbstractBlock
+from ...core.block.base import AbstractBaseBlock
 from ...core.block.registry import register_block
 from ...core.block.port import Port, InputPort, OutputPort, TensorSpec
 from ...core.model.backbone import AbstractBackbone
 
 
 @register_block("adapter/abstract")
-class AbstractAdapter(AbstractBlock):
+class AbstractAdapter(AbstractBaseBlock):
     """Базовый адаптер — Lego-кирпичик для модификации модели."""
     
     block_type = "adapter/abstract"

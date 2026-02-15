@@ -15,13 +15,13 @@ import torch.nn.functional as F
 from typing import Any, Dict, Optional
 from omegaconf import DictConfig
 
-from ...core.block.base import AbstractBlock
+from ...core.block.base import AbstractBaseBlock
 from ...core.block.registry import register_block
 from ...core.block.port import InputPort, OutputPort, TensorSpec, Port
 
 
 @register_block("loss/mse")
-class MSELossBlock(AbstractBlock):
+class MSELossBlock(AbstractBaseBlock):
     """MSE Loss as a graph node."""
     
     block_type = "loss/mse"
@@ -61,7 +61,7 @@ class MSELossBlock(AbstractBlock):
 
 
 @register_block("loss/l1")
-class L1LossBlock(AbstractBlock):
+class L1LossBlock(AbstractBaseBlock):
     """L1 Loss as a graph node."""
     
     block_type = "loss/l1"
@@ -88,7 +88,7 @@ class L1LossBlock(AbstractBlock):
 
 
 @register_block("loss/composite")
-class CompositeLossBlock(AbstractBlock):
+class CompositeLossBlock(AbstractBaseBlock):
     """Combine multiple loss blocks with weights.
     
     Config:
@@ -102,7 +102,7 @@ class CompositeLossBlock(AbstractBlock):
         super().__init__(config)
         self._components = []
     
-    def add_component(self, loss_block: AbstractBlock, weight: float = 1.0):
+    def add_component(self, loss_block: AbstractBaseBlock, weight: float = 1.0):
         """Add a loss component."""
         self._components.append((loss_block, weight))
         return self

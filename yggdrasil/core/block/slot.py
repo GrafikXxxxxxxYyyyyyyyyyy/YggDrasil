@@ -9,14 +9,14 @@ from typing import Type, Optional, Any, Union
 class Slot:
     """Connection point for attaching blocks (Lego socket)."""
     name: str
-    accepts: Union[Type["AbstractBlock"], tuple[Type["AbstractBlock"], ...], str]
+    accepts: Union[Type["AbstractBaseBlock"], tuple[Type["AbstractBaseBlock"], ...], str]
     multiple: bool = False
     optional: bool = False
     default: Optional[dict] = None
 
-    def check_compatible(self, block: "AbstractBlock") -> bool:
+    def check_compatible(self, block: "AbstractBaseBlock") -> bool:
         """Check if a block is compatible with this slot."""
-        from .base import AbstractBlock
+        from .base import AbstractBaseBlock
         
         if isinstance(block, type):
             return False

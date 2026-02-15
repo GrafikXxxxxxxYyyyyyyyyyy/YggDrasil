@@ -4,13 +4,13 @@ import torch
 from abc import abstractmethod
 from typing import Tuple, Optional
 
-from ...core.block.base import AbstractBlock
+from ...core.block.base import AbstractBaseBlock
 from ...core.block.registry import register_block
 from ...core.block.port import Port, InputPort, OutputPort, TensorSpec
 
 
 @register_block("position/abstract")
-class AbstractPositionEmbedder(AbstractBlock):
+class AbstractPositionEmbedder(AbstractBaseBlock):
     """Позиционные эмбеддинги любой размерности (RoPE, sinusoidal, learned)."""
     
     block_type = "position/abstract"
@@ -33,7 +33,7 @@ class AbstractPositionEmbedder(AbstractBlock):
         return {}
 
     def _forward_impl(self, *args, **kwargs) -> torch.Tensor:
-        """Требуется AbstractBlock; делегирует в __call__(timestep, shape)."""
+        """Требуется AbstractBaseBlock; делегирует в __call__(timestep, shape)."""
         return self(*args, **kwargs)
     
     @abstractmethod

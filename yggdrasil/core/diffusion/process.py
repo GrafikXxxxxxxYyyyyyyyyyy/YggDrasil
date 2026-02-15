@@ -5,7 +5,7 @@ from abc import abstractmethod
 from typing import Dict, Any, Optional
 from omegaconf import DictConfig
 
-from ...core.block.base import AbstractBlock
+from ...core.block.base import AbstractBaseBlock
 from ...core.block.registry import register_block
 from ...core.block.slot import Slot
 from ...core.block.port import Port, InputPort, OutputPort, TensorSpec
@@ -14,7 +14,7 @@ from .noise.schedule import NoiseSchedule
 
 
 @register_block("diffusion/process/abstract")
-class AbstractDiffusionProcess(AbstractBlock):
+class AbstractDiffusionProcess(AbstractBaseBlock):
     """Абстрактный диффузионный процесс (DDPM, Flow Matching, Consistency, SDE и т.д.).
     
     Это главный математический Lego-кирпичик.
@@ -50,7 +50,7 @@ class AbstractDiffusionProcess(AbstractBlock):
         }
     
     def _forward_impl(self, x0: torch.Tensor, t: torch.Tensor, noise: Optional[torch.Tensor] = None, **kwargs) -> Dict[str, torch.Tensor]:
-        """Требуется AbstractBlock; делегирует в forward_process."""
+        """Требуется AbstractBaseBlock; делегирует в forward_process."""
         return self.forward_process(x0, t, noise)
 
     @abstractmethod

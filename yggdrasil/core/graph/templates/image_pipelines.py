@@ -9,6 +9,9 @@ from typing import Any, Dict, Optional
 
 from yggdrasil.core.graph.graph import ComputeGraph
 from yggdrasil.core.graph.templates import register_template
+from yggdrasil.core.block.registry import register_block
+from yggdrasil.core.block.base import AbstractBaseBlock
+from yggdrasil.core.block.port import Port
 
 
 def _require_diffusers_klein():
@@ -39,6 +42,7 @@ def _build_denoise_step(
     solver,
     *,
     use_cfg: bool = True,
+    expose_num_steps: bool = False,
 ) -> ComputeGraph:
     """Build the inner per-step graph with explicit dual-pass CFG.
     
@@ -109,10 +113,12 @@ def _build_denoise_step(
         step.expose_input("condition", "backbone", "condition")
     
     step.expose_input("next_timestep", "solver", "next_timestep")
-    
+    if expose_num_steps:
+        step.expose_input("num_steps", "solver", "num_steps")
+
     step.expose_output("next_latents", "solver", "next_latents")
     step.expose_output("latents", "solver", "next_latents")
-    
+
     return step
 
 
@@ -258,10 +264,13 @@ def _build_txt2img_graph(
     elif use_cfg and use_batched_cfg:
         step_graph = _build_denoise_step_batched_cfg(backbone_config, guidance_config, solver)
     else:
-        step_graph = _build_denoise_step(backbone, guidance, solver, use_cfg=use_cfg)
+        step_graph = _build_denoise_step(
+            backbone, guidance, solver, use_cfg=use_cfg,
+            expose_num_steps=(solver_config.get("type") == "solver/flow_euler"),
+        )
     
-    # Wrap in denoising loop (leading + steps_offset to match diffusers DDIM)
-    num_train_t = int(schedule_config.get("num_train_timesteps", 1000))
+    # Wrap in denoising loop. Schedule params live in solver (TZ §2.9: only solver, no separate scheduler).
+    num_train_t = int(solver_config.get("num_train_timesteps") or schedule_config.get("num_train_timesteps", 1000))
     steps_offset = int(solver_config.get("steps_offset", 0))
     loop = LoopSubGraph.create(
         inner_graph=step_graph,
@@ -279,15 +288,16 @@ def _build_txt2img_graph(
         conditioners.append(cond)
         graph.add_node(f"conditioner_{i}", cond)
     
-    # CFG unconditional = same text encoder with empty string (diffusers does this; zeros give wrong quality)
+    # CFG: reuse the same conditioner for negative (one set of weights, two forward passes — like Diffusers)
     if use_cfg:
-        cond_neg = BlockBuilder.build(conditioner_configs[0])
-        graph.add_node("conditioner_negative", cond_neg)
+        graph.add_node("conditioner_negative", conditioners[0])
     
-    # Position embedder (if needed)
-    if position_config:
-        position = BlockBuilder.build(position_config)
-        graph.add_node("position", position)
+    # Position embedder: only add when wired (e.g. inside step graph). Currently not wired
+    # at outer level (no timestep input), so adding it would cause executor to run it with
+    # timestep=None and crash. Backbone (MMDiT) accepts position_embedding=None.
+    # if position_config:
+    #     position = BlockBuilder.build(position_config)
+    #     graph.add_node("position", position)
     
     # Add loop and codec to outer graph
     graph.add_node("denoise_loop", loop)
@@ -369,6 +379,7 @@ def sd15_txt2img(**kwargs) -> ComputeGraph:
         use_euler_scale_input=False,
     )
     graph.metadata["use_scheduler_timesteps"] = True
+    graph.metadata["base_model"] = "sd15"
     return graph
 
 
@@ -400,6 +411,7 @@ def sd15_txt2img_nobatch(**kwargs) -> ComputeGraph:
         default_height=512,
         use_batched_cfg=False,
     )
+    graph.metadata["base_model"] = "sd15"
 
 
 @register_template("sd15_img2img")
@@ -516,17 +528,75 @@ def _build_sdxl_txt2img_graph(
     return graph
 
 
+def _build_sdxl_denoise_loop_block(pretrained: str, num_steps: int = 50, guidance_scale: float = 7.5, **kwargs) -> "LoopSubGraph":
+    """Build SDXL denoise loop from pretrained (for use with add_node(type=\"loop/denoise_sdxl\", pretrained=...))."""
+    from yggdrasil.core.block.builder import BlockBuilder
+    from yggdrasil.core.graph.subgraph import LoopSubGraph
+    backbone_config = {"type": "backbone/unet2d_condition", "pretrained": pretrained, "fp16": kwargs.get("fp16", True)}
+    guidance_config = {"type": "guidance/cfg", "scale": guidance_scale, "guidance_rescale": 0.7}
+    solver = BlockBuilder.build({
+        "type": "solver/euler_discrete",
+        "num_train_timesteps": 1000,
+        "beta_start": 0.00085,
+        "beta_end": 0.012,
+        "beta_schedule": "scaled_linear",
+        "steps_offset": 1,
+        "timestep_spacing": "leading",
+    })
+    step_graph = _build_denoise_step_batched_cfg_euler(backbone_config, guidance_config, solver)
+    return LoopSubGraph.create(
+        inner_graph=step_graph,
+        num_iterations=num_steps,
+        carry_vars=["latents"],
+        num_train_timesteps=1000,
+        timestep_spacing="leading",
+        steps_offset=1,
+    )
+
+
+@register_block("loop/denoise_sdxl")
+class DenoiseLoopSDXLBlock(AbstractBaseBlock):
+    """SDXL denoise loop buildable via add_node(type=\"loop/denoise_sdxl\", pretrained=..., num_steps=..., guidance_scale=...)."""
+    block_type = "loop/denoise_sdxl"
+
+    def __init__(self, config: Dict | Any):
+        from omegaconf import OmegaConf
+        from yggdrasil.core.graph.subgraph import LoopSubGraph
+        cfg = OmegaConf.create(config) if isinstance(config, dict) else config
+        super().__init__(cfg)
+        pretrained = cfg.get("pretrained", "stabilityai/stable-diffusion-xl-base-1.0")
+        num_steps = int(cfg.get("num_steps", 50))
+        guidance_scale = float(cfg.get("guidance_scale", 7.5))
+        self._loop: LoopSubGraph = _build_sdxl_denoise_loop_block(
+            pretrained=pretrained, num_steps=num_steps, guidance_scale=guidance_scale,
+            fp16=cfg.get("fp16", True),
+        )
+
+    @classmethod
+    def declare_io(cls) -> Dict[str, Port]:
+        from yggdrasil.core.graph.subgraph import LoopSubGraph
+        return LoopSubGraph.declare_io()
+
+    def process(self, **port_inputs: Any) -> Dict[str, Any]:
+        return self._loop.process(**port_inputs)
+
+    def parameters(self, recurse: bool = True):
+        return self._loop.parameters(recurse=recurse)
+
+
 @register_template("sdxl_txt2img")
 def sdxl_txt2img(**kwargs) -> ComputeGraph:
     """Stable Diffusion XL text-to-image with dual text encoder (CLIP L + CLIP G) and added_cond_kwargs."""
     pretrained = kwargs.get("pretrained", "stabilityai/stable-diffusion-xl-base-1.0")
-    return _build_sdxl_txt2img_graph(
+    graph = _build_sdxl_txt2img_graph(
         name="sdxl_txt2img",
         pretrained=pretrained,
         num_steps=kwargs.get("num_steps", 50),
         guidance_scale=kwargs.get("guidance_scale", 7.5),
         use_batched_cfg=True,
     )
+    graph.metadata["base_model"] = "sdxl"
+    return graph
 
 
 @register_template("sdxl_img2img")
@@ -566,29 +636,50 @@ def sdxl_refiner(**kwargs) -> ComputeGraph:
 
 @register_template("sd3_txt2img")
 def sd3_txt2img(**kwargs) -> ComputeGraph:
-    """Stable Diffusion 3 with MMDiT backbone and flow matching."""
-    return _build_txt2img_graph(
+    """Stable Diffusion 3 matching Diffusers StableDiffusion3Pipeline.
+
+    Uses SD3Transformer2DModel (real weights), triple text encoder (CLIP+CLIP2+T5),
+    and FlowMatchEulerDiscrete-style solver so output matches diffusers.png.
+    Repo: stabilityai/stable-diffusion-3-medium-diffusers.
+    """
+    pretrained = kwargs.get("pretrained", "stabilityai/stable-diffusion-3-medium-diffusers")
+    graph = _build_txt2img_graph(
         name="sd3_txt2img",
-        backbone_config={"type": "backbone/mmdit", "hidden_dim": 1536, "num_layers": 24, "num_heads": 24, "in_channels": 16, "patch_size": 2},
-        codec_config={"type": "codec/autoencoder_kl", "pretrained": kwargs.get("pretrained", "stabilityai/stable-diffusion-3-medium"), "fp16": True, "latent_channels": 16},
+        backbone_config={"type": "backbone/sd3_transformer", "pretrained": pretrained, "fp16": True},
+        codec_config={"type": "codec/autoencoder_kl", "pretrained": pretrained, "fp16": True, "latent_channels": 16},
         conditioner_configs=[
-            {"type": "conditioner/clip_text", "pretrained": "openai/clip-vit-large-patch14", "max_length": 77},
+            {"type": "conditioner/sd3_text", "pretrained": pretrained, "fp16": True},
         ],
         guidance_config={"type": "guidance/cfg", "scale": kwargs.get("guidance_scale", 5.0)},
-        solver_config={"type": "diffusion/solver/heun"},
-        schedule_config={"type": "noise/schedule/sigmoid"},
+        solver_config={"type": "solver/flow_euler", "scheduler_pretrained": pretrained},
+        schedule_config={"type": "noise/schedule/sigmoid", "num_train_timesteps": 1000},
         process_config={"type": "diffusion/process/flow/rectified"},
-        position_config={"type": "position/rope_nd", "dim": 64},
         num_steps=kwargs.get("num_steps", 28),
+        default_width=1024,
+        default_height=1024,
     )
+    graph.metadata["base_model"] = "sd3"
+    graph.metadata["pretrained"] = pretrained
+    graph.metadata["latent_channels"] = 16
+    graph.metadata["spatial_scale_factor"] = 8
+    return graph
+
+
+@register_template("sd3_img2img")
+def sd3_img2img(**kwargs) -> ComputeGraph:
+    """Stable Diffusion 3 image-to-image."""
+    graph = sd3_txt2img(**kwargs)
+    graph.name = "sd3_img2img"
+    graph.expose_input("source_image", "codec", "pixel_data")
+    return graph
 
 
 # ==================== FLUX ====================
 
 @register_template("flux_txt2img")
 def flux_txt2img(**kwargs) -> ComputeGraph:
-    """Flux text-to-image with MMDiT and rectified flow."""
-    return _build_txt2img_graph(
+    """FLUX.1 text-to-image with MMDiT and rectified flow."""
+    graph = _build_txt2img_graph(
         name="flux_txt2img",
         backbone_config={"type": "backbone/mmdit", "hidden_dim": 3072, "num_layers": 19, "num_heads": 24, "in_channels": 16, "patch_size": 2, "cond_dim": 4096},
         codec_config={"type": "codec/autoencoder_kl", "pretrained": kwargs.get("pretrained", "black-forest-labs/FLUX.1-dev"), "fp16": True, "latent_channels": 16},
@@ -600,6 +691,8 @@ def flux_txt2img(**kwargs) -> ComputeGraph:
         position_config={"type": "position/rope_nd", "dim": 64},
         num_steps=kwargs.get("num_steps", 28),
     )
+    graph.metadata["base_model"] = "flux"
+    return graph
 
 
 @register_template("flux_img2img")

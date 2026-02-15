@@ -1,4 +1,4 @@
-"""Pipeline Templates — готовые графы для популярных pipeline.
+"""InferencePipeline templates — готовые графы для популярных пайплайнов.
 
 Каждый template — функция, возвращающая ComputeGraph.
 """

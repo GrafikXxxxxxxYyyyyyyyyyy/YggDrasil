@@ -65,6 +65,10 @@ class ImagePlugin(AbstractPlugin):
         except ImportError:
             pass
         try:
+            from ...blocks.conditioners.sd3_text import SD3TextConditioner
+        except ImportError:
+            pass
+        try:
             from ...blocks.guidances.cfg import ClassifierFreeGuidance
         except ImportError:
             pass

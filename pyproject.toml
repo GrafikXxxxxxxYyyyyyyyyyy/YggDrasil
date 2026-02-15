@@ -41,7 +41,7 @@ dependencies = [
     "pillow",
     "omegaconf>=2.3.0",
     
-    # ML. Для FLUX.2 [klein] нужна dev-версия diffusers: pip install -e ".[klein]" или pip install -r requirements-klein.txt
+    # ML. Для FLUX.2 [klein]: pip install -e ".[klein]"
     "diffusers>=0.30.0",
     "transformers>=4.40.0",
     "accelerate",

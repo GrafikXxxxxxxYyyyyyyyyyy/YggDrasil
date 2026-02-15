@@ -61,7 +61,7 @@ def save_audio(tensor, path: str, sample_rate: int = 16000) -> None:
 
 def run_one(template: str, prompt: str, steps: int, output_dir: Path, device: str, dtype) -> dict:
     """Запуск одного пайплайна. Возвращает dict с результатом."""
-    from yggdrasil.pipeline import Pipeline
+    from yggdrasil.pipeline import InferencePipeline
 
     out_path = output_dir / f"{template}.wav"
     result = {
@@ -75,7 +75,7 @@ def run_one(template: str, prompt: str, steps: int, output_dir: Path, device: st
     }
     try:
         t0 = time.time()
-        pipe = Pipeline.from_template(template, device=device, dtype=dtype)
+        pipe = InferencePipeline.from_template(template, device=device, dtype=dtype)
         result["load_time_s"] = round(time.time() - t0, 1)
         kwargs = {"prompt": prompt, "seed": 42, "num_steps": steps}
         t0 = time.time()

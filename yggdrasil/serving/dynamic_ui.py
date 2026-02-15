@@ -12,8 +12,8 @@ Usage:
     ui = DynamicUI(graph)
     ui.launch()
     
-    # Or with Pipeline
-    pipe = Pipeline.from_template("flux2_txt2img")
+    # Or with InferencePipeline
+    pipe = InferencePipeline.from_template("flux2_txt2img")
     ui = DynamicUI.from_pipeline(pipe)
     ui.launch()
 """
@@ -173,7 +173,7 @@ def _tensor_to_images(tensor: torch.Tensor) -> List[Image.Image]:
 # ==================== DYNAMIC UI CLASS ====================
 
 class DynamicUI:
-    """Dynamically generate a Gradio UI from a ComputeGraph or Pipeline.
+    """Dynamically generate a Gradio UI from a ComputeGraph or InferencePipeline.
     
     Introspects graph I/O ports and creates appropriate UI components.
     Works with any graph — no hardcoded fields.
@@ -190,7 +190,7 @@ class DynamicUI:
     def __init__(
         self,
         graph: Optional["ComputeGraph"] = None,
-        pipeline: Optional["Pipeline"] = None,
+        pipeline: Optional["InferencePipeline"] = None,
         title: str = "YggDrasil",
         theme: str = "soft",
     ):
@@ -201,8 +201,8 @@ class DynamicUI:
         self._custom_tabs: List[Tuple[str, Callable]] = []
     
     @classmethod
-    def from_pipeline(cls, pipeline: "Pipeline", **kwargs) -> DynamicUI:
-        """Create UI from a Pipeline instance."""
+    def from_pipeline(cls, pipeline: "InferencePipeline", **kwargs) -> DynamicUI:
+        """Create UI from an InferencePipeline instance."""
         return cls(graph=pipeline.graph, pipeline=pipeline, **kwargs)
     
     @classmethod
@@ -391,7 +391,7 @@ class DynamicUI:
                     # Template selector
                     template_names = self._get_template_names()
                     template_dropdown = gr.Dropdown(
-                        label="Pipeline Template",
+                        label="InferencePipeline Template",
                         choices=template_names,
                         value=template_names[0] if template_names else None,
                         interactive=True,
@@ -487,8 +487,8 @@ class DynamicUI:
                 result = self.pipeline(**gen_kwargs)
                 output_tensor = result.images if hasattr(result, 'images') else result
             elif self.graph is not None:
-                from ..pipeline import Pipeline
-                pipe = Pipeline.from_graph(self.graph)
+                from ..pipeline import InferencePipeline
+                pipe = InferencePipeline.from_graph(self.graph)
                 result = pipe(**gen_kwargs)
                 output_tensor = result.images if hasattr(result, 'images') else result
             else:
@@ -526,7 +526,7 @@ class DynamicUI:
     def _build_graph_editor_tab(self, gr):
         """Build the interactive graph editor tab."""
         with gr.Tab("Graph Editor"):
-            gr.Markdown("### Visual Pipeline Builder")
+            gr.Markdown("### Visual InferencePipeline Builder")
             gr.Markdown("Build custom pipelines by combining blocks like Lego.")
             
             with gr.Row():
@@ -855,7 +855,7 @@ class DynamicUI:
     def _build_deploy_tab(self, gr):
         """Build the deployment tab."""
         with gr.Tab("Deploy"):
-            gr.Markdown("### Deploy Pipeline")
+            gr.Markdown("### Deploy InferencePipeline")
             
             with gr.Row():
                 with gr.Column():
@@ -865,7 +865,7 @@ class DynamicUI:
                         value="Local Server (FastAPI)",
                     )
                     deploy_template = gr.Dropdown(
-                        label="Pipeline", choices=self._get_template_names(),
+                        label="InferencePipeline", choices=self._get_template_names(),
                     )
                     deploy_port = gr.Number(label="Port", value=8000, precision=0)
                     deploy_workers = gr.Slider(1, 8, value=1, step=1, label="Workers")

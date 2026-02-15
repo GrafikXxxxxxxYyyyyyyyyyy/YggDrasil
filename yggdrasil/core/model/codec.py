@@ -4,13 +4,13 @@ import torch
 from typing import Tuple, Optional
 from omegaconf import DictConfig
 
-from ...core.block.base import AbstractBlock
+from ...core.block.base import AbstractBaseBlock
 from ...core.block.registry import register_block
 from ...core.block.port import Port, InputPort, OutputPort, TensorSpec
 
 
 @register_block("codec/abstract")
-class AbstractLatentCodec(AbstractBlock):
+class AbstractLatentCodec(AbstractBaseBlock):
     """Абстрактный кодек (VAE, VQGAN, Encodec, Identity, GaussianSplatting...).
     
     Контракт: реализовать ``process()`` или ``encode()/decode()``.

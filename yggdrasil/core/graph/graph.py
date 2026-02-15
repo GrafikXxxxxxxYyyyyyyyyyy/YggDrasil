@@ -2,7 +2,7 @@
 """ComputeGraph — направленный ациклический граф из блоков.
 
 Это главная структура данных YggDrasil v2.
-Pipeline = граф из блоков, соединённых через порты.
+Пайплайн = граф из блоков, соединённых через порты.
 """
 from __future__ import annotations
 
@@ -66,7 +66,7 @@ class ComputeGraph:
     
     def __init__(self, name: str = "unnamed"):
         self.name: str = name
-        self.nodes: OrderedDict[str, Any] = OrderedDict()  # name -> AbstractBlock
+        self.nodes: OrderedDict[str, Any] = OrderedDict()  # name -> AbstractBaseBlock
         self.edges: List[Edge] = []
         # Fan-out: one graph input can feed multiple (node, port) targets
         self.graph_inputs: Dict[str, List[Tuple[str, str]]] = {}   # input_name -> [(node, port), ...]
@@ -148,20 +148,236 @@ class ComputeGraph:
     
     # ==================== СБОРКА ГРАФА ====================
     
-    def add_node(self, name: str, block: Any) -> ComputeGraph:
-        """Добавить узел (блок) в граф.
-        
+    def add_node(
+        self,
+        name: str | None = None,
+        block: Any = None,
+        *,
+        type: str | None = None,
+        auto_connect: bool = True,
+        target_inner: str | None = None,
+        **config,
+    ) -> ComputeGraph:
+        """Добавить узел в граф.
+
+        Режимы:
+        1. add_node(name, block) — добавить готовый блок.
+        2. add_node(type="...", name="...", ...) — BlockBuilder собирает блок по type и config,
+           при auto_connect=True подключает по правилам роли (role_rules).
+        3. add_node(type="adapter/controlnet", target_inner="denoise_loop", ...) — добавить узел
+           во внутренний граф указанного узла (например denoise_loop) и пробросить вход на верхний граф.
+
+        Block builder вызывается внутри при передаче type=; снаружи разработчик видит только add_node.
+
         Args:
-            name: Уникальное имя узла в графе.
-            block: Экземпляр AbstractBlock.
-        
+            name: Уникальное имя узла.
+            block: Готовый блок (режим 1).
+            type: block_type из реестра (режимы 2–3).
+            auto_connect: Авто-подключение по роли при type=.
+            target_inner: Если задан (например "denoise_loop") — узел добавляется в .graph этого узла,
+                а graph_input роли пробрасывается как вход верхнего графа.
+            **config: Параметры для BlockBuilder (при type).
+
         Returns:
             self (для chaining).
         """
-        if name in self.nodes:
-            raise ValueError(f"Node '{name}' already exists in graph '{self.name}'")
-        self.nodes[name] = block
+        if block is not None:
+            if name is None:
+                raise ValueError("name required when passing block")
+            if name in self.nodes:
+                raise ValueError(f"Node '{name}' already exists in graph '{self.name}'")
+            self.nodes[name] = block
+            return self
+
+        if type is None:
+            raise ValueError("Either (name, block) or type=... required")
+
+        from yggdrasil.core.block.builder import BlockBuilder
+        from yggdrasil.core.graph.role_rules import (
+            get_role_for_block_type,
+            get_connection_rules,
+            get_default_config_for_block_type,
+            resolve_inner_target_for_adapter,
+        )
+
+        if target_inner is None and type.startswith("adapter/"):
+            target_inner = resolve_inner_target_for_adapter(self.nodes, type)
+
+        defaults = get_default_config_for_block_type(type, getattr(self, "metadata", None) or {})
+        cfg = {**defaults, **{k: v for k, v in config.items() if k not in ("target_inner", "image_encoder_pretrained")}}
+        cfg["type"] = type
+        if target_inner and type == "adapter/controlnet" and target_inner == "denoise_loop":
+            from .adapters import add_controlnet_to_graph
+            add_controlnet_to_graph(
+                self,
+                controlnet_pretrained=cfg.get("pretrained", "diffusers/controlnet-canny-sdxl-1.0"),
+                conditioning_scale=cfg.get("conditioning_scale", 1.0),
+                fp16=cfg.get("fp16", True),
+            )
+            return self
+        ip_adapter_with_encoder = type == "adapter/ip_adapter" and cfg.get("image_encoder_pretrained") is not None
+        if ip_adapter_with_encoder:
+            block = None
+        else:
+            block = BlockBuilder.build(cfg)
+        node_name = name or type.replace("/", "_").replace(".", "_")
+
+        if target_inner:
+            if target_inner not in self.nodes:
+                raise ValueError(f"target_inner node '{target_inner}' not found")
+            inner_block = self.nodes[target_inner]
+            if not hasattr(inner_block, "graph") or inner_block.graph is None:
+                raise ValueError(f"'{target_inner}' has no inner graph")
+            inner = inner_block.graph
+            if node_name in inner.nodes:
+                node_name = f"{node_name}_{len(inner.nodes)}"
+            inner.nodes[node_name] = block
+            if auto_connect:
+                role = get_role_for_block_type(type)
+                rules = get_connection_rules(role)
+                if rules:
+                    target_node = rules.get("target_node")
+                    target_port = rules.get("target_port")
+                    graph_input = rules.get("graph_input")
+                    out_port = rules.get("output_port", "output")
+                    in_port = rules.get("input_port", "control_image")
+                    if target_node and target_node in inner.nodes and target_port:
+                        inner.connect(node_name, out_port, target_node, target_port)
+                    if graph_input:
+                        inner.expose_input(graph_input, node_name, in_port)
+                    if role == "adapter" and type == "adapter/controlnet":
+                        for inp, port in (
+                            ("condition", "encoder_hidden_states"),
+                            ("latents", "sample"),
+                            ("timestep", "timestep"),
+                        ):
+                            if inp in inner.graph_inputs:
+                                inner.expose_input(inp, node_name, port)
+                if rules and rules.get("graph_input"):
+                    self.expose_input(rules["graph_input"], target_inner, rules["graph_input"])
+            return self
+
+        if node_name in self.nodes:
+            node_name = f"{node_name}_{len(self.nodes)}"
+        if block is not None:
+            self.nodes[node_name] = block
+
+        if auto_connect:
+            if ip_adapter_with_encoder:
+                self._add_node_ip_adapter_with_encoder(node_name, type, cfg, config)
+            elif block is not None:
+                role = get_role_for_block_type(type)
+                rules = get_connection_rules(role)
+                if rules:
+                    target_node = rules.get("target_node")
+                    target_port = rules.get("target_port")
+                    graph_input = rules.get("graph_input")
+                    out_port = rules.get("output_port", "output")
+                    in_port = rules.get("input_port", "control_image")
+                    if target_node and target_node in self.nodes and target_port:
+                        self.connect(node_name, out_port, target_node, target_port)
+                    if graph_input:
+                        self.expose_input(graph_input, node_name, in_port)
+
         return self
+
+    def _add_node_ip_adapter_with_encoder(
+        self, adapter_node_name: str, adapter_type: str, adapter_cfg: dict, config: dict
+    ) -> None:
+        """Add IP-Adapter plus image encoder in one go (BlockBuilder inside)."""
+        from yggdrasil.core.block.builder import BlockBuilder
+        encoder_pretrained = config.get("image_encoder_pretrained", "openai/clip-vit-large-patch14")
+        encoder = BlockBuilder.build({"type": "conditioner/clip_vision", "pretrained": encoder_pretrained})
+        image_embed_dim = getattr(encoder, "embedding_dim", None) or (
+            768 if "clip-vit-large" in str(encoder_pretrained) else 1024
+        )
+        base = (self.metadata or {}).get("base_model", "")
+        cross_attention_dim = adapter_cfg.get("cross_attention_dim") or (
+            2048 if (base == "sdxl" or "sdxl" in base.lower()) else 768
+        )
+        ip_cfg = {
+            **{k: v for k, v in adapter_cfg.items() if k != "image_encoder_pretrained"},
+            "type": adapter_type,
+            "image_embed_dim": image_embed_dim,
+            "cross_attention_dim": cross_attention_dim,
+        }
+        ip_adapter = BlockBuilder.build(ip_cfg)
+        encoder_name = "ip_image_encoder"
+        if encoder_name in self.nodes:
+            encoder_name = f"{encoder_name}_{len(self.nodes)}"
+        self.nodes[encoder_name] = encoder
+        self.nodes[adapter_node_name] = ip_adapter
+        self.connect(encoder_name, "embedding", adapter_node_name, "image_features")
+        self.expose_input("ip_image", encoder_name, "raw_condition")
+
+    def add_stage(
+        self,
+        name: str,
+        stage: Any = None,
+        *,
+        template: str | None = None,
+        path: str | Path | None = None,
+        auto_connect_to_previous: bool = False,
+        auto_connect_by_ports: bool = False,
+        **template_kwargs,
+    ) -> ComputeGraph:
+        """Add a pipeline stage (AbstractStage) to the graph.
+        
+        Use when this ComputeGraph is a pipeline-level graph (nodes = stages).
+        Exactly one of: stage, template, or path must be provided.
+        
+        Args:
+            name: Unique stage node name.
+            stage: Existing AbstractStage instance (or ComputeGraph to wrap).
+            template: Template name → build graph via from_template and wrap in AbstractStage.
+            path: Path to YAML → load graph via from_yaml and wrap in AbstractStage.
+            auto_connect_to_previous: If True, connect previous node's "output" to this stage's "input".
+            auto_connect_by_ports: If True, connect the last stage that has no outgoing "output"
+                edge to this stage's "input" (port-based ordering per TZ §4.2). When only one
+                such stage exists, equivalent to auto_connect_to_previous.
+            **template_kwargs: Passed to from_template when template= is used.
+        
+        Returns:
+            self (for chaining).
+        """
+        from yggdrasil.core.graph.stage import AbstractStage
+
+        if name in self.nodes:
+            raise ValueError(f"Stage '{name}' already exists in graph '{self.name}'")
+        inner: ComputeGraph
+        if stage is not None:
+            if hasattr(stage, "graph"):
+                inner = stage.graph
+                block = stage
+            else:
+                inner = stage
+                block = AbstractStage(config={"type": "stage/abstract"}, graph=inner)
+        elif template is not None:
+            inner = ComputeGraph.from_template(template, **template_kwargs)
+            block = AbstractStage(config={"type": "stage/abstract"}, graph=inner)
+        elif path is not None:
+            p = Path(path)
+            inner = ComputeGraph.from_yaml(p)
+            block = AbstractStage(config={"type": "stage/abstract"}, graph=inner)
+        else:
+            raise ValueError("add_stage requires one of: stage=, template=, path=")
+        self.nodes[name] = block
+        if auto_connect_to_previous:
+            prev_name = list(self.nodes)[-2] if len(self.nodes) > 1 else None
+            if prev_name:
+                self.connect(prev_name, "output", name, "input")
+        elif auto_connect_by_ports:
+            self._connect_stage_by_ports(name)
+        return self
+
+    def _connect_stage_by_ports(self, new_name: str) -> None:
+        """Connect the new stage to the last stage that has no outgoing 'output' edge (port-based order, TZ §4.2)."""
+        nodes_with_output_used = {e.src_node for e in self.edges if e.src_port == "output"}
+        candidates = [n for n in self.nodes if n != new_name and n not in nodes_with_output_used]
+        if not candidates:
+            return
+        prev_name = candidates[-1]
+        self.connect(prev_name, "output", new_name, "input")
     
     def connect(
         self,
@@ -571,7 +787,12 @@ class ComputeGraph:
     def from_yaml(cls, path: str | Path) -> ComputeGraph:
         """Загрузить граф из YAML-файла.
         
-        Формат::
+        Поддерживаются два формата:
+        
+        1) Один граф блоков (nodes/edges/inputs/outputs).
+        2) Combined pipeline: stages + links (каждый узел — AbstractStage).
+        
+        Формат 1::
         
             name: my_pipeline
             nodes:
@@ -587,10 +808,88 @@ class ComputeGraph:
               prompt: [clip, text]
             outputs:
               result: [unet, output]
-        """
-        from yggdrasil.core.block.builder import BlockBuilder
         
+        Формат 2 (combined_pipeline)::
+        
+            kind: combined_pipeline
+            name: my_combined
+            stages:
+              - name: stage0
+                template: sd15_txt2img
+              - name: stage1
+                path: ./stage_upscale.yaml
+            links:
+              - [stage0, output, stage1, input]
+            inputs:
+              prompt: [stage0, prompt]
+            outputs:
+              images: [stage1, output]
+        """
         conf = OmegaConf.load(path)
+        path_obj = Path(path)
+        if conf.get("kind") == "combined_pipeline" or (
+            "stages" in conf and isinstance(conf.get("stages"), (list, tuple)) and "nodes" not in conf
+        ):
+            return cls._from_combined_yaml(OmegaConf.to_container(conf, resolve=True), path_obj)
+        return cls._from_single_yaml(conf, path_obj)
+
+    @classmethod
+    def _from_combined_yaml(cls, conf: dict, config_path: Path) -> ComputeGraph:
+        """Build pipeline graph from combined YAML (stages + links)."""
+        from yggdrasil.core.graph.stage import AbstractStage
+
+        name = conf.get("name", "combined_pipeline")
+        graph = cls(name)
+        graph.metadata = dict(conf.get("metadata", {}))
+        stages_conf = conf.get("stages", [])
+        for s in stages_conf:
+            s = dict(s) if hasattr(s, "items") else s
+            stage_name = s.get("name") or s.get("id") or str(len(graph.nodes))
+            inner = None
+            if "template" in s:
+                inner = cls.from_template(str(s["template"]), **dict(s.get("config", {})))
+            elif "path" in s:
+                p = Path(s["path"])
+                if not p.is_absolute():
+                    p = config_path.parent / p
+                inner = cls.from_yaml(p)
+            elif "graph" in s:
+                inner = cls._build_from_dict(s["graph"])
+            else:
+                raise ValueError(f"Stage '{stage_name}' must have 'template', 'path', or 'graph'.")
+            stage_block = AbstractStage(config={"type": "stage/abstract"}, graph=inner)
+            graph.add_node(stage_name, stage_block)
+        for edge_def in conf.get("links", []):
+            if hasattr(edge_def, "__getitem__") and len(edge_def) >= 4:
+                src_node, src_port, dst_node, dst_port = (
+                    str(edge_def[0]), str(edge_def[1]), str(edge_def[2]), str(edge_def[3])
+                )
+            elif hasattr(edge_def, "__getitem__") and len(edge_def) >= 2:
+                src_spec, dst_spec = str(edge_def[0]), str(edge_def[1])
+                src_node, src_port = src_spec.split(".", 1) if "." in src_spec else (src_spec, "output")
+                dst_node, dst_port = dst_spec.split(".", 1) if "." in dst_spec else (dst_spec, "input")
+            else:
+                continue
+            graph.connect(src_node.strip(), src_port.strip(), dst_node.strip(), dst_port.strip())
+        for input_name, mapping in conf.get("inputs", {}).items():
+            if isinstance(mapping, (list, tuple)) and len(mapping) >= 2:
+                graph.expose_input(input_name, str(mapping[0]), str(mapping[1]))
+            elif isinstance(mapping, str) and "." in mapping:
+                node, port = mapping.split(".", 1)
+                graph.expose_input(input_name, node.strip(), port.strip())
+        for output_name, mapping in conf.get("outputs", {}).items():
+            if isinstance(mapping, (list, tuple)) and len(mapping) >= 2:
+                graph.expose_output(output_name, str(mapping[0]), str(mapping[1]))
+            elif isinstance(mapping, str) and "." in mapping:
+                node, port = mapping.split(".", 1)
+                graph.expose_output(output_name, node.strip(), port.strip())
+        return graph
+
+    @classmethod
+    def _from_single_yaml(cls, conf: Any, path: Path) -> ComputeGraph:
+        """Load single block-graph from YAML (nodes/edges/inputs/outputs)."""
+        from yggdrasil.core.block.builder import BlockBuilder
+
         graph = cls(conf.get("name", "unnamed"))
         graph.metadata = dict(conf.get("metadata", {}))
         
@@ -654,49 +953,71 @@ class ComputeGraph:
         
         return graph
     
-    def to_yaml(self, path: str | Path) -> None:
-        """Сохранить граф в YAML-файл."""
-        data = {
-            "name": self.name,
-            "metadata": self.metadata,
-            "nodes": {},
-            "edges": [],
-            "inputs": {},
-            "outputs": {},
-        }
-        
+    def _to_dict(self) -> dict:
+        """Serialize graph to dict (for embedding in combined pipeline stages)."""
+        data = {"name": self.name, "metadata": dict(self.metadata), "nodes": {}, "edges": [], "inputs": {}, "outputs": {}}
         for node_name, block in self.nodes.items():
-            block_type = getattr(block, 'block_type', 'unknown')
+            block_type = getattr(block, "block_type", "unknown")
             config = {}
-            if hasattr(block, 'config'):
+            if hasattr(block, "config"):
                 try:
                     config = OmegaConf.to_container(block.config, resolve=True)
                 except Exception:
                     config = dict(block.config) if block.config else {}
-            data["nodes"][node_name] = {
-                "block": block_type,
-                "config": config,
-            }
-        
+            data["nodes"][node_name] = {"block": block_type, "config": config}
         for edge in self.edges:
-            data["edges"].append([
-                f"{edge.src_node}.{edge.src_port}",
-                f"{edge.dst_node}.{edge.dst_port}",
-            ])
-        
+            data["edges"].append([f"{edge.src_node}.{edge.src_port}", f"{edge.dst_node}.{edge.dst_port}"])
         for input_name, targets in self.graph_inputs.items():
-            if len(targets) == 1:
-                data["inputs"][input_name] = [targets[0][0], targets[0][1]]
-            else:
-                data["inputs"][input_name] = [[n, p] for n, p in targets]
-        
+            data["inputs"][input_name] = [targets[0][0], targets[0][1]] if len(targets) == 1 else [[n, p] for n, p in targets]
         for output_name, (node, port) in self.graph_outputs.items():
             data["outputs"][output_name] = [node, port]
+        return data
+
+    def _is_pipeline_graph(self) -> bool:
+        """True if all nodes are AbstractStage (pipeline-level graph)."""
+        if not self.nodes:
+            return False
+        for block in self.nodes.values():
+            if getattr(block, "block_type", "") != "stage/abstract" or not hasattr(block, "graph"):
+                return False
+        return True
+
+    def to_yaml(self, path: str | Path) -> None:
+        """Сохранить граф в YAML-файл. Combined pipeline (AbstractStage nodes) → kind: combined_pipeline."""
+        if self._is_pipeline_graph():
+            data = self._to_combined_dict()
+        else:
+            data = self._to_dict()
         
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         OmegaConf.save(OmegaConf.create(data), path)
-    
+
+    def _to_combined_dict(self, parameters: dict | None = None) -> dict:
+        """Serialize pipeline graph (AbstractStage nodes) as combined_pipeline format."""
+        stages = []
+        for node_name, block in self.nodes.items():
+            inner = getattr(block, "graph", None)
+            if inner is not None:
+                stages.append({"name": node_name, "graph": inner._to_dict()})
+            else:
+                stages.append({"name": node_name})
+        links = []
+        for edge in self.edges:
+            links.append([edge.src_node, edge.src_port, edge.dst_node, edge.dst_port])
+        data = {
+            "kind": "combined_pipeline",
+            "name": self.name,
+            "metadata": dict(self.metadata),
+            "stages": stages,
+            "links": links,
+            "inputs": {k: [t[0][0], t[0][1]] if len(t) == 1 else [[n, p] for n, p in t] for k, t in self.graph_inputs.items()},
+            "outputs": {k: [v[0], v[1]] for k, v in self.graph_outputs.items()},
+        }
+        if parameters is not None:
+            data["parameters"] = parameters
+        return data
+
     # ==================== WORKFLOW SERIALIZATION ====================
     
     def to_workflow(self, path: str | Path, parameters: dict | None = None) -> None:
@@ -725,44 +1046,12 @@ class ComputeGraph:
         """
         import json
         
-        # Build base graph structure (same as to_yaml)
-        data = {
-            "name": self.name,
-            "metadata": dict(self.metadata),
-            "nodes": {},
-            "edges": [],
-            "inputs": {},
-            "outputs": {},
-            "parameters": parameters or {},
-        }
-        
-        for node_name, block in self.nodes.items():
-            block_type = getattr(block, 'block_type', 'unknown')
-            config = {}
-            if hasattr(block, 'config'):
-                try:
-                    config = OmegaConf.to_container(block.config, resolve=True)
-                except Exception:
-                    config = dict(block.config) if block.config else {}
-            data["nodes"][node_name] = {
-                "block": block_type,
-                "config": config,
-            }
-        
-        for edge in self.edges:
-            data["edges"].append([
-                f"{edge.src_node}.{edge.src_port}",
-                f"{edge.dst_node}.{edge.dst_port}",
-            ])
-        
-        for input_name, targets in self.graph_inputs.items():
-            if len(targets) == 1:
-                data["inputs"][input_name] = [targets[0][0], targets[0][1]]
-            else:
-                data["inputs"][input_name] = [[n, p] for n, p in targets]
-        
-        for output_name, (node, port) in self.graph_outputs.items():
-            data["outputs"][output_name] = [node, port]
+        # Pipeline graph (AbstractStage nodes) → combined_pipeline format
+        if self._is_pipeline_graph():
+            data = self._to_combined_dict(parameters=parameters or {})
+        else:
+            data = self._to_dict()
+            data["parameters"] = parameters or {}
         
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -788,7 +1077,7 @@ class ComputeGraph:
         Example::
         
             graph, params = ComputeGraph.from_workflow("workflow.yaml")
-            pipe = Pipeline.from_graph(graph)
+            pipe = InferencePipeline.from_graph(graph)
             output = pipe(**params)
         """
         import json
@@ -802,8 +1091,15 @@ class ComputeGraph:
         else:
             data = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
         
-        # Build graph from structure using from_yaml-like logic
-        graph = cls._build_from_dict(data)
+        # Build graph: support combined pipeline (stages + links) or single graph (nodes + edges)
+        if data.get("kind") == "combined_pipeline" or (
+            "stages" in data
+            and isinstance(data.get("stages"), (list, tuple))
+            and not data.get("nodes")
+        ):
+            graph = cls._from_combined_yaml(data, path.parent)
+        else:
+            graph = cls._build_from_dict(data)
         
         # Extract parameters
         parameters = data.get("parameters", {})
@@ -972,7 +1268,7 @@ class ComputeGraph:
         
         Two modes of operation:
         
-        1. **High-level** (convenience — delegates to Pipeline):
+        1. **High-level** (convenience — delegates to InferencePipeline):
            Accepts prompt, guidance_scale, num_steps, seed, width, height, etc.
            Auto-prepares noise latents and applies overrides.
         
@@ -990,8 +1286,8 @@ class ComputeGraph:
         Returns:
             Dict with graph outputs (keys = expose_output names).
         """
-        from yggdrasil.pipeline import Pipeline
-        pipe = Pipeline.from_graph(self)
+        from yggdrasil.pipeline import InferencePipeline
+        pipe = InferencePipeline.from_graph(self)
         
         # Extract high-level params if present
         guidance_scale = kwargs.pop("guidance_scale", None)
@@ -1016,7 +1312,7 @@ class ComputeGraph:
         return result.raw
     
     def execute_raw(self, **inputs: Any) -> Dict[str, Any]:
-        """Execute graph with raw inputs (no Pipeline convenience).
+        """Execute graph with raw inputs (no InferencePipeline convenience).
         
         Use this for non-diffusion graphs or when you want full control.
         """
@@ -1061,6 +1357,48 @@ class ComputeGraph:
         add_adapter_to_graph(self, adapter_type, input_source=input_source, **kwargs)
         return self
 
+    def with_adapters(
+        self,
+        *,
+        controlnet: bool = True,
+        ip_adapter: bool = True,
+        t2i_adapter: bool = False,
+        controlnet_pretrained: Optional[str] = None,
+        conditioning_scale: float = 1.0,
+        ip_adapter_scale: float = 0.6,
+        fp16: bool = True,
+        **kwargs: Any,
+    ) -> "ComputeGraph":
+        """Add ControlNet and/or IP-Adapter (and optionally T2I-Adapter) to the graph in one call.
+
+        Use this when you want a single \"add node\" step that adds both ControlNet and IP-Adapter.
+
+        Example::
+            graph.with_adapters(
+                controlnet=True,
+                ip_adapter=True,
+                t2i_adapter=False,
+                controlnet_pretrained="diffusers/controlnet-canny-sdxl-1.0",
+            )
+        """
+        from .adapters import add_optional_adapters_to_graph
+        add_optional_adapters_to_graph(
+            self,
+            controlnet=controlnet,
+            t2i_adapter=t2i_adapter,
+            ip_adapter=ip_adapter,
+            controlnet_pretrained=controlnet_pretrained or (
+                "diffusers/controlnet-canny-sdxl-1.0"
+                if (self.metadata or {}).get("base_model") == "sdxl"
+                else "lllyasviel/control_v11p_sd15_canny"
+            ),
+            conditioning_scale=conditioning_scale,
+            fp16=fp16,
+            ip_adapter_scale=ip_adapter_scale,
+            **kwargs,
+        )
+        return self
+
     def _iter_all_blocks(self):
         """Итерация по ВСЕМ блокам, включая вложенные SubGraph."""
         for name, block in self.nodes.items():
@@ -1068,3 +1406,33 @@ class ComputeGraph:
             if hasattr(block, 'graph') and block.graph is not None:
                 for inner_name, inner_block in block.graph.nodes.items():
                     yield f"{name}.{inner_name}", inner_block
+
+    def list_all_nodes_and_edges(self) -> Tuple[List[str], List[Tuple[str, str, str, str]]]:
+        """Собрать все узлы и все соединения (включая вложенные графы).
+
+        Returns:
+            (nodes, edges): nodes — список имён узлов (вложенные с префиксом, напр. denoise_loop.controlnet);
+            edges — список (src_node, src_port, dst_node, dst_port) по порядку.
+        """
+        nodes: List[str] = []
+        edges: List[Tuple[str, str, str, str]] = []
+
+        def collect(g: "ComputeGraph", prefix: str) -> None:
+            for name in g.nodes:
+                full = f"{prefix}{name}"
+                nodes.append(full)
+            for e in g.edges:
+                edges.append((f"{prefix}{e.src_node}", e.src_port, f"{prefix}{e.dst_node}", e.dst_port))
+            for name, block in g.nodes.items():
+                if hasattr(block, "graph") and block.graph is not None:
+                    collect(block.graph, f"{prefix}{name}.")
+
+        for name in self.nodes:
+            nodes.append(name)
+        for e in self.edges:
+            edges.append((e.src_node, e.src_port, e.dst_node, e.dst_port))
+        for name, block in self.nodes.items():
+            if hasattr(block, "graph") and block.graph is not None:
+                collect(block.graph, f"{name}.")
+
+        return nodes, edges

@@ -67,7 +67,7 @@ class EulerDiscreteSolver(AbstractSolver):
 
     @property
     def init_noise_sigma(self) -> float:
-        """Scale for initial noise. Pipeline should multiply noise by this."""
+        """Scale for initial noise. InferencePipeline should multiply noise by this."""
         s = self.scheduler.init_noise_sigma
         return float(s) if hasattr(s, "item") else float(s)
 

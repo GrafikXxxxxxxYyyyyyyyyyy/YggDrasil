@@ -58,7 +58,7 @@ YggDrasil/
 │   ├── __init__.py
 │   │
 │   ├── block/                     # ★ ВСЁ — ЭТО BLOCK
-│   │   ├── base.py                # AbstractBlock (id, slots, config, build(), forward_hook)
+│   │   ├── base.py                # AbstractBaseBlock (id, slots, config, build(), forward_hook)
 │   │   ├── registry.py            # @register_block("category/name") + auto-discovery
 │   │   ├── builder.py             # BlockBuilder.build(config) → рекурсивная сборка графа
 │   │   ├── slot.py                # Slot (имя, тип, multiple=True, optional=True)

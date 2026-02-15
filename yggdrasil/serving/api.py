@@ -392,7 +392,7 @@ def create_api(config: ServerConfig | None = None) -> "FastAPI":
         template = request.get("template")
         graph_yaml = request.get("graph_yaml")
         inputs = request.get("inputs", {})
-        
+
         if template:
             graph = ComputeGraph.from_template(template)
         elif graph_yaml:
@@ -401,20 +401,24 @@ def create_api(config: ServerConfig | None = None) -> "FastAPI":
                 f.write(graph_yaml)
                 graph = ComputeGraph.from_yaml(f.name)
                 os.unlink(f.name)
+        elif getattr(app.state, "default_graph", None) is not None:
+            graph = app.state.default_graph
         else:
-            raise HTTPException(status_code=400, detail="Provide 'template' or 'graph_yaml'")
-        
+            raise HTTPException(status_code=400, detail="Provide 'template', 'graph_yaml', or run with default graph (e.g. Vast.ai deploy)")
+
         executor = GraphExecutor()
         outputs = executor.execute(graph, **inputs)
-        
-        # Serialize outputs (convert tensors to lists)
+
+        # Serialize outputs (convert tensors to shape/dtype or base64 for decoded image)
         serialized = {}
         for k, v in outputs.items():
             if isinstance(v, torch.Tensor):
+                if k == "decoded" and v.dim() >= 3 and request.get("return_decoded_b64"):
+                    serialized["decoded_b64"] = manager._tensor_to_base64(v, OutputFormat.PNG)
                 serialized[k] = {"shape": list(v.shape), "dtype": str(v.dtype)}
             else:
                 serialized[k] = str(v)
-        
+
         return {"outputs": serialized, "graph_name": graph.name}
     
     @app.post("/graph/load")

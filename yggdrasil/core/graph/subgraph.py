@@ -12,13 +12,13 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 from omegaconf import DictConfig, OmegaConf
 
-from yggdrasil.core.block.base import AbstractBlock
+from yggdrasil.core.block.base import AbstractBaseBlock
 from yggdrasil.core.block.port import Port, InputPort, OutputPort
 from yggdrasil.core.block.registry import register_block
 
 
 @register_block("graph/subgraph")
-class SubGraph(AbstractBlock):
+class SubGraph(AbstractBaseBlock):
     """Вложенный граф, работающий как единый блок.
     
     Порты SubGraph = exposed inputs/outputs внутреннего графа.
@@ -100,7 +100,7 @@ class SubGraph(AbstractBlock):
         return executor.execute(self.graph, **port_inputs)
     
     def _forward_impl(self, **kwargs) -> Any:
-        """Fallback для совместимости с AbstractBlock."""
+        """Fallback для совместимости с AbstractBaseBlock."""
         return self.process(**kwargs)
     
     def __repr__(self) -> str:
@@ -109,7 +109,7 @@ class SubGraph(AbstractBlock):
 
 
 @register_block("graph/loop")
-class LoopSubGraph(AbstractBlock):
+class LoopSubGraph(AbstractBaseBlock):
     """Цикл как блок: выполняет внутренний граф N раз.
     
     Ключевой блок для sampling loop. На каждой итерации:
@@ -208,7 +208,8 @@ class LoopSubGraph(AbstractBlock):
         # Determine device from latents
         device = latents.device if latents is not None and hasattr(latents, 'device') else torch.device("cpu")
         
-        if timesteps is None:
+        # Ensure we have a non-empty timestep schedule (avoid 0 iterations → raw noise output)
+        if timesteps is None or (hasattr(timesteps, "numel") and timesteps.numel() == 0) or (hasattr(timesteps, "__len__") and len(timesteps) == 0):
             # Match diffusers set_timesteps (leading / linspace) + steps_offset
             num_steps = self.num_iterations
             T = self.num_train_timesteps
@@ -220,7 +221,7 @@ class LoopSubGraph(AbstractBlock):
                 timesteps = torch.linspace(T - 1, 0, num_steps, device=device).long()
             timesteps = (timesteps + self.steps_offset).clamp(0, T - 1)
         elif not isinstance(timesteps, torch.Tensor):
-            timesteps = torch.tensor(timesteps, device=device).long()
+            timesteps = torch.tensor(timesteps, device=device)
         else:
             timesteps = timesteps.to(device)
         
@@ -242,11 +243,11 @@ class LoopSubGraph(AbstractBlock):
             t = t.unsqueeze(0) if t.dim() == 0 else t
             next_t = next_t.unsqueeze(0) if next_t.dim() == 0 else next_t
             
-            # Backbone (UNet) expects timestep as long for time_embed; solver converts to float internally
+            # Backbone: long for DDIM/UNet time_embed; float for flow/SD3 (scheduler timesteps)
             step_inputs = {
                 "latents": latents,
-                "timestep": t if t.dtype in (torch.long, torch.int64) else t.long(),
-                "next_timestep": next_t,
+                "timestep": t.to(dtype=torch.float32) if t.dtype in (torch.float32, torch.float16, torch.float64) else (t if t.dtype in (torch.long, torch.int64) else t.long()),
+                "next_timestep": next_t.to(dtype=torch.float32) if next_t.dtype in (torch.float32, torch.float16, torch.float64) else next_t,
                 "condition": condition,
             }
             if i == 0:
@@ -258,13 +259,21 @@ class LoopSubGraph(AbstractBlock):
             
             step_outputs = executor.execute(self.graph, **step_inputs)
             
-            # Update carried variables
-            if "latents" in step_outputs:
-                latents = step_outputs["latents"]
-            elif "next_latents" in step_outputs:
-                latents = step_outputs["next_latents"]
-            elif "output" in step_outputs:
-                latents = step_outputs["output"]
+            # Update carried variables (must get new latents from step or loop is no-op → noisy image)
+            # Do not use "or": tensors trigger "Boolean value of Tensor with more than one value is ambiguous"
+            next_lat = step_outputs.get("next_latents")
+            if next_lat is None:
+                next_lat = step_outputs.get("latents")
+            if next_lat is None:
+                next_lat = step_outputs.get("output")
+            if next_lat is not None:
+                latents = next_lat.detach().clone() if hasattr(next_lat, "detach") else next_lat
+            else:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Denoise step returned no latents/next_latents/output; loop may produce noise. Keys: %s",
+                    list(step_outputs.keys()),
+                )
         
         return {"latents": latents, "output": latents}
     

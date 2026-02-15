@@ -43,7 +43,7 @@ def add_controlnet_to_graph(
     Граф должен содержать узел ``denoise_loop`` (LoopSubGraph). Внутренний
     шаг должен содержать backbone с поддержкой ``adapter_features``
     (например ``backbone/unet2d_condition``). Подходит для SD 1.5 и SDXL
-    (для SDXL укажите controlnet_pretrained для SDXL, напр. xinsir/controlnet-sdxl-1.0-canny).
+    (для SDXL укажите controlnet_pretrained для SDXL, напр. diffusers/controlnet-canny-sdxl-1.0).
 
     Args:
         graph: Исходный граф (sd15_txt2img, sdxl_txt2img, sd15_txt2img_nobatch и т.д.).
@@ -116,6 +116,7 @@ def add_ip_adapter_to_graph(
     ip_adapter_scale: float = 0.6,
     image_source: Optional[SourceRef] = None,
     image_encoder_pretrained: Optional[str] = None,
+    cross_attention_dim: Optional[int] = None,
     **ip_adapter_kwargs: Any,
 ) -> ComputeGraph:
     """Добавить IP-Adapter к графу: блок кодирования изображения + IP-Adapter.
@@ -131,6 +132,7 @@ def add_ip_adapter_to_graph(
         image_source: Если задано (node_name, port_name) — изображение берётся
             с выхода узла. Иначе добавляется вход графа ip_image.
         image_encoder_pretrained: HF model ID для CLIP image encoder (по умолчанию из контекста).
+        cross_attention_dim: UNet cross-attention dim (768 SD 1.5, 2048 SDXL). Auto from graph.metadata["base_model"] if None.
         **ip_adapter_kwargs: Доп. параметры для adapter/ip_adapter.
 
     Returns:
@@ -156,12 +158,19 @@ def add_ip_adapter_to_graph(
     if "image_embed_dim" in ip_adapter_kwargs:
         image_embed_dim = ip_adapter_kwargs.pop("image_embed_dim")
 
-    # IP-Adapter: image_embed_dim = выход энкодера; cross_attention_dim 768 для SD 1.5
+    # cross_attention_dim: SD 1.5 = 768, SDXL = 2048 (infer from graph if not set)
+    if cross_attention_dim is None:
+        base = (graph.metadata or {}).get("base_model", "")
+        cross_attention_dim = 2048 if (base == "sdxl" or "sdxl" in base.lower()) else 768
+    if "cross_attention_dim" in ip_adapter_kwargs:
+        cross_attention_dim = ip_adapter_kwargs.pop("cross_attention_dim")
+
+    # IP-Adapter: image_embed_dim = выход энкодера; cross_attention_dim по модели
     ip_config = {
         "type": "adapter/ip_adapter",
         "scale": ip_adapter_scale,
         "image_embed_dim": image_embed_dim,
-        "cross_attention_dim": 768,
+        "cross_attention_dim": cross_attention_dim,
         **ip_adapter_kwargs,
     }
     ip_adapter = BlockBuilder.build(ip_config)

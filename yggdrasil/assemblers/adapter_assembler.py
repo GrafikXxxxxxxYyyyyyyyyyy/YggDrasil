@@ -6,7 +6,7 @@ from typing import Optional, List, Dict, Any
 from omegaconf import DictConfig, OmegaConf
 
 from ..core.model.modular import ModularDiffusionModel
-from ..core.block.base import AbstractBlock
+from ..core.block.base import AbstractBaseBlock
 from ..core.block.builder import BlockBuilder
 from ..core.block.registry import auto_discover
 

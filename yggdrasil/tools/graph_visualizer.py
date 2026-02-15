@@ -64,7 +64,7 @@ def _safe_id(s: str) -> str:
     return s.replace("/", "_").replace("-", "_").replace(" ", "_").replace(".", "_")
 
 
-def config_to_mermaid(config: dict, title: str = "Pipeline") -> str:
+def config_to_mermaid(config: dict, title: str = "Graph") -> str:
     """Generate Mermaid diagram from a config dict."""
     lines = [f"graph TB"]
     

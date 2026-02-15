@@ -5,13 +5,13 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from ...core.block.base import AbstractBlock
+from ...core.block.base import AbstractBaseBlock
 from ...core.block.registry import register_block
 from ...core.block.port import Port, InputPort, OutputPort, TensorSpec
 
 
 @register_block("postprocess/abstract")
-class AbstractPostProcessor(AbstractBlock):
+class AbstractPostProcessor(AbstractBaseBlock):
     """Базовый пост-процессор: decoded_signal -> enhanced_signal.
 
     Подключается после DECODE в унифицированном пайплайне.

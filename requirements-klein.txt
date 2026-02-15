@@ -1,7 +1,0 @@
-# FLUX.2 [klein] — обязательная версия diffusers из main (AutoencoderKLFlux2, Flux2Transformer2DModel с guidance_embeds=False).
-# Без этой версии шаблон flux2_klein выдаст ImportError при сборке графа.
-# Установка: pip install -r requirements-klein.txt
-# Или: pip install -e ".[klein]"
-
-# diffusers из ветки main (0.37.0.dev0+)
-git+https://github.com/huggingface/diffusers.git

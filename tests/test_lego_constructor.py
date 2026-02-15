@@ -3,7 +3,7 @@
 Tests cover:
 1. Port system and block interface (declare_io / process)
 2. Graph construction and execution
-3. Pipeline high-level API
+3. InferencePipeline high-level API
 4. LoRA injection and save/load
 5. Training infrastructure (GraphTrainer, per-node LR, schedule)
 6. Dataset / Loss / Metric blocks
@@ -37,10 +37,10 @@ def auto_discover():
 @pytest.fixture
 def simple_linear_block():
     """A simple nn.Module-based block for testing."""
-    from yggdrasil.core.block.base import AbstractBlock
+    from yggdrasil.core.block.base import AbstractBaseBlock
     from yggdrasil.core.block.port import InputPort, OutputPort, Port
     
-    class SimpleLinear(AbstractBlock):
+    class SimpleLinear(AbstractBaseBlock):
         block_type = "test/simple_linear"
         
         def __init__(self, config=None):
@@ -398,11 +398,11 @@ class TestGraphPrimitives:
     def test_for_loop_node(self):
         from yggdrasil.core.graph.nodes.for_loop import ForLoopNode
         from yggdrasil.core.graph.graph import ComputeGraph
-        from yggdrasil.core.block.base import AbstractBlock
+        from yggdrasil.core.block.base import AbstractBaseBlock
         from yggdrasil.core.block.port import InputPort, OutputPort, Port
         
         # Simple increment block
-        class IncrBlock(AbstractBlock):
+        class IncrBlock(AbstractBaseBlock):
             block_type = "test/incr"
             
             @classmethod
@@ -527,11 +527,11 @@ class TestHub:
 
 class TestPipeline:
     def test_pipeline_from_graph(self):
-        from yggdrasil.pipeline import Pipeline
+        from yggdrasil.pipeline import InferencePipeline
         from yggdrasil.core.graph.graph import ComputeGraph
-        
+
         graph = ComputeGraph("test")
-        pipe = Pipeline.from_graph(graph)
+        pipe = InferencePipeline.from_graph(graph)
         assert pipe.graph is graph
     
     def test_pipeline_output_dataclass(self):
@@ -544,6 +544,145 @@ class TestPipeline:
         assert output.images is not None
         assert output.latents is not None
         assert output.audio is None
+
+    def test_training_pipeline_from_template(self):
+        """TrainingPipeline.from_template (TZ §6.2) and default_train_nodes from metadata."""
+        from yggdrasil.pipeline import TrainingPipeline
+        try:
+            pipe = TrainingPipeline.from_template("train_lora_sd15")
+        except (OSError, Exception) as e:
+            if "offline" in str(e).lower() or "connection" in str(e).lower() or "fetch" in str(e).lower():
+                pytest.skip(f"Template build requires network: {e}")
+            raise
+        assert pipe.graph is not None
+        assert pipe.graph.metadata.get("default_train_nodes") == ["lora_adapter"]
+        # When train_nodes was not passed, from_template should have applied default_train_nodes
+        assert pipe.train_nodes == ["lora_adapter"]
+
+    def test_training_pipeline_from_template_explicit_train_nodes(self):
+        """TrainingPipeline.from_template with explicit train_nodes overrides default."""
+        from yggdrasil.pipeline import TrainingPipeline
+        try:
+            pipe = TrainingPipeline.from_template("train_lora_sd15", train_nodes=["backbone"])
+        except (OSError, Exception) as e:
+            if "offline" in str(e).lower() or "connection" in str(e).lower() or "fetch" in str(e).lower():
+                pytest.skip(f"Template build requires network: {e}")
+            raise
+        assert pipe.train_nodes == ["backbone"]
+
+    def test_first_priority_templates_registered(self):
+        """TZ §1.5: first-priority model templates (SD 1.5, SDXL, FLUX, FLUX.2 Klein, SD3) are registered."""
+        from yggdrasil.core.graph.templates import list_templates
+        templates = list_templates()
+        first_priority = [
+            "sd15_txt2img",
+            "sdxl_txt2img",
+            "flux_txt2img",
+            "flux2_klein",
+            "sd3_txt2img",
+        ]
+        for name in first_priority:
+            assert name in templates, f"First-priority template '{name}' should be registered. Got: {sorted(templates)}"
+
+    def test_from_workflow_combined_pipeline(self):
+        """Runner/from_workflow supports combined pipeline format (TZ §6.1)."""
+        from yggdrasil.core.graph.graph import ComputeGraph
+        from yggdrasil.configs import RECIPES_DIR
+        path = RECIPES_DIR / "combined_t2i_img2img.yaml"
+        if not path.exists():
+            pytest.skip(f"Combined config not found: {path}")
+        try:
+            graph, params = ComputeGraph.from_workflow(path)
+        except Exception as e:
+            # Skip when template loading requires network (HF_HUB_OFFLINE, etc.)
+            err_msg = str(e).lower()
+            is_network_error = (
+                "huggingface" in err_msg or "offline" in err_msg or "hub" in err_msg
+                or "does not appear to have" in err_msg
+            )
+            try:
+                from huggingface_hub.errors import OfflineModeIsEnabled, LocalEntryNotFoundError
+                is_network_error = is_network_error or isinstance(e, (OfflineModeIsEnabled, LocalEntryNotFoundError))
+            except ImportError:
+                pass
+            if is_network_error:
+                pytest.skip(f"Combined workflow load requires network: {e}")
+            raise
+        assert len(graph.nodes) == 2, f"Expected 2 stages, got {list(graph.nodes)}"
+        assert "txt2img" in graph.nodes and "img2img" in graph.nodes
+        assert isinstance(params, dict)
+        assert "prompt" in params or "parameters" in str(type(params))
+
+    def test_combined_pipeline_to_yaml_roundtrip(self):
+        """to_yaml/to_workflow saves combined pipeline; from_yaml loads it back (TZ §4.2)."""
+        import tempfile
+        from yggdrasil.core.graph.graph import ComputeGraph
+        from yggdrasil.core.graph.stage import AbstractStage
+        from yggdrasil.core.block.builder import BlockBuilder
+
+        # Build minimal combined pipeline: two stages with trivial inner graphs
+        inner1 = ComputeGraph("stage1")
+        b1 = BlockBuilder.build({"type": "loss/mse"})
+        inner1.add_node("loss", b1)
+        inner1.expose_input("x", "loss", "prediction")
+        inner1.expose_output("out", "loss", "loss")
+        stage1 = AbstractStage(config={"type": "stage/abstract"}, graph=inner1)
+
+        inner2 = ComputeGraph("stage2")
+        b2 = BlockBuilder.build({"type": "loss/mse"})
+        inner2.add_node("loss", b2)
+        inner2.expose_input("x", "loss", "target")
+        inner2.expose_output("out", "loss", "loss")
+        stage2 = AbstractStage(config={"type": "stage/abstract"}, graph=inner2)
+
+        pipe = ComputeGraph("combined_test")
+        pipe.add_node("s1", stage1)
+        pipe.add_node("s2", stage2)
+        pipe.connect("s1", "out", "s2", "x")
+        pipe.expose_input("prompt", "s1", "x")
+        pipe.expose_output("result", "s2", "out")
+
+        with tempfile.NamedTemporaryFile(suffix=".yaml", delete=False) as f:
+            path = f.name
+        try:
+            pipe.to_yaml(path)
+            loaded = ComputeGraph.from_yaml(path)
+            assert loaded._is_pipeline_graph()
+            assert set(loaded.nodes) == {"s1", "s2"}
+            assert len(loaded.edges) == 1
+            assert loaded.graph_inputs.get("prompt")
+            assert loaded.graph_outputs.get("result")
+        finally:
+            import os
+            os.unlink(path)
+
+    def test_add_stage_auto_connect_by_ports(self):
+        """add_stage(..., auto_connect_by_ports=True) connects last stage with no outgoing output to new stage (TZ §4.2)."""
+        from yggdrasil.core.graph.graph import ComputeGraph
+        from yggdrasil.core.graph.stage import AbstractStage
+        from yggdrasil.core.block.builder import BlockBuilder
+
+        pipe = ComputeGraph("pipeline_ports")
+        inner1 = ComputeGraph("stage1")
+        d = BlockBuilder.build({"type": "loss/mse"})
+        inner1.add_node("dummy", d)
+        inner1.expose_input("input", "dummy", "prediction")
+        inner1.expose_output("output", "dummy", "loss")
+        s1 = AbstractStage(config={"type": "stage/abstract"}, graph=inner1)
+
+        inner2 = ComputeGraph("stage2")
+        d2 = BlockBuilder.build({"type": "loss/mse"})
+        inner2.add_node("dummy", d2)
+        inner2.expose_input("input", "dummy", "target")
+        inner2.expose_output("output", "dummy", "loss")
+        s2 = AbstractStage(config={"type": "stage/abstract"}, graph=inner2)
+
+        pipe.add_node("first", s1)
+        pipe.add_stage("second", stage=s2, auto_connect_by_ports=True)
+        assert len(pipe.edges) == 1
+        e = pipe.edges[0]
+        assert e.src_node == "first" and e.src_port == "output"
+        assert e.dst_node == "second" and e.dst_port == "input"
 
 
 # ==================== 12. DISTRIBUTED UTILITIES ====================
@@ -576,14 +715,14 @@ class TestDynamicUI:
     def test_dynamic_ui_creation(self):
         from yggdrasil.serving.dynamic_ui import DynamicUI
         from yggdrasil.core.graph.graph import ComputeGraph
-        from yggdrasil.core.block.base import AbstractBlock
+        from yggdrasil.core.block.base import AbstractBaseBlock
         from yggdrasil.core.block.port import InputPort, OutputPort
         
         ui = DynamicUI(title="Test UI")
         assert ui.title == "Test UI"
         
         # With a graph that has exposed inputs, should introspect them
-        class TestBlock(AbstractBlock):
+        class TestBlock(AbstractBaseBlock):
             block_type = "test/ui_block"
             def __init__(self, config=None):
                 super().__init__(config or {"type": "test/ui_block"})
@@ -615,11 +754,11 @@ class TestEndToEndTraining:
         """Verify that gradients propagate backwards through the graph executor."""
         from yggdrasil.core.graph.graph import ComputeGraph
         from yggdrasil.core.graph.executor import GraphExecutor
-        from yggdrasil.core.block.base import AbstractBlock
+        from yggdrasil.core.block.base import AbstractBaseBlock
         from yggdrasil.core.block.port import InputPort, OutputPort
         
         # Create a simple linear block with trainable parameters
-        class LinearBlock(AbstractBlock):
+        class LinearBlock(AbstractBaseBlock):
             block_type = "test/linear"
             
             def __init__(self, config=None):
@@ -664,10 +803,10 @@ class TestEndToEndTraining:
         """Verify gradients flow through a multi-node graph (A -> B -> loss)."""
         from yggdrasil.core.graph.graph import ComputeGraph
         from yggdrasil.core.graph.executor import GraphExecutor
-        from yggdrasil.core.block.base import AbstractBlock
+        from yggdrasil.core.block.base import AbstractBaseBlock
         from yggdrasil.core.block.port import InputPort, OutputPort
         
-        class LinearBlock(AbstractBlock):
+        class LinearBlock(AbstractBaseBlock):
             block_type = "test/linear_multi"
             def __init__(self, config=None, in_features=4, out_features=4):
                 super().__init__(config or {"type": "test/linear_multi"})
@@ -680,7 +819,7 @@ class TestEndToEndTraining:
             def process(self, **kw):
                 return {"output": self.linear(kw["x"])}
         
-        class MSEBlock(AbstractBlock):
+        class MSEBlock(AbstractBaseBlock):
             block_type = "test/mse"
             def __init__(self, config=None):
                 super().__init__(config or {"type": "test/mse"})
@@ -732,10 +871,10 @@ class TestEndToEndTraining:
         """THE critical test: verify loss decreases with manual training loop."""
         from yggdrasil.core.graph.graph import ComputeGraph
         from yggdrasil.core.graph.executor import GraphExecutor
-        from yggdrasil.core.block.base import AbstractBlock
+        from yggdrasil.core.block.base import AbstractBaseBlock
         from yggdrasil.core.block.port import InputPort, OutputPort
         
-        class LinearBlock(AbstractBlock):
+        class LinearBlock(AbstractBaseBlock):
             block_type = "test/linear_train"
             def __init__(self, config=None):
                 super().__init__(config or {"type": "test/linear_train"})
@@ -783,10 +922,10 @@ class TestEndToEndTraining:
         """Verify that frozen nodes don't get gradients, unfrozen nodes do."""
         from yggdrasil.core.graph.graph import ComputeGraph
         from yggdrasil.core.graph.executor import GraphExecutor
-        from yggdrasil.core.block.base import AbstractBlock
+        from yggdrasil.core.block.base import AbstractBaseBlock
         from yggdrasil.core.block.port import InputPort, OutputPort
         
-        class LinearBlock(AbstractBlock):
+        class LinearBlock(AbstractBaseBlock):
             block_type = "test/linear_freeze"
             def __init__(self, config=None):
                 super().__init__(config or {"type": "test/linear_freeze"})
@@ -830,11 +969,11 @@ class TestEndToEndTraining:
     def test_graph_trainer_loss_decreases(self):
         """Test GraphTrainer end-to-end with a minimal trainable graph."""
         from yggdrasil.core.graph.graph import ComputeGraph
-        from yggdrasil.core.block.base import AbstractBlock
+        from yggdrasil.core.block.base import AbstractBaseBlock
         from yggdrasil.core.block.port import InputPort, OutputPort
         from yggdrasil.training.graph_trainer import GraphTrainer, GraphTrainingConfig
         
-        class LinearBlock(AbstractBlock):
+        class LinearBlock(AbstractBaseBlock):
             block_type = "test/linear_trainer"
             def __init__(self, config=None):
                 super().__init__(config or {"type": "test/linear_trainer"})
@@ -916,12 +1055,12 @@ class TestWorkflowSerialization:
     def test_workflow_roundtrip_yaml(self, tmp_path):
         """Test saving and loading a workflow in YAML format."""
         from yggdrasil.core.graph.graph import ComputeGraph
-        from yggdrasil.core.block.base import AbstractBlock
+        from yggdrasil.core.block.base import AbstractBaseBlock
         from yggdrasil.core.block.port import InputPort, OutputPort
         from yggdrasil.core.block.registry import register_block
         
         @register_block("test/wf_block")
-        class WFBlock(AbstractBlock):
+        class WFBlock(AbstractBaseBlock):
             block_type = "test/wf_block"
             def __init__(self, config=None):
                 super().__init__(config or {"type": "test/wf_block"})
@@ -957,12 +1096,12 @@ class TestWorkflowSerialization:
     def test_workflow_roundtrip_json(self, tmp_path):
         """Test saving and loading a workflow in JSON format."""
         from yggdrasil.core.graph.graph import ComputeGraph
-        from yggdrasil.core.block.base import AbstractBlock
+        from yggdrasil.core.block.base import AbstractBaseBlock
         from yggdrasil.core.block.port import InputPort, OutputPort
         from yggdrasil.core.block.registry import register_block
         
         @register_block("test/wf_json_block")
-        class WFJSONBlock(AbstractBlock):
+        class WFJSONBlock(AbstractBaseBlock):
             block_type = "test/wf_json_block"
             def __init__(self, config=None):
                 super().__init__(config or {"type": "test/wf_json_block"})
@@ -994,12 +1133,12 @@ class TestWorkflowSerialization:
         """Test Runner.validate on a workflow file."""
         from yggdrasil.runner import Runner
         from yggdrasil.core.graph.graph import ComputeGraph
-        from yggdrasil.core.block.base import AbstractBlock
+        from yggdrasil.core.block.base import AbstractBaseBlock
         from yggdrasil.core.block.registry import register_block
         from yggdrasil.core.block.port import InputPort, OutputPort
         
         @register_block("test/runner_block")
-        class RunnerBlock(AbstractBlock):
+        class RunnerBlock(AbstractBaseBlock):
             block_type = "test/runner_block"
             def __init__(self, config=None):
                 super().__init__(config or {"type": "test/runner_block"})
@@ -1027,12 +1166,12 @@ class TestWorkflowSerialization:
         """Test that executor smart caching skips unchanged nodes."""
         from yggdrasil.core.graph.graph import ComputeGraph
         from yggdrasil.core.graph.executor import GraphExecutor
-        from yggdrasil.core.block.base import AbstractBlock
+        from yggdrasil.core.block.base import AbstractBaseBlock
         from yggdrasil.core.block.port import InputPort, OutputPort
         
         call_count = {"count": 0}
         
-        class CountingBlock(AbstractBlock):
+        class CountingBlock(AbstractBaseBlock):
             block_type = "test/counting"
             def __init__(self, config=None):
                 super().__init__(config or {"type": "test/counting"})
@@ -1079,11 +1218,11 @@ class TestCheckpointOps:
     def test_merge_checkpoints(self):
         """Test weighted merge of two graphs."""
         from yggdrasil.core.graph.graph import ComputeGraph
-        from yggdrasil.core.block.base import AbstractBlock
+        from yggdrasil.core.block.base import AbstractBaseBlock
         from yggdrasil.core.block.port import InputPort, OutputPort
         from yggdrasil.training.checkpoint_ops import merge_checkpoints
         
-        class LinBlock(AbstractBlock):
+        class LinBlock(AbstractBaseBlock):
             block_type = "test/merge_lin"
             def __init__(self, config=None):
                 super().__init__(config or {"type": "test/merge_lin"})
@@ -1115,11 +1254,11 @@ class TestCheckpointOps:
     def test_extract_diff(self):
         """Test weight difference extraction."""
         from yggdrasil.core.graph.graph import ComputeGraph
-        from yggdrasil.core.block.base import AbstractBlock
+        from yggdrasil.core.block.base import AbstractBaseBlock
         from yggdrasil.core.block.port import InputPort, OutputPort
         from yggdrasil.training.checkpoint_ops import extract_diff, apply_diff
         
-        class LinBlock(AbstractBlock):
+        class LinBlock(AbstractBaseBlock):
             block_type = "test/diff_lin"
             def __init__(self, config=None):
                 super().__init__(config or {"type": "test/diff_lin"})
@@ -1156,11 +1295,11 @@ class TestCheckpointOps:
     def test_prune_model(self):
         """Test weight pruning."""
         from yggdrasil.core.graph.graph import ComputeGraph
-        from yggdrasil.core.block.base import AbstractBlock
+        from yggdrasil.core.block.base import AbstractBaseBlock
         from yggdrasil.core.block.port import InputPort, OutputPort
         from yggdrasil.training.checkpoint_ops import prune_model
         
-        class LinBlock(AbstractBlock):
+        class LinBlock(AbstractBaseBlock):
             block_type = "test/prune_lin"
             def __init__(self, config=None):
                 super().__init__(config or {"type": "test/prune_lin"})
@@ -1220,12 +1359,12 @@ class TestExtensionSystem:
         ext_dir.mkdir()
         
         init_code = '''
-from yggdrasil.core.block.base import AbstractBlock
+from yggdrasil.core.block.base import AbstractBaseBlock
 from yggdrasil.core.block.registry import register_block
 from yggdrasil.core.block.port import InputPort, OutputPort
 
 @register_block("ext/test_block")
-class ExtTestBlock(AbstractBlock):
+class ExtTestBlock(AbstractBaseBlock):
     block_type = "ext/test_block"
     def __init__(self, config=None):
         super().__init__(config or {"type": "ext/test_block"})
@@ -1259,13 +1398,13 @@ class TestRunnerAndWorkflow:
     def test_runner_execute_simple(self, tmp_path):
         """Test Runner.execute with a simple workflow."""
         from yggdrasil.core.graph.graph import ComputeGraph
-        from yggdrasil.core.block.base import AbstractBlock
+        from yggdrasil.core.block.base import AbstractBaseBlock
         from yggdrasil.core.block.port import InputPort, OutputPort
         from yggdrasil.core.block.registry import register_block
         from yggdrasil.runner import Runner
         
         @register_block("test/runner_exec")
-        class RunnerExecBlock(AbstractBlock):
+        class RunnerExecBlock(AbstractBaseBlock):
             block_type = "test/runner_exec"
             def __init__(self, config=None):
                 super().__init__(config or {"type": "test/runner_exec"})
@@ -1284,7 +1423,7 @@ class TestRunnerAndWorkflow:
         wf_path = tmp_path / "workflow.yaml"
         graph.to_workflow(wf_path, parameters={"x": "test_value"})
         
-        # Execute via Runner.execute_raw (avoids Pipeline image processing)
+        # Execute via Runner.execute_raw (avoids InferencePipeline image processing)
         result = Runner.execute_raw(wf_path)
         assert "output" in result
 

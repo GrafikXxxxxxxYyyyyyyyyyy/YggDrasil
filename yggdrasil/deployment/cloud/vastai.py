@@ -122,11 +122,12 @@ CMD ["python3", "-m", "yggdrasil_deploy.serve", "--graph", "/app/graph.yaml", "-
         ]
         (deploy_dir / "requirements.txt").write_text("\n".join(requirements))
         
-        # 4. Generate serve script
+        # 4. Generate serve script (unified: graph + InferencePipeline for POST /graph/execute)
         serve_script = '''
 import argparse
 import uvicorn
 from yggdrasil.core.graph.graph import ComputeGraph
+from yggdrasil.pipeline import InferencePipeline
 from yggdrasil.serving.api import create_api
 
 if __name__ == "__main__":
@@ -135,10 +136,11 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
-    
+
     graph = ComputeGraph.from_yaml(args.graph)
     app = create_api()
     app.state.default_graph = graph
+    app.state.default_pipeline = InferencePipeline.from_graph(graph)
     uvicorn.run(app, host=args.host, port=args.port)
 '''
         (deploy_dir / "serve.py").write_text(serve_script)

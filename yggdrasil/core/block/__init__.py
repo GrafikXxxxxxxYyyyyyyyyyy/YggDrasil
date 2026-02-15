@@ -1,6 +1,6 @@
 """YggDrasil Block System — сердце Lego-конструктора."""
 
-from .base import AbstractBlock
+from .base import AbstractBaseBlock
 from .registry import register_block, get_block_class, list_blocks, BlockRegistry
 from .slot import Slot
 from .port import Port, TensorSpec, InputPort, OutputPort, PortValidator
@@ -8,7 +8,7 @@ from .builder import BlockBuilder
 from .graph import BlockGraph
 
 __all__ = [
-    "AbstractBlock",
+    "AbstractBaseBlock",
     "register_block",
     "get_block_class",
     "list_blocks",

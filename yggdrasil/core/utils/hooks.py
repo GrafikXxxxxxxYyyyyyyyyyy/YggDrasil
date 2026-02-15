@@ -4,7 +4,7 @@ from typing import Callable, Dict, Any, List
 from functools import wraps
 import inspect
 
-from ...core.block.base import AbstractBlock
+from ...core.block.base import AbstractBaseBlock
 
 
 class HookRegistry:
@@ -43,7 +43,7 @@ def register_hook(hook_type: str = "pre"):
         while frame:
             if "self" in frame.f_locals:
                 self = frame.f_locals["self"]
-                if isinstance(self, AbstractBlock):
+                if isinstance(self, AbstractBaseBlock):
                     block_id = getattr(self, "block_id", self.block_type)
                     HookRegistry.register(hook_type, block_id, func)
                     break
@@ -52,7 +52,7 @@ def register_hook(hook_type: str = "pre"):
     return decorator
 
 
-def apply_hooks(block: AbstractBlock, hook_type: str, *args, **kwargs) -> Any:
+def apply_hooks(block: AbstractBaseBlock, hook_type: str, *args, **kwargs) -> Any:
     """Применить все зарегистрированные хуки."""
     for hook in HookRegistry.get_hooks(hook_type, block.block_id):
         args, kwargs = hook(block, *args, **kwargs) or (args, kwargs)
