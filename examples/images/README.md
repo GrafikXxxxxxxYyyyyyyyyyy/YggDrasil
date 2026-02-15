@@ -1,5 +1,7 @@
 # Image Examples
 
+For full project structure and file descriptions, see [PROJECT_STRUCTURE.md](../../PROJECT_STRUCTURE.md) at repo root.
+
 ## Compare Diffusers vs YggDrasil
 
 Run the same prompt through both Diffusers and YggDrasil to compare output quality:
