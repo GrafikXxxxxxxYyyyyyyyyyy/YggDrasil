@@ -34,6 +34,16 @@ TYPE_TO_ROLE: Dict[str, str] = {
     "processor/": "processor",
     "schedule/": "solver",  # schedule merged into solver
     "loop/": "denoise_loop",
+    # Non-diffusion pipeline roles (REFACTORING_GRAPH_PIPELINE_ENGINE.md §7)
+    "segmenter/": "segmenter",
+    "detector/": "detector",
+    "classifier/": "classifier",
+    "depth_estimator/": "depth_estimator",
+    "pose_estimator/": "pose_estimator",
+    "super_resolution/": "super_resolution",
+    "style_encoder/": "style_encoder",
+    "feature_extractor/": "feature_extractor",
+    "loss/": "loss",
 }
 
 
@@ -88,6 +98,13 @@ def get_connection_rules(role: str) -> Optional[Dict[str, Any]]:
             "output_port": "output",
             "input_port": "input",
             "graph_input": "input",
+        },
+        "loss": {
+            "target_node": None,
+            "target_port": None,
+            "output_port": "loss",
+            "input_port": "prediction",
+            "graph_input": None,
         },
     }
     return rules.get(role)

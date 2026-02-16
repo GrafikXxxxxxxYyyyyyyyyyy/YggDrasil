@@ -147,7 +147,7 @@
 ### 4.2 Источники шаблонов
 
 - **Встроенные:** шаблоны для Euler, DDIM, PNDM, FlowMatch (SD3), batched CFG (SDXL), single-batch (SD 1.5), уже имеющиеся в коде.
-- **Из Diffusers:** при использовании `InferencePipeline.from_diffusers(pipe)` или при регистрации пайплайна из Diffusers — извлечение типа scheduler и формата шага (step signature) и маппинг в внутренний шаблон шага.
+- **Из Diffusers (L5):** при импорте пайплайна из Diffusers — тип scheduler (например `EulerDiscreteScheduler`) маппится во внутренний solver_type через **SolverRegistry** (`get_solver_type(scheduler_id)`), опционально `get_step_signature(scheduler_id)` → prediction_type; шаблон шага — **LoopTemplates.get_or_default(solver_type, modality)**.
 - **Пользовательские:** регистрация функции `(metadata) -> ComputeGraph` (step graph) для кастомной архитектуры.
 
 ### 4.3 Метаданные цикла
@@ -454,6 +454,76 @@
 | Q3 | Документация | Описание фаз оркестратора, таблицы ролей и адаптеров, примеры (диффузия, диффузия+адаптеры, недиффузионный, комбинированный). |
 | Q4 | Обратная совместимость | Сохранить from_template, add_node(type="..."), pipe(prompt=..., control_image=..., ip_image=...); deprecation только с предупреждением. |
 
+### 11.10 Статус реализации (актуально по мере внедрения)
+
+Реализовано в коде:
+
+- **O1–O6:** GraphBuildOrchestrator, BuildState, RoleRegistry, NodeRule, resolve_target (TargetResolver), deferred_adapter_bindings, интеграция с add_node/to(device)/replace_node, GraphSnapshot, ValidationResult.
+- **L2 (реестр):** LoopTemplates (register/get по solver_type, modality); SolverRegistry (Diffusers scheduler → solver_type, step_signature). **L3:** универсальный fallback — get_or_default(solver_type, modality) возвращает шаблон или "generic"; _default = "generic" в LoopTemplates. **L4:** infer_metadata_if_needed подставляет latent_channels, spatial_scale_factor, prediction_type из узлов в graph.metadata. **L1:** при materialize при сборке отложенного loop в граф передаётся metadata (_graph_metadata); DenoiseLoopSDXLBlock и _build_sdxl_denoise_loop_block вызывают get_step_template_id_for_metadata(metadata) и **StepBuilderRegistry**: по template_id (и при отсутствии — по "generic") вызывается зарегистрированный builder для построения step graph. В модуле image_pipelines при загрузке регистрируется builder для "generic" (_default_generic_step_builder — SDXL batched CFG + Euler). L5 — реализован (см. ниже).
+- **A1, A2, A3, A4 (частично):** AdapterBindingRules (controlnet, ip_adapter, t2i_adapter, motion); get_optional_graph_input_names; явный None для опциональных входов. **A2:** имена control_image_<node_name>, маппинг control_type → graph_input_name (get_controlnet_input_mapping, metadata). Тесты покрывают правила адаптеров и get_or_prefix. Расширение списка под новые типы Diffusers — через register().
+- **S1:** SolverRegistry. **S2:** контракт шага — STEP_INPUT_NAMES, STEP_OUTPUT_NAMES; экспорт из yggdrasil.core.graph. **S3:** cross_attention_dim в graph.metadata для IP-Adapter. **S4:** register_custom_role; расширение реестров без правки ядра (разд. 6 ORCHESTRATOR_PHASES).
+- **N1–N3:** Роли segmenter, detector, classifier, depth_estimator, pose_estimator, super_resolution, style_encoder, feature_extractor в RoleRegistry; NONDIFFUSION_INPUT_KEYS/OUTPUT_KEYS, get_expected_io_for_modality; в pipeline — применение guidance_scale/num_steps только при наличии цикла, поддержка выхода `image` в _build_output.
+- **P1–P4:** InferencePipeline(graphs=[...] | graphs={...}), connections, inputs, outputs; from_spec(spec); parallel_groups и merge_strategy (metadata + порядок выполнения в executor); единый класс без CombinedPipeline.
+- **T1–T4:** Режим training: GraphExecutor(no_grad=False), execute_training() без no_grad; GraphTrainer принимает train_nodes или freeze_nodes (T2); при наличии выхода графа «loss» backward по нему (T3); чекпоинты по узлам — save_checkpoint/load_checkpoint/save_trained_nodes (T4); роль loss в RoleRegistry и role_rules (loss/, output_port=loss).
+- **G1–G5 (Gradio):** 5 вкладок в `serving/gradio_ui.py`: Inference, Pipeline (шаблон + кнопка Materialize), Train (узлы из графа), Blocks (каталог по категориям 9A), Philosophy; отображение входов графа после генерации; кнопка «Узлы из графа» на Train.
+- **Q2 (частично):** Тесты: ValidationResult (success, errors, warnings), идемпотентность materialize при пустой отложенной очереди, parallel_groups, non-diffusion contract, SolverRegistry, replace_node invalidate; обратная совместимость и комбинированный пайплайн (tests/test_backward_compat.py: TestCombinedPipelineAPI — graphs=[(name, g), ...], graphs={...}, parallel_groups, from_spec(list)).
+- **Q3 (частично):** Документ [docs/ORCHESTRATOR_PHASES.md](ORCHESTRATOR_PHASES.md) — фазы и таблицы ролей.
+
+- **Q4 (документ и CI):** Подраздел 13.1 — перечень сохраняемых API; deprecation только с предупреждением. Тесты обратной совместимости: `tests/test_backward_compat.py` — проверка наличия и сигнатур InferencePipeline.from_* / __call__, ComputeGraph.add_node/connect/expose, TrainingPipeline.from_* / train_nodes / freeze_nodes; при отсутствии torch модуль пропускается.
+
+- **L5 (интеграция):** При импорте из Diffusers (DiffusersBridge.import_pipeline) в graph.metadata записываются solver_type и prediction_type из SolverRegistry; см. [ORCHESTRATOR_PHASES.md](ORCHESTRATOR_PHASES.md) разд. 5.
+- **S4:** register_custom_role, расширение AdapterBindingRules / LoopTemplates / SolverRegistry без правки ядра; примеры — [ORCHESTRATOR_PHASES.md](ORCHESTRATOR_PHASES.md) разд. 6.
+
+**Итоговая сводка**
+
+| Группа | Реализовано | В планах |
+|--------|-------------|----------|
+| O | O1–O6 (оркестратор, фазы, реестры, интеграция, GraphSnapshot, ValidationResult) | — |
+| L | L1–L5, StepBuilderRegistry («generic», «step_sdxl», «step_sd3», «step_flux» зарегистрированы; get_step_template_id_for_metadata по base_model) | — |
+| A | A1–A4 (AdapterBindingRules, control_image_*, опциональные входы, тесты) | — |
+| S | S1 (SolverRegistry), S2 (STEP_*), S3 (cross_attention_dim), S4 (register_custom_role, разд. 6) | — |
+| N | N1–N3 (роли, контракт I/O, граф без цикла) | — |
+| P | P1–P4 (graphs=, from_spec, parallel_groups, единый класс) | — |
+| T | T1 (executor.execute_training, no_grad=False), T2 (train_nodes + freeze_nodes), T3 (выход loss → backward), T4 (save/load по узлам), роль loss в реестре | — |
+| G | G1–G5, G3: «Загрузить и показать входы», «Доп. параметры (JSON)», динамическая видимость control/ip/source при смене шаблона (без перезагрузки) | — |
+| Q | Q2 (тесты), Q3 (ORCHESTRATOR_PHASES), Q4 (разд. 13.1, тесты tests/test_backward_compat.py) | — |
+
+Реализация по спецификации завершена.
+
+**История реализации (v2.0)**
+
+- Оркестратор, реестры (RoleRegistry, LoopTemplates, StepBuilderRegistry, SolverRegistry), интеграция с add_node/to(device)/replace_node.
+- Step builder'ы: generic, step_sdxl, step_sd3, step_flux; get_step_template_id_for_metadata по base_model.
+- Gradio: 5 вкладок, Materialize, «Загрузить и показать входы», «Доп. параметры (JSON)», динамическая видимость полей при смене шаблона; param_utils (merge_extra_params_json, infer_input_visibility).
+- Тесты: test_orchestrator (StepBuilderRegistry, get_step_template_id), test_backward_compat (API, combined), test_param_utils (merge, visibility).
+- Пример: examples/pipelines/combined_pipeline_example.py; документация ORCHESTRATOR_PHASES.md, examples/README.md.
+
+**Итог рефакторинга v2.0**
+
+- Единый оркестратор с фазами REGISTER → RESOLVE → DEFER_OR_CONNECT → MATERIALIZE → VALIDATE; интеграция с add_node, to(device), replace_node.
+- Реестры LoopTemplates, StepBuilderRegistry, SolverRegistry с общим хранилищем (class-level); авто-регистрация builder'ов generic, step_sdxl, step_sd3, step_flux при загрузке image_pipelines.
+- Подмена backbone на цикл по шаблону при materialize (L1); передача metadata в loop; диспетчеризация step graph через StepBuilderRegistry.
+- Адаптеры: AdapterBindingRules (controlnet, ip_adapter, t2i_adapter, motion), get_controlnet_input_mapping, опциональные входы, L4/L5 metadata.
+- Недиффузионные роли и контракт I/O; guidance_scale/num_steps только при наличии цикла (N3).
+- InferencePipeline/TrainingPipeline: один граф, список или словарь графов; from_spec; parallel_groups; train_nodes и freeze_nodes; выход loss из графа для backward.
+- Gradio: 5 вкладок, Materialize, «Загрузить и показать входы», «Доп. параметры (JSON)»; динамическая видимость control/ip/source при смене шаблона; param_utils (merge_extra_params_json, infer_input_visibility); тесты test_param_utils.
+- Тесты: оркестратор, обратная совместимость API, комбинированный пайплайн; пример examples/pipelines/combined_pipeline_example.py.
+
+**Ключевые файлы реализации**
+
+| Область | Файлы |
+|---------|--------|
+| Оркестратор, реестры, фазы | `yggdrasil/core/graph/orchestrator.py` (Phase, BuildState, RoleRegistry, LoopTemplates, StepBuilderRegistry, SolverRegistry, GraphBuildOrchestrator, resolve_target, get_step_template_id_for_metadata, graph_to_mermaid) |
+| Граф, материализация, L1 | `yggdrasil/core/graph/graph.py` (ComputeGraph, add_node, to(device), _materialize_deferred, infer_metadata_if_needed); `yggdrasil/core/graph/templates/image_pipelines.py` (_build_sdxl_denoise_loop_block, DenoiseLoopSDXLBlock) |
+| Исполнитель, optional inputs, parallel_groups | `yggdrasil/core/graph/executor.py` (GraphExecutor, execute_training, _execution_order_from_parallel_groups) |
+| Адаптеры, controlnet_input_mapping, IP-Adapter | `yggdrasil/core/graph/adapters.py`; `yggdrasil/core/graph/role_rules.py` (resolve_loop_for_backbone, TYPE_TO_ROLE) |
+| Пайплайн, from_spec, combined | `yggdrasil/pipeline.py` (InferencePipeline, TrainingPipeline, from_spec, from_combined, graphs=, parallel_groups) |
+| Обучение T1–T4 | `yggdrasil/training/graph_trainer.py` (GraphTrainer, train_nodes, freeze_nodes, save_checkpoint, loss из выхода графа) |
+| Gradio G1–G5 | `yggdrasil/serving/gradio_ui.py` (5 вкладок, Materialize, Blocks по категориям, Philosophy) |
+| Интеграция Diffusers L5 | `yggdrasil/integration/diffusers.py` (solver_type, prediction_type в metadata) |
+| Тесты | `tests/test_orchestrator.py`; `tests/test_backward_compat.py`; `tests/test_param_utils.py` (G3 merge extra params) |
+| Документация | `docs/ORCHESTRATOR_PHASES.md`; `examples/pipelines/combined_pipeline_example.py`, `examples/README.md` |
+
 ---
 
 ## 12. Порядок внедрения
@@ -466,7 +536,7 @@
 6. **Фаза 6 — обучение:** режим training, train_nodes/freeze_nodes, loss-узлы, backward, чекпоинты.
 7. **Фаза 7 — пайплайн по списку/словарю:** InferencePipeline(graphs=[...]), InferencePipeline(graphs={...}, connections=...), parallel_groups.
 8. **Фаза 8 — Gradio-интерфейс:** 5 вкладок (Inference, Pipeline, Train, Blocks, Philosophy), сборка → Materialize, динамические блоки параметров по графу.
-9. **Фаза 9 — расширение адаптеров и примеры:** сверка с Diffusers (Motion Adapter и др.), пример многостадийного сценарного пайплайна, тесты и документация.
+9. **Фаза 9 — расширение адаптеров и примеры:** сверка с Diffusers — скрипт [examples/images/compare_diffusers_yggdrasil.py](../examples/images/compare_diffusers_yggdrasil.py) (SD 1.5, SDXL, SD3, FLUX; `--compare` для MSE/PSNR); пример комбинированного пайплайна ([examples/pipelines/combined_pipeline_example.py](../examples/pipelines/combined_pipeline_example.py)); тесты и документация.
 
 ---
 
@@ -480,6 +550,17 @@
 - Недиффузионные пайплайны (сегментация, детекция, классификация, глубина, супер-разрешение и т.д.) собираются и выполняются тем же оркестратором и исполнителем.
 - Gradio-интерфейс: 5 вкладок (Inference, Pipeline, Train, Blocks, Philosophy); сборка в Pipeline → Materialize → динамические блоки параметров на Inference и Train по составу графа.
 - Код соответствует заявленным лучшим практикам: единая точка принятия решений (оркестратор), расширяемость через реестры, тесты и документация.
+
+### 13.1 Обратная совместимость (Q4)
+
+Сохраняются без изменений (deprecation только с явным предупреждением в коде и в changelog):
+
+- **InferencePipeline:** `from_template(name)`, `from_pretrained(model_id)`, `from_config(path)`, `from_graph(graph)`; вызов `pipe(prompt=..., negative_prompt=..., guidance_scale=..., num_steps=..., control_image=..., ip_image=..., ip_adapter_scale=..., **kwargs)` с теми же именами аргументов.
+- **ComputeGraph:** `add_node(name, block)`, `add_node(type="...", name="...", auto_connect=True, ...)`, `connect(...)`, `expose_input` / `expose_output`, `from_yaml` / `from_template`; при добавлении адаптеров и backbone логика подключения переведена в оркестратор, но публичный API add_node не ломается.
+- **TrainingPipeline:** `from_pretrained`, `from_template`, `from_config`, `from_graph`, `train(data_path=..., epochs=..., lr=...)`, `train_nodes` / `train_stages`.
+- **Единые точки входа:** `InferencePipeline.from_spec(spec)`, `TrainingPipeline.from_spec(spec)` — дополнительные способы создания; старые фабрики остаются.
+
+При появлении устаревших параметров или альтернативных API выводить `warnings.warn(..., DeprecationWarning)` с указанием версии удаления и замены.
 
 ---
 

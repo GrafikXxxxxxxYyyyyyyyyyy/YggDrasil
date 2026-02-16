@@ -168,6 +168,41 @@ def get_cross_attention_dim_from_graph(graph: ComputeGraph) -> Optional[int]:
     return None
 
 
+def get_controlnet_input_mapping(graph: ComputeGraph) -> Dict[str, str]:
+    """Маппинг control_type → имя входа графа для нескольких ControlNet (§11.3 A2).
+
+    Обходит внутренний граф цикла, находит узлы adapter/controlnet и для каждого
+    возвращает пару (control_type блока, имя graph_input: control_image или control_image_<node_name>).
+    Единая точка для пайплайна и UI: передача по control_type (depth, canny, …) или по имени входа.
+
+    Returns:
+        Словарь {control_type: graph_input_name}, например {"depth": "control_image_controlnet_depth", "canny": "control_image_controlnet_canny"}.
+    """
+    out: Dict[str, str] = {}
+    for _node_name, block in (graph.nodes or {}).items():
+        inner = None
+        if getattr(block, "block_type", "").startswith("loop/"):
+            inner = getattr(block, "graph", None) or (
+                getattr(block, "_loop", None) and getattr(block._loop, "graph", None)
+            )
+        if inner is None:
+            continue
+        graph_inputs = getattr(inner, "graph_inputs", {}) or {}
+        nodes = getattr(inner, "nodes", {}) or {}
+        for inp_name, targets in graph_inputs.items():
+            if inp_name != "control_image" and not inp_name.startswith("control_image_"):
+                continue
+            for (node_name, _port) in targets:
+                if node_name in nodes:
+                    blk = nodes[node_name]
+                    if getattr(blk, "block_type", None) == "adapter/controlnet":
+                        ct = getattr(blk, "control_type", None) or inp_name
+                        out[ct] = inp_name
+                        break
+        break
+    return out
+
+
 # Backbone types that accept adapter_features (ControlNet/T2I residuals)
 _BACKBONE_TYPES_WITH_ADAPTER = (
     "backbone/unet2d_condition",
@@ -346,9 +381,10 @@ def add_ip_adapter_to_graph(
     if "image_embed_dim" in ip_adapter_kwargs:
         image_embed_dim = ip_adapter_kwargs.pop("image_embed_dim")
 
-    # cross_attention_dim: универсально из собранного backbone в графе (любая модель)
+    # cross_attention_dim: единственный источник — граф (metadata или обход backbone) §S3
     if cross_attention_dim is None:
-        cross_attention_dim = get_cross_attention_dim_from_graph(graph)
+        meta = getattr(graph, "metadata", None) or {}
+        cross_attention_dim = meta.get("cross_attention_dim") or get_cross_attention_dim_from_graph(graph)
     if cross_attention_dim is None and "cross_attention_dim" not in ip_adapter_kwargs:
         raise ValueError(
             "IP-Adapter requires cross_attention_dim. Either build the backbone first (e.g. call graph.to(device) before adding IP-Adapter), "

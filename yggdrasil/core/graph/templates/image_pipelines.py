@@ -471,7 +471,7 @@ def _build_sdxl_txt2img_graph(
     guidance_config = {
         "type": "guidance/cfg",
         "scale": guidance_scale,
-        "guidance_rescale": 0.7,  # SDXL: reduces oversaturation, improves quality
+        "guidance_rescale": 0.0,  # Diffusers default; use 0.7 for quality when not comparing
     }
 
     conditioner = BlockBuilder.build({
@@ -529,10 +529,15 @@ def _build_sdxl_txt2img_graph(
     return graph
 
 
-def _build_sdxl_denoise_loop_block(pretrained: str, num_steps: int = 50, guidance_scale: float = 7.5, **kwargs) -> "LoopSubGraph":
-    """Build SDXL denoise loop from pretrained (for use with add_node(type=\"loop/denoise_sdxl\", pretrained=...))."""
+def _default_generic_step_builder(
+    metadata: Dict[str, Any],
+    pretrained: str,
+    num_steps: int,
+    guidance_scale: float,
+    **kwargs: Any,
+) -> ComputeGraph:
+    """Default step graph builder for template_id \"generic\" (SDXL batched CFG + Euler). Registered in StepBuilderRegistry."""
     from yggdrasil.core.block.builder import BlockBuilder
-    from yggdrasil.core.graph.subgraph import LoopSubGraph
     backbone_config = {"type": "backbone/unet2d_condition", "pretrained": pretrained, "fp16": kwargs.get("fp16", True)}
     guidance_config = {"type": "guidance/cfg", "scale": guidance_scale, "guidance_rescale": 0.7}
     solver = BlockBuilder.build({
@@ -544,7 +549,91 @@ def _build_sdxl_denoise_loop_block(pretrained: str, num_steps: int = 50, guidanc
         "steps_offset": 1,
         "timestep_spacing": "leading",
     })
-    step_graph = _build_denoise_step_batched_cfg_euler(backbone_config, guidance_config, solver)
+    return _build_denoise_step_batched_cfg_euler(backbone_config, guidance_config, solver)
+
+
+def _step_sd3_builder(
+    metadata: Dict[str, Any],
+    pretrained: str,
+    num_steps: int,
+    guidance_scale: float,
+    **kwargs: Any,
+) -> ComputeGraph:
+    """Step graph builder for SD3 (transformer + flow_euler + CFG)."""
+    from yggdrasil.core.block.builder import BlockBuilder
+    backbone = BlockBuilder.build({
+        "type": "backbone/sd3_transformer",
+        "pretrained": pretrained,
+        "fp16": kwargs.get("fp16", True),
+    })
+    guidance = BlockBuilder.build({"type": "guidance/cfg", "scale": guidance_scale})
+    solver = BlockBuilder.build({
+        "type": "solver/flow_euler",
+        "scheduler_pretrained": pretrained,
+    })
+    return _build_denoise_step(backbone, guidance, solver, use_cfg=True, expose_num_steps=True)
+
+
+def _step_flux_builder(
+    metadata: Dict[str, Any],
+    pretrained: str,
+    num_steps: int,
+    guidance_scale: float,
+    **kwargs: Any,
+) -> ComputeGraph:
+    """Step graph builder for Flux (transformer + flow_euler + CFG)."""
+    from yggdrasil.core.block.builder import BlockBuilder
+    backbone = BlockBuilder.build({
+        "type": "backbone/flux_transformer",
+        "pretrained": pretrained,
+        "fp16": kwargs.get("fp16", True),
+    })
+    guidance = BlockBuilder.build({"type": "guidance/cfg", "scale": guidance_scale})
+    solver = BlockBuilder.build({"type": "solver/flow_euler"})
+    return _build_denoise_step(backbone, guidance, solver, use_cfg=True, expose_num_steps=True)
+
+
+def _build_sdxl_denoise_loop_block(
+    pretrained: str,
+    num_steps: int = 50,
+    guidance_scale: float = 7.5,
+    *,
+    metadata: Optional[Dict[str, Any]] = None,
+    **kwargs: Any,
+) -> "LoopSubGraph":
+    """Build SDXL denoise loop from pretrained (for use with add_node(type=\"loop/denoise_sdxl\", pretrained=...)).
+    L1: metadata is used to select step template via get_step_template_id_for_metadata when provided at materialize.
+    Dispatches via StepBuilderRegistry; \"generic\" is registered from this module.
+    """
+    from yggdrasil.core.block.builder import BlockBuilder
+    from yggdrasil.core.graph.subgraph import LoopSubGraph
+    from yggdrasil.core.graph.orchestrator import get_step_template_id_for_metadata, StepBuilderRegistry
+
+    meta = metadata or {}
+    template_id = get_step_template_id_for_metadata(meta)
+    registry = StepBuilderRegistry()
+    builder = registry.get(template_id) or registry.get("generic")
+    if builder is not None:
+        step_graph = builder(
+            metadata=meta,
+            pretrained=pretrained,
+            num_steps=num_steps,
+            guidance_scale=guidance_scale,
+            **kwargs,
+        )
+    else:
+        backbone_config = {"type": "backbone/unet2d_condition", "pretrained": pretrained, "fp16": kwargs.get("fp16", True)}
+        guidance_config = {"type": "guidance/cfg", "scale": guidance_scale, "guidance_rescale": 0.7}
+        solver = BlockBuilder.build({
+            "type": "solver/euler_discrete",
+            "num_train_timesteps": 1000,
+            "beta_start": 0.00085,
+            "beta_end": 0.012,
+            "beta_schedule": "scaled_linear",
+            "steps_offset": 1,
+            "timestep_spacing": "leading",
+        })
+        step_graph = _build_denoise_step_batched_cfg_euler(backbone_config, guidance_config, solver)
     return LoopSubGraph.create(
         inner_graph=step_graph,
         num_iterations=num_steps,
@@ -571,13 +660,17 @@ class DenoiseLoopSDXLBlock(AbstractBaseBlock):
         from omegaconf import OmegaConf
         from yggdrasil.core.graph.subgraph import LoopSubGraph
         cfg = OmegaConf.create(config) if isinstance(config, dict) else config
-        super().__init__(cfg)
-        pretrained = cfg.get("pretrained", "stabilityai/stable-diffusion-xl-base-1.0")
-        num_steps = int(cfg.get("num_steps", 50))
-        guidance_scale = float(cfg.get("guidance_scale", 7.5))
+        cfg_dict = OmegaConf.to_container(cfg, resolve=True) if hasattr(cfg, "to_container") else dict(cfg)
+        # L1: graph passes metadata at materialize so step template is chosen by solver_type/modality
+        graph_metadata = cfg_dict.pop("_graph_metadata", None)
+        super().__init__(OmegaConf.create(cfg_dict) if cfg_dict else cfg)
+        pretrained = cfg_dict.get("pretrained", "stabilityai/stable-diffusion-xl-base-1.0")
+        num_steps = int(cfg_dict.get("num_steps", 50))
+        guidance_scale = float(cfg_dict.get("guidance_scale", 7.5))
         self._loop: LoopSubGraph = _build_sdxl_denoise_loop_block(
             pretrained=pretrained, num_steps=num_steps, guidance_scale=guidance_scale,
-            fp16=cfg.get("fp16", True),
+            fp16=cfg_dict.get("fp16", True),
+            metadata=graph_metadata,
         )
 
     @classmethod
@@ -598,6 +691,19 @@ class DenoiseLoopSDXLBlock(AbstractBaseBlock):
 
     def parameters(self, recurse: bool = True):
         return self._loop.parameters(recurse=recurse)
+
+
+# Register default step builders for StepBuilderRegistry (L1 extension).
+def _register_default_step_builder() -> None:
+    from yggdrasil.core.graph.orchestrator import StepBuilderRegistry
+    reg = StepBuilderRegistry()
+    reg.register("generic", _default_generic_step_builder)
+    reg.register("step_sdxl", _default_generic_step_builder)
+    reg.register("step_sd3", _step_sd3_builder)
+    reg.register("step_flux", _step_flux_builder)
+
+
+_register_default_step_builder()
 
 
 @register_template("sdxl_txt2img")

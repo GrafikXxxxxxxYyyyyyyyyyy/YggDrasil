@@ -344,7 +344,20 @@ class DiffusersBridge:
             graph.metadata.setdefault("spatial_scale_factor", 8)
         graph.metadata.setdefault("latent_channels", 4)
         graph.metadata.setdefault("init_noise_sigma", 1.0)
-        
+        # L5: solver_type / prediction_type из Diffusers → единый источник для LoopTemplates
+        if hasattr(pipe, "scheduler") and pipe.scheduler is not None:
+            try:
+                from yggdrasil.core.graph.orchestrator import SolverRegistry
+                sr = SolverRegistry()
+                sched_name = type(pipe.scheduler).__name__
+                st = sr.get_solver_type(sched_name)
+                if st is not None:
+                    graph.metadata.setdefault("solver_type", st)
+                pred = sr.get_step_signature(sched_name)
+                if pred is not None:
+                    graph.metadata.setdefault("prediction_type", pred)
+            except Exception:
+                pass
         logger.info(f"Graph assembled: {graph}")
         return graph
     

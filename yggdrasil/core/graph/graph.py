@@ -85,7 +85,22 @@ class ComputeGraph:
         self._dtype: Any = None
         # Deferred building: (node_name, cfg, target_inner). target_inner None = top-level; str = add to that node's inner graph.
         self._deferred: List[Tuple[str, Dict[str, Any], Optional[str]]] = []
-    
+        # Orchestrator: single point of control for build phases (ref REFACTORING_GRAPH_PIPELINE_ENGINE.md)
+        self._orchestrator: Optional[Any] = None
+
+    def _get_orchestrator(self) -> Optional[Any]:
+        """Lazy init orchestrator; sync metadata from graph."""
+        if self._orchestrator is None:
+            try:
+                from .orchestrator import GraphBuildOrchestrator
+                self._orchestrator = GraphBuildOrchestrator(self)
+                self._orchestrator._state.metadata = dict(self.metadata)
+            except Exception:
+                return None
+        else:
+            self._orchestrator._state.metadata = dict(self.metadata)
+        return self._orchestrator
+
     # ==================== DEVICE MANAGEMENT ====================
     
     def to(self, device=None, dtype=None) -> ComputeGraph:
@@ -127,7 +142,11 @@ class ComputeGraph:
 
         # Build deferred (heavy) blocks in parallel before moving to device
         if self._deferred:
-            self._materialize_deferred()
+            orch = self._get_orchestrator()
+            if orch is not None:
+                orch.materialize()
+            else:
+                self._materialize_deferred()
 
         # Переносим узлы по одному и после каждого сбрасываем кэш CUDA — меньше шанс OOM из‑за фрагментации
         for name, block in self.nodes.items():
@@ -226,6 +245,63 @@ class ComputeGraph:
                     if isinstance(cfg, dict) and (cfg.get("type") or "").startswith("loop/"):
                         meta.setdefault("use_euler_init_sigma", True)
                         break
+        # L4: latent_channels, spatial_scale_factor, prediction_type — единственный источник из графа для адаптеров и шаблонов
+        if "latent_channels" not in meta or "spatial_scale_factor" not in meta:
+            for _n, block in self.nodes.items():
+                bt = getattr(block, "block_type", "")
+                if bt.startswith("codec/"):
+                    lc = getattr(block, "latent_channels", None)
+                    if lc is not None and "latent_channels" not in meta:
+                        meta.setdefault("latent_channels", int(lc))
+                    sf = getattr(block, "spatial_scale_factor", None) or getattr(block, "scale_factor", None)
+                    if sf is not None and "spatial_scale_factor" not in meta:
+                        meta.setdefault("spatial_scale_factor", int(sf))
+                    break
+                if bt.startswith("loop/"):
+                    inner = getattr(block, "graph", None) or (getattr(block, "_loop", None) and getattr(block._loop, "graph", None))
+                    if inner and getattr(inner, "nodes", None):
+                        for _sn, sblock in inner.nodes.items():
+                            if getattr(sblock, "block_type", "").startswith("codec/"):
+                                lc = getattr(sblock, "latent_channels", None)
+                                if lc is not None and "latent_channels" not in meta:
+                                    meta.setdefault("latent_channels", int(lc))
+                                sf = getattr(sblock, "spatial_scale_factor", None) or getattr(sblock, "scale_factor", None)
+                                if sf is not None and "spatial_scale_factor" not in meta:
+                                    meta.setdefault("spatial_scale_factor", int(sf))
+                                break
+                    break
+        if "prediction_type" not in meta:
+            for _n, block in self.nodes.items():
+                pred = getattr(block, "prediction_type", None)
+                if pred is not None:
+                    meta.setdefault("prediction_type", str(pred))
+                    break
+                if getattr(block, "block_type", "").startswith("loop/"):
+                    inner = getattr(block, "graph", None) or (getattr(block, "_loop", None) and getattr(block._loop, "graph", None))
+                    if inner and getattr(inner, "nodes", None):
+                        for _sn, sblock in inner.nodes.items():
+                            pred = getattr(sblock, "prediction_type", None)
+                            if pred is not None:
+                                meta.setdefault("prediction_type", str(pred))
+                                break
+                    break
+        # A2: маппинг control_type → graph_input_name для нескольких ControlNet (единственный источник для пайплайна/UI)
+        try:
+            from .adapters import get_controlnet_input_mapping
+            mapping = get_controlnet_input_mapping(self)
+            if mapping:
+                meta["controlnet_input_mapping"] = mapping
+        except Exception:
+            pass
+        # S3: cross_attention_dim из графа — единственный источник для IP-Adapter и др. (без эвристик по имени)
+        if "cross_attention_dim" not in meta:
+            try:
+                from .adapters import get_cross_attention_dim_from_graph
+                dim = get_cross_attention_dim_from_graph(self)
+                if dim is not None:
+                    meta["cross_attention_dim"] = dim
+            except Exception:
+                pass
 
     def _materialize_deferred(self) -> None:
         """Build all deferred blocks in parallel (UNet, VAE, IP-Adapter, ControlNet), then replace/wire."""
@@ -262,11 +338,18 @@ class ComputeGraph:
 
         print("Loading pipeline weights in parallel (one-time)...", flush=True)
         max_workers = min(4, len(other_top) + len(adapters) + (1 if ip_adapter_top else 0))
+        # L1: pass graph metadata when building loop so step template can be chosen by solver_type/modality
+        meta = getattr(self, "metadata", None) or {}
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             # Phase 1: build top-level except IP-Adapter (loop, codec)
             built_top = {}
             if other_top:
-                futures = {pool.submit(build_one, n, c): n for n, c in other_top}
+                def _cfg_for_build(node_name: str, cfg: dict) -> dict:
+                    c = dict(cfg)
+                    if (c.get("type") or c.get("block_type") or "").startswith("loop/"):
+                        c["_graph_metadata"] = dict(meta)
+                    return c
+                futures = {pool.submit(build_one, n, _cfg_for_build(n, c)): n for n, c in other_top}
                 for fut in as_completed(futures):
                     node_name = futures[fut]
                     built_top[node_name] = fut.result()
@@ -282,7 +365,11 @@ class ComputeGraph:
                 image_embed_dim = getattr(encoder, "embedding_dim", None) or (
                     768 if "clip-vit-large" in str(encoder_pretrained) else 1024
                 )
-                cross_attention_dim = cfg.get("cross_attention_dim") or get_cross_attention_dim_from_graph(self)
+                cross_attention_dim = (
+                    cfg.get("cross_attention_dim")
+                    or (getattr(self, "metadata", None) or {}).get("cross_attention_dim")
+                    or get_cross_attention_dim_from_graph(self)
+                )
                 if cross_attention_dim is None:
                     raise ValueError(
                         "IP-Adapter: could not infer cross_attention_dim from graph backbone. "
@@ -471,6 +558,10 @@ class ComputeGraph:
             if adapter_node_name in self.nodes:
                 adapter_node_name = f"{adapter_node_name}_{len(self.nodes)}"
             self._deferred.append((adapter_node_name, cfg_plain, target_inner))
+            orch = self._get_orchestrator()
+            if orch is not None:
+                orch.register_node(adapter_node_name, type, cfg_plain, target_inner=target_inner)
+                orch.invalidate()
             if auto_connect:
                 from .pipeline_auto_wire import apply_pipeline_auto_wire
                 apply_pipeline_auto_wire(self)
@@ -489,6 +580,12 @@ class ComputeGraph:
                 cfg_plain = OmegaConf.to_container(cfg, resolve=True) if hasattr(cfg, "to_container") else dict(cfg)
                 self._deferred.append((node_name, cfg_plain, None))
                 self.nodes[node_name] = _DeferredPlaceholder(type)
+                orch = self._get_orchestrator()
+                if orch is not None:
+                    orch.register_node(node_name, type, cfg_plain)
+                    if type.startswith("loop/"):
+                        orch.update_denoise_loop_name(node_name)
+                    orch.invalidate()
                 if auto_connect:
                     from .pipeline_auto_wire import apply_pipeline_auto_wire
                     apply_pipeline_auto_wire(self)
@@ -588,7 +685,12 @@ class ComputeGraph:
         image_embed_dim = getattr(encoder, "embedding_dim", None) or (
             768 if "clip-vit-large" in str(encoder_pretrained) else 1024
         )
-        cross_attention_dim = adapter_cfg.get("cross_attention_dim") or get_cross_attention_dim_from_graph(self)
+        meta = getattr(self, "metadata", None) or {}
+        cross_attention_dim = (
+            adapter_cfg.get("cross_attention_dim")
+            or meta.get("cross_attention_dim")
+            or get_cross_attention_dim_from_graph(self)
+        )
         if cross_attention_dim is None:
             raise ValueError(
                 "IP-Adapter: could not infer cross_attention_dim from graph (backbone not built yet?). "
@@ -827,6 +929,9 @@ class ComputeGraph:
                 self._validate_replacement(inner_name, new_block, graph=inner)
             inner.nodes[inner_name] = new_block
             self.infer_metadata_if_needed()
+            orch = self._get_orchestrator()
+            if orch is not None:
+                orch.invalidate()
             return self
         if name not in self.nodes:
             raise ValueError(f"Node '{name}' not found in graph '{self.name}'")
@@ -834,6 +939,9 @@ class ComputeGraph:
             self._validate_replacement(name, new_block)
         self.nodes[name] = new_block
         self.infer_metadata_if_needed()
+        orch = self._get_orchestrator()
+        if orch is not None:
+            orch.invalidate()
         return self
     
     def _validate_replacement(self, name: str, new_block: Any, graph: Optional["ComputeGraph"] = None):

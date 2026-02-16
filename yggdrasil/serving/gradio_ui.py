@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from PIL import Image
 
 from .schema import ServerConfig
+from .param_utils import merge_extra_params_json, infer_input_visibility
 
 
 # ==================== HELPERS ====================
@@ -152,6 +153,7 @@ def create_ui(
         control_image: Optional[Any],
         ip_image: Optional[Any],
         source_image: Optional[Any],
+        extra_params_json: str,
         pipeline_state: Optional[Tuple[str, Any]],
     ) -> Tuple[
         Optional[List[Image.Image]],
@@ -211,6 +213,9 @@ def create_ui(
         if source_image is not None and modality in ("video", "image"):
             kwargs["source_image"] = _pil_to_tensor(source_image)
 
+        # G3: merge extra params from JSON (dynamic graph_inputs)
+        kwargs = merge_extra_params_json(kwargs, extra_params_json or "")
+
         start = time.time()
         try:
             out = pipe(**kwargs)
@@ -235,6 +240,32 @@ def create_ui(
         choices = templates_by_mod.get(modality, [])
         return gr.update(choices=[t[0] for t in choices], value=choices[0][0] if choices else None)
 
+    def load_pipeline_and_show_inputs(
+        template_name: str, current_state: Optional[Tuple[str, Any]]
+    ) -> Tuple[Optional[Tuple[str, Any]], str]:
+        """G3: Load pipeline without generating; return (state, markdown of graph_inputs)."""
+        if not template_name:
+            return current_state, "*Выберите шаблон пайплайна.*"
+        try:
+            from yggdrasil.pipeline import InferencePipeline
+            pipe = InferencePipeline.from_template(template_name, device=device)
+            if hasattr(pipe, "graph") and pipe.graph is not None:
+                pipe.graph.to(device)
+            new_state = (template_name, pipe)
+            g = pipe.graph
+            inps = getattr(g, "graph_inputs", None) or {}
+            inputs_list = sorted(inps.keys()) if isinstance(inps, dict) else []
+            meta = getattr(g, "metadata", None) or {}
+            control_mapping = meta.get("controlnet_input_mapping") or {}
+            for v in control_mapping.values():
+                if v not in inputs_list:
+                    inputs_list.append(v)
+            inputs_list = sorted(set(inputs_list))
+            md = "**Входы графа:** " + ", ".join(inputs_list) if inputs_list else "**Входы графа:** (нет)"
+            return new_state, md
+        except Exception as e:
+            return current_state, f"*Ошибка загрузки: {e}*"
+
     # ---------- Build UI ----------
     with gr.Blocks(
         title="YggDrasil — Universal Diffusion",
@@ -255,8 +286,8 @@ def create_ui(
         pipeline_state = gr.State(value=None)
 
         with gr.Tabs():
-            # ========== TAB: GENERATE ==========
-            with gr.Tab("🎨 Генерация", id="gen"):
+            # ========== TAB 1: INFERENCE (9A.1) ==========
+            with gr.Tab("🎨 Inference", id="inference"):
                 with gr.Row():
                     with gr.Column(scale=1):
                         gr.Markdown("### Модель и модальность")
@@ -321,6 +352,28 @@ def create_ui(
                         ip_image_in = gr.Image(label="IP-Adapter изображение", type="pil")
                         source_image_in = gr.Image(label="Исходное изображение (img2vid)", type="pil")
 
+                        # G3: dynamic visibility when template/modality changes (without page reload)
+                        def on_template_or_modality(tpl, mod):
+                            ctrl, ip, src = infer_input_visibility(tpl or "", mod or "image")
+                            return gr.update(visible=ctrl), gr.update(visible=ip), gr.update(visible=src)
+
+                        for inp in [template_dropdown, modality_radio]:
+                            inp.change(
+                                fn=on_template_or_modality,
+                                inputs=[template_dropdown, modality_radio],
+                                outputs=[control_image_in, ip_image_in, source_image_in],
+                            )
+
+                        gr.Markdown("#### Доп. параметры по graph_inputs (G3)")
+                        extra_params_in = gr.Textbox(
+                            label="Доп. параметры (JSON)",
+                            placeholder='{"ip_adapter_scale": 0.5} — для входов, не охваченных формой выше',
+                            lines=2,
+                            value="{}",
+                        )
+                        load_preview_btn = gr.Button("Загрузить и показать входы", size="sm", variant="secondary")
+                        graph_inputs_info = gr.Markdown(value="*Нажмите «Загрузить и показать входы» или сгенерируйте — здесь отобразятся входы графа.*", visible=True)
+
                         gen_btn = gr.Button("🚀 Сгенерировать", variant="primary", size="lg")
 
                     with gr.Column(scale=2):
@@ -338,15 +391,27 @@ def create_ui(
 
                 def run_and_show(
                     mod, tpl, prompt, neg, steps, cfg, w, h, nf, seed, batch,
-                    ctrl_img, ip_img, src_img, state,
+                    ctrl_img, ip_img, src_img, extra_json, state,
                 ):
                     images, video_path, audio_data, info, new_state = run_generation(
                         mod, tpl, prompt, neg, steps, cfg, w, h, nf, seed, batch,
-                        ctrl_img, ip_img, src_img, state,
+                        ctrl_img, ip_img, src_img, extra_json, state,
                     )
                     vis_img = bool(images and len(images) > 0)
                     vis_vid = video_path is not None
                     vis_aud = audio_data is not None
+                    # G3: show graph inputs when we have a materialized pipeline
+                    inputs_md = graph_inputs_info.value
+                    if new_state and len(new_state) >= 2 and hasattr(new_state[1], "graph") and new_state[1].graph is not None:
+                        g = new_state[1].graph
+                        inps = getattr(g, "graph_inputs", None) or {}
+                        inputs_list = list(inps.keys()) if isinstance(inps, dict) else []
+                        meta = getattr(g, "metadata", None) or {}
+                        control_mapping = meta.get("controlnet_input_mapping") or {}
+                        if control_mapping:
+                            inputs_list.extend(control_mapping.values())
+                        inputs_list = sorted(set(inputs_list))
+                        inputs_md = "**Входы графа:** " + ", ".join(inputs_list) if inputs_list else "**Входы графа:** (нет)"
                     # Download: first image as bytes or video path
                     download_file = None
                     if images and len(images) > 0:
@@ -363,7 +428,14 @@ def create_ui(
                         info,
                         new_state,
                         download_file,
+                        inputs_md,
                     )
+
+                load_preview_btn.click(
+                    fn=load_pipeline_and_show_inputs,
+                    inputs=[template_dropdown, pipeline_state],
+                    outputs=[pipeline_state, graph_inputs_info],
+                )
 
                 gen_btn.click(
                     fn=run_and_show,
@@ -373,6 +445,7 @@ def create_ui(
                         steps_num, cfg_num, width_num, height_num, num_frames_num,
                         seed_num, batch_num,
                         control_image_in, ip_image_in, source_image_in,
+                        extra_params_in,
                         pipeline_state,
                     ],
                     outputs=[
@@ -382,30 +455,58 @@ def create_ui(
                         gen_info,
                         pipeline_state,
                         download_btn,
+                        graph_inputs_info,
                     ],
                 )
 
-            # ========== TAB: PIPELINES ==========
-            with gr.Tab("📦 Пайплайны", id="pipelines"):
-                gr.Markdown("### Доступные шаблоны по типу")
-                with gr.Row():
-                    with gr.Column():
-                        gr.Markdown("#### Изображения")
-                        img_list = "\n".join(f"- **{t[0]}** — {t[1]}" for t in templates_by_mod.get("image", [])[:20])
-                        gr.Markdown(img_list or "Нет шаблонов")
-                    with gr.Column():
-                        gr.Markdown("#### Видео")
-                        vid_list = "\n".join(f"- **{t[0]}** — {t[1]}" for t in templates_by_mod.get("video", [])[:20])
-                        gr.Markdown(vid_list or "Нет шаблонов")
-                    with gr.Column():
-                        gr.Markdown("#### Аудио")
-                        aud_list = "\n".join(f"- **{t[0]}** — {t[1]}" for t in templates_by_mod.get("audio", [])[:20])
-                        gr.Markdown(aud_list or "Нет шаблонов")
-                gr.Markdown("Выберите шаблон во вкладке **Генерация** и нажмите Сгенерировать. Модели подгружаются при первом запуске.")
+            # ========== TAB 2: PIPELINE (9A.1 G2) — сборка и Materialize ==========
+            with gr.Tab("📦 Pipeline", id="pipeline"):
+                gr.Markdown("### Сборка пайплайна")
+                gr.Markdown("Выберите шаблон графа и нажмите **Materialize** — граф будет собран и материализован. После этого пайплайн доступен на вкладках Inference и Train.")
+                pipeline_template_dropdown = gr.Dropdown(
+                    label="Шаблон пайплайна",
+                    choices=[t[0] for t in (templates_by_mod["image"] + templates_by_mod.get("video", []) + templates_by_mod.get("audio", []))],
+                    value=templates_by_mod["image"][0][0] if templates_by_mod["image"] else None,
+                )
+                materialize_btn = gr.Button("⚡ Materialize", variant="primary")
+                pipeline_status = gr.Textbox(
+                    label="Статус",
+                    value="Нажмите Materialize, чтобы загрузить и материализовать граф.",
+                    interactive=False,
+                    lines=3,
+                )
+                def do_materialize(template_name, current_state):
+                    if not template_name:
+                        return "Выберите шаблон.", current_state, gr.update()
+                    try:
+                        from yggdrasil.pipeline import InferencePipeline
+                        pipe = InferencePipeline.from_template(template_name, device=device)
+                        if hasattr(pipe, "graph") and pipe.graph is not None:
+                            pipe.graph.to(device)
+                        new_state = (template_name, pipe)
+                        msg = f"Граф материализован: {template_name}. Узлы: {list(pipe.graph.nodes.keys()) if getattr(pipe, 'graph', None) else '—'}. Используйте вкладки Inference и Train."
+                        # G3: update graph_inputs_info on Inference tab
+                        g = getattr(pipe, "graph", None)
+                        inps = getattr(g, "graph_inputs", None) or {} if g else {}
+                        inputs_list = sorted(inps.keys()) if isinstance(inps, dict) else []
+                        meta = getattr(g, "metadata", None) or {} if g else {}
+                        for v in (meta.get("controlnet_input_mapping") or {}).values():
+                            if v not in inputs_list:
+                                inputs_list.append(v)
+                        inputs_list = sorted(set(inputs_list))
+                        inputs_md = "**Входы графа:** " + ", ".join(inputs_list) if inputs_list else "**Входы графа:** (нет)"
+                        return msg, new_state, gr.Markdown.update(value=inputs_md)
+                    except Exception as e:
+                        return f"Ошибка Materialize: {e}", current_state, gr.update()
+                materialize_btn.click(
+                    fn=do_materialize,
+                    inputs=[pipeline_template_dropdown, pipeline_state],
+                    outputs=[pipeline_status, pipeline_state, graph_inputs_info],
+                )
 
-            # ========== TAB: BLOCKS ==========
-            with gr.Tab("🧱 Блоки", id="blocks"):
-                gr.Markdown("### Зарегистрированные блоки (Lego)")
+            # ========== TAB 4: BLOCKS (9A.1 G5) — каталог по категориям ==========
+            with gr.Tab("🧱 Blocks", id="blocks"):
+                gr.Markdown("### Каталог блоков по категориям (backbone, conditioner, adapter, solver, codec, …)")
                 def get_blocks_md():
                     try:
                         from yggdrasil.core.block.registry import list_blocks
@@ -416,21 +517,36 @@ def create_ui(
                         for k, cls in sorted(blocks.items()):
                             cat = k.split("/")[0] if "/" in k else "other"
                             by_cat.setdefault(cat, []).append((k, cls))
+                        # G5: order by 9A categories (backbone, conditioner, adapter, solver, codec, segmenter, detector, …)
+                        cat_order = ("backbone", "conditioner", "adapter", "guidance", "solver", "codec", "loop", "schedule",
+                                     "segmenter", "detector", "classifier", "depth_estimator", "pose_estimator", "super_resolution",
+                                     "style_encoder", "feature_extractor", "loss", "graph", "processor", "diffusion")
                         lines = []
-                        for cat, items in sorted(by_cat.items()):
-                            lines.append(f"\n### {cat.upper()}")
+                        for cat in cat_order:
+                            if cat not in by_cat:
+                                continue
+                            items = by_cat[cat]
+                            lines.append(f"\n### {cat}")
                             for k, cls in items:
                                 doc = (cls.__doc__ or "").split("\n")[0].strip()[:70]
                                 lines.append(f"- `{k}` — {doc}")
-                        return "\n".join(lines)
+                        for cat, items in sorted(by_cat.items()):
+                            if cat in cat_order:
+                                continue
+                            lines.append(f"\n### {cat}")
+                            for k, cls in items:
+                                doc = (cls.__doc__ or "").split("\n")[0].strip()[:70]
+                                lines.append(f"- `{k}` — {doc}")
+                        return "\n".join(lines) or "Нет зарегистрированных блоков."
                     except Exception as e:
                         return f"Ошибка: {e}"
                 blocks_md = gr.Markdown(value=get_blocks_md())
                 gr.Button("Обновить").click(fn=get_blocks_md, outputs=[blocks_md])
 
-            # ========== TAB: TRAIN ==========
-            with gr.Tab("🎓 Обучение", id="train"):
+            # ========== TAB 3: TRAIN (9A.1 G4) ==========
+            with gr.Tab("🎓 Train", id="train"):
                 gr.Markdown("### Обучение адаптера / дообучение графа")
+                gr.Markdown("После **Materialize** на вкладке Pipeline нажмите «Узлы из графа» — подставятся имена узлов материализованного графа.")
                 with gr.Row():
                     with gr.Column():
                         train_template = gr.Dropdown(
@@ -438,13 +554,31 @@ def create_ui(
                             choices=[t[0] for t in (templates_by_mod["image"] + templates_by_mod.get("video", []) + templates_by_mod.get("audio", []))],
                             value=templates_by_mod["image"][0][0] if templates_by_mod["image"] else None,
                         )
-                        train_nodes = gr.Textbox(label="Обучаемые узлы (через запятую)", value="lora_adapter", placeholder="backbone, lora_adapter")
+                        with gr.Row():
+                            train_nodes = gr.Textbox(label="Обучаемые узлы (через запятую)", value="lora_adapter", placeholder="backbone, lora_adapter")
+                            sync_nodes_btn = gr.Button("Узлы из графа", size="sm")
                         train_data = gr.Textbox(label="Путь к данным", placeholder="/path/to/images/")
                         train_epochs = gr.Slider(1, 500, value=10, step=1, label="Эпохи")
                         train_lr = gr.Number(label="Learning rate", value=1e-4)
                     with gr.Column():
                         train_btn = gr.Button("Запустить обучение", variant="primary")
                         train_status = gr.Textbox(label="Статус", interactive=False, lines=5)
+                def sync_train_nodes_from_state(state):
+                    """G4: fill train_nodes from materialized graph."""
+                    if not state or len(state) < 2:
+                        return gr.update()
+                    pipe = state[1]
+                    g = getattr(pipe, "graph", None)
+                    if g is None or not hasattr(g, "nodes"):
+                        return gr.update()
+                    return ", ".join(g.nodes.keys())
+
+                sync_nodes_btn.click(
+                    fn=sync_train_nodes_from_state,
+                    inputs=[pipeline_state],
+                    outputs=[train_nodes],
+                )
+
                 def start_train(tpl, nodes, data, epochs, lr):
                     if not data or not Path(data).exists():
                         return f"Путь не найден: {data}"
@@ -473,6 +607,27 @@ def create_ui(
                     outputs=[train_status],
                 )
 
+            # ========== TAB 5: PHILOSOPHY (9A.1) ==========
+            with gr.Tab("📜 Philosophy", id="philosophy"):
+                gr.Markdown("""
+### YggDrasil — единый движок диффузионных пайплайнов
+
+**Принципы:**
+- **Граф как Lego:** пайплайн — это DAG блоков (conditioner, backbone, solver, codec, адаптеры). Собирайте любой пайплайн из узлов.
+- **Один оркестратор:** добавление узлов, автосборка циклов денойзинга, материализация и валидация в одном месте.
+- **Любая модальность и модель:** изображение, видео, аудио; Stable Diffusion, SDXL, Flux, Diffusers-совместимые и кастомные архитектуры.
+- **Единый API:** InferencePipeline и TrainingPipeline для инференса и обучения; один и тот же граф для генерации и дообучения.
+
+**Ссылки:** репозиторий, примеры и техническая спецификация — см. документацию проекта.
+                """)
+
         gr.HTML(f'<div class="footer">YggDrasil — Lego для диффузии · {device_info}</div>')
+
+        # G3: set initial adapter visibility on load
+        demo.load(
+            fn=on_template_or_modality,
+            inputs=[template_dropdown, modality_radio],
+            outputs=[control_image_in, ip_image_in, source_image_in],
+        )
 
     return demo

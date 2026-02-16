@@ -86,7 +86,19 @@ class GraphExecutor:
         inputs: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Internal execution implementation."""
-        order = graph.topological_sort()
+        # Normalize optional inputs: set to None when not provided (avoid sticky adapter inputs; §11.3 A3)
+        try:
+            from .orchestrator import get_optional_graph_input_names
+            for key in get_optional_graph_input_names(graph):
+                inputs.setdefault(key, None)
+        except Exception:
+            pass
+        meta = getattr(graph, "metadata", None) or {}
+        parallel_groups = meta.get("parallel_groups")
+        if parallel_groups:
+            order = self._execution_order_from_parallel_groups(graph, parallel_groups)
+        else:
+            order = graph.topological_sort()
         cache: Dict[str, Dict[str, Any]] = {}  # node_name -> {port_name: value}
         
         if self.debug:
@@ -151,6 +163,36 @@ class GraphExecutor:
         # 6. Gather graph outputs
         return self._gather_outputs(graph, cache)
     
+    def _execution_order_from_parallel_groups(
+        self,
+        graph: ComputeGraph,
+        parallel_groups: List[List[str]],
+    ) -> List[str]:
+        """Build flat execution order from parallel_groups (level-by-level). §11.7 P3.
+        
+        Validates: all names are graph nodes; no duplicate. Returns flat list so that
+        nodes in group i run before nodes in group i+1 (within a group, order preserved).
+        """
+        node_set = set(graph.nodes.keys())
+        seen: set = set()
+        flat: List[str] = []
+        for group in parallel_groups:
+            for name in group:
+                if name not in node_set:
+                    raise ValueError(
+                        f"parallel_groups: node '{name}' not in graph (nodes: {list(node_set)})"
+                    )
+                if name in seen:
+                    raise ValueError(f"parallel_groups: node '{name}' appears in more than one group")
+                seen.add(name)
+                flat.append(name)
+        if seen != node_set:
+            missing = node_set - seen
+            raise ValueError(
+                f"parallel_groups must list every node; missing: {sorted(missing)}"
+            )
+        return flat
+
     def invalidate(self, node_name: str):
         """Force re-computation of a node on next execution.
         

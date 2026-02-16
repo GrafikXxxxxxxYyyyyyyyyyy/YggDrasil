@@ -165,13 +165,21 @@ class GraphTrainer:
     def __init__(
         self,
         graph: ComputeGraph,
-        train_nodes: List[str],
+        train_nodes: Optional[List[str]] = None,
+        freeze_nodes: Optional[List[str]] = None,
         config: Optional[GraphTrainingConfig | dict] = None,
         loss_fn: Optional[Callable] = None,
         val_graph: Optional[ComputeGraph] = None,
     ):
         self.graph = graph
-        self.train_nodes = list(train_nodes)
+        # T2: either train_nodes (train only these) or freeze_nodes (train all except these)
+        if freeze_nodes is not None:
+            if train_nodes is not None:
+                raise ValueError("Provide either train_nodes or freeze_nodes, not both.")
+            frozen_set = set(freeze_nodes)
+            self.train_nodes = [n for n in graph.nodes if n not in frozen_set]
+        else:
+            self.train_nodes = list(train_nodes or list(graph.nodes))
         self.config = (
             config if isinstance(config, GraphTrainingConfig)
             else GraphTrainingConfig.from_dict(config or {})
@@ -535,9 +543,13 @@ class GraphTrainer:
         if use_amp:
             with autocast():
                 outputs = self.executor.execute_training(self.graph, **graph_inputs)
-                loss_dict = self.loss_fn(outputs, batch, self.graph)
         else:
             outputs = self.executor.execute_training(self.graph, **graph_inputs)
+        
+        # T3: if graph has a loss node output, use it for backward; else use loss_fn
+        if "loss" in outputs and isinstance(outputs.get("loss"), torch.Tensor):
+            loss_dict = {"loss": outputs["loss"]}
+        else:
             loss_dict = self.loss_fn(outputs, batch, self.graph)
         
         loss = loss_dict["loss"] / self.config.gradient_accumulation_steps
@@ -588,8 +600,11 @@ class GraphTrainer:
             for batch in loader:
                 graph_inputs = self._prepare_inputs(batch)
                 outputs = self.executor.execute(self.graph, **graph_inputs)
-                loss_dict = self.loss_fn(outputs, batch, self.graph)
-                total_loss += loss_dict["loss"].item()
+                if "loss" in outputs and isinstance(outputs.get("loss"), torch.Tensor):
+                    total_loss += outputs["loss"].item()
+                else:
+                    loss_dict = self.loss_fn(outputs, batch, self.graph)
+                    total_loss += loss_dict["loss"].item()
                 num_batches += 1
         
         # Restore training mode

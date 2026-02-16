@@ -157,12 +157,90 @@ class InferencePipeline:
     """High-level inference pipeline wrapping a ComputeGraph.
 
     Provides a diffusers-like interface while maintaining full Lego access
-    to the underlying graph.
+    to the underlying graph. Accepts either a single graph or a list/dict of
+    graphs (combined pipeline); ref REFACTORING_GRAPH_PIPELINE_ENGINE.md §9.
     """
 
-    def __init__(self, graph, *, device=None, dtype=None):
+    def __init__(
+        self,
+        graph=None,
+        *,
+        graphs=None,
+        device=None,
+        dtype=None,
+        connections=None,
+        inputs=None,
+        outputs=None,
+        name="combined",
+        parallel_groups=None,
+        merge_strategy=None,
+    ):
+        """Build pipeline from one graph or from list/dict of graphs (combined).
+
+        Args:
+            graph: Single ComputeGraph (legacy: positional or keyword).
+            graphs: List of (stage_name, graph_or_template) or dict name->graph/template.
+                    If given, builds combined pipeline; 'graph' is ignored.
+            device, dtype: Target device/dtype.
+            connections: For graphs= dict/list — (src, src_port, dst, dst_port); default linear chain.
+            inputs, outputs: Graph-level input/output mapping when using graphs=.
+            name: Pipeline graph name when using graphs=.
+            parallel_groups: For graphs= — optional list of stage name groups (execution plan; §11.7 P3).
+            merge_strategy: For graphs= — optional merge strategy for parallel branches (reserved).
+        """
         from yggdrasil.core.graph.graph import ComputeGraph
-        self.graph: ComputeGraph = graph
+        from yggdrasil.core.graph.stage import AbstractStage
+
+        if graphs is not None:
+            # Combined pipeline: same logic as from_combined
+            if isinstance(graphs, dict):
+                stages = [(k, v) for k, v in graphs.items()]
+            else:
+                stages = list(graphs)
+            g = ComputeGraph(name)
+            for stage_def in stages:
+                stage_name = stage_def[0]
+                if len(stage_def) == 2:
+                    _, graph_or_tpl = stage_def
+                    if isinstance(graph_or_tpl, str):
+                        inner = ComputeGraph.from_template(graph_or_tpl)
+                    else:
+                        inner = graph_or_tpl
+                else:
+                    inner = ComputeGraph.from_template(
+                        stage_def[1], **(stage_def[2] if len(stage_def) > 2 else {})
+                    )
+                stage_block = AbstractStage(config={"type": "stage/abstract"}, graph=inner)
+                g.add_node(stage_name, stage_block)
+            if connections:
+                for edge in connections:
+                    if len(edge) >= 4:
+                        g.connect(edge[0], edge[1], edge[2], edge[3])
+            else:
+                names = list(g.nodes.keys())
+                for i in range(len(names) - 1):
+                    g.connect(names[i], "output", names[i + 1], "input")
+            for input_name, mapping in (inputs or {}).items():
+                if isinstance(mapping, (list, tuple)) and len(mapping) >= 2:
+                    g.expose_input(input_name, str(mapping[0]), str(mapping[1]))
+                elif isinstance(mapping, str) and "." in mapping:
+                    node, port = mapping.split(".", 1)
+                    g.expose_input(input_name, node.strip(), port.strip())
+            for output_name, mapping in (outputs or {}).items():
+                if isinstance(mapping, (list, tuple)) and len(mapping) >= 2:
+                    g.expose_output(output_name, str(mapping[0]), str(mapping[1]))
+                elif isinstance(mapping, str) and "." in mapping:
+                    node, port = mapping.split(".", 1)
+                    g.expose_output(output_name, node.strip(), port.strip())
+            if parallel_groups is not None:
+                g.metadata["parallel_groups"] = parallel_groups
+            if merge_strategy is not None:
+                g.metadata["merge_strategy"] = merge_strategy
+            self.graph = g
+        elif graph is not None:
+            self.graph = graph
+        else:
+            raise ValueError("InferencePipeline requires graph= or graphs=")
         if device is not None:
             self.graph.to(device, dtype)
 
@@ -279,6 +357,52 @@ class InferencePipeline:
         return cls(graph, device=device, dtype=dtype)
 
     @classmethod
+    def from_spec(
+        cls,
+        spec: Union[Any, List[Any], Dict[str, Any], str, Path],
+        *,
+        device=None,
+        dtype=None,
+        **kwargs,
+    ) -> "InferencePipeline":
+        """Unified entry point: create pipeline from graph, list of graphs, dict of graphs, or config path.
+
+        Dispatches by type of spec:
+        - ComputeGraph -> from_graph(spec)
+        - list (of stages) -> from_combined(stages=spec)
+        - dict (name -> graph or template) -> from_combined(stages=[(k,v) for k,v in spec.items()], ...)
+        - str | Path -> from_config(spec)
+
+        Args:
+            spec: Graph, list of (name, graph/template), dict of name->graph/template, or path to YAML/JSON.
+            device, dtype: Target device/dtype.
+            **kwargs: Passed to from_combined when spec is list/dict (e.g. links, inputs, outputs, name).
+
+        Returns:
+            InferencePipeline
+
+        Example::
+            pipe = InferencePipeline.from_spec("config.yaml", device="cuda")
+            pipe = InferencePipeline.from_spec(my_graph, device="cuda")
+            pipe = InferencePipeline.from_spec([("stage0", "sd15_txt2img"), ("stage1", "codec/vae")], device="cuda")
+            pipe = InferencePipeline.from_spec({"gen": g1, "refine": g2}, links=[...], device="cuda")
+        """
+        from yggdrasil.core.graph.graph import ComputeGraph
+
+        if isinstance(spec, ComputeGraph):
+            return cls.from_graph(spec, device=device, dtype=dtype)
+        if isinstance(spec, (list, tuple)):
+            return cls.from_combined(stages=spec, device=device, dtype=dtype, **kwargs)
+        if isinstance(spec, dict):
+            stages = [(k, v) for k, v in spec.items()]
+            return cls.from_combined(stages=stages, device=device, dtype=dtype, **kwargs)
+        if isinstance(spec, (str, Path)):
+            return cls.from_config(spec, device=device, dtype=dtype, **kwargs)
+        raise TypeError(
+            f"InferencePipeline.from_spec(spec) expects ComputeGraph, list, dict, or path; got {type(spec).__name__}"
+        )
+
+    @classmethod
     def from_diffusers(cls, pipe: Any, *, device=None, dtype=None) -> "InferencePipeline":
         """Wrap an already-loaded HuggingFace Diffusers pipeline as InferencePipeline.
         
@@ -328,6 +452,8 @@ class InferencePipeline:
         outputs: Optional[Dict[str, Union[str, List]]] = None,
         *,
         name: str = "combined",
+        parallel_groups: Optional[List[List[str]]] = None,
+        merge_strategy: Optional[Union[Dict[str, Any], str]] = None,
         device=None,
         dtype=None,
     ) -> "InferencePipeline":
@@ -340,6 +466,9 @@ class InferencePipeline:
             inputs: Graph inputs, e.g. {"prompt": ["stage0", "text"]} or {"prompt": "stage0.prompt"}.
             outputs: Graph outputs, e.g. {"images": ["stage_last", "output"]}.
             name: Pipeline graph name.
+            parallel_groups: Optional list of groups; each group is a list of stage names that may run in parallel
+                             (execution plan: level-by-level). §11.7 P3.
+            merge_strategy: Optional dict or strategy id for merging outputs of parallel branches (reserved).
             device, dtype: Target device/dtype.
         
         Returns:
@@ -383,6 +512,10 @@ class InferencePipeline:
             elif isinstance(mapping, str) and "." in mapping:
                 node, port = mapping.split(".", 1)
                 graph.expose_output(output_name, node.strip(), port.strip())
+        if parallel_groups is not None:
+            graph.metadata["parallel_groups"] = parallel_groups
+        if merge_strategy is not None:
+            graph.metadata["merge_strategy"] = merge_strategy
         return cls(graph, device=device, dtype=dtype)
 
     @classmethod
@@ -547,12 +680,14 @@ class InferencePipeline:
         meta = self.graph.metadata
         graph_input_names = set(self.graph.graph_inputs.keys())
         
-        # ── Apply runtime overrides to graph nodes ──
-        if guidance_scale is not None:
-            self._apply_guidance_scale(guidance_scale)
-        if num_steps is not None:
-            self._apply_num_steps(num_steps)
-            kwargs["num_steps"] = num_steps  # so flat diffusers loop can use it
+        # ── Apply runtime overrides to graph nodes (only when graph has denoise loop; §11.5 N3) ──
+        has_denoise_loop = self._get_denoise_loop_node()[0] is not None
+        if has_denoise_loop:
+            if guidance_scale is not None:
+                self._apply_guidance_scale(guidance_scale)
+            if num_steps is not None:
+                self._apply_num_steps(num_steps)
+                kwargs["num_steps"] = num_steps  # so flat diffusers loop can use it
         
         # ── Prepare prompt (only if graph expects it) ──
         if "prompt" in graph_input_names:
@@ -856,7 +991,7 @@ class InferencePipeline:
         return None, None
 
     def _get_controlnet_input_names_and_types(self) -> Tuple[List[str], Dict[str, str]]:
-        """Return (ordered control_image* graph input names, control_type -> input_name map) for multiple ControlNets."""
+        """Return (ordered control_image* graph input names, control_type -> input_name map) for multiple ControlNets (§11.3 A2)."""
         graph_input_names = list(self.graph.graph_inputs.keys())
         control_inputs = [k for k in graph_input_names if k == "control_image" or k.startswith("control_image_")]
         def _sort_key(k: str):
@@ -867,22 +1002,11 @@ class InferencePipeline:
                 return (1, int(suffix))
             return (1, 0)
         control_inputs.sort(key=_sort_key)
-        ctype_to_input: Dict[str, str] = {}
-        _loop_name, loop = self._get_denoise_loop_node()
-        if loop is not None:
-            inner = getattr(loop, "graph", None) or (
-                getattr(loop, "_loop", None) and getattr(loop._loop, "graph", None)
-            )
-            if inner is not None:
-                for inp, targets in inner.graph_inputs.items():
-                    if inp != "control_image" and not inp.startswith("control_image_"):
-                        continue
-                    for (node_name, _port) in targets:
-                        if node_name in inner.nodes:
-                            blk = inner.nodes[node_name]
-                            if getattr(blk, "block_type", None) == "adapter/controlnet":
-                                ctype_to_input[getattr(blk, "control_type", inp)] = inp
-                                break
+        # Единый источник: graph.metadata["controlnet_input_mapping"] (заполняется при materialize/infer_metadata)
+        ctype_to_input: Dict[str, str] = dict(self.graph.metadata.get("controlnet_input_mapping") or {})
+        if not ctype_to_input and control_inputs:
+            from yggdrasil.core.graph.adapters import get_controlnet_input_mapping
+            ctype_to_input = get_controlnet_input_mapping(self.graph)
         return control_inputs, ctype_to_input
 
     def _get_controlnet_blocks_ordered(self) -> List[Tuple[str, Any]]:
@@ -992,22 +1116,37 @@ class InferencePipeline:
         if init_sigma is None:
             init_sigma = 1.0
 
-        # Match Diffusers: SD3 on cuda uses pipeline dtype float16 for prepare_latents (same randn sequence)
-        if meta.get("base_model") == "sd3" and device_type == "cuda":
+        # Match Diffusers: SD3 and SDXL on cuda use pipeline dtype float16 for prepare_latents (same randn sequence)
+        if meta.get("base_model") in ("sd3", "sdxl") and device_type == "cuda":
             dtype = torch.float16
         elif device_type == "mps":
             dtype = torch.float32
         else:
             dtype = torch.get_default_dtype()
+
+        shape = (batch_size, channels, h, w)
+        generator = None
         if seed is not None:
-            if device_type == "mps":
-                g = torch.Generator().manual_seed(seed)
-                noise = torch.randn(batch_size, channels, h, w, dtype=dtype, generator=g)
-            else:
-                g = torch.Generator(device).manual_seed(seed)
-                noise = torch.randn(batch_size, channels, h, w, device=device, dtype=dtype, generator=g)
+            generator = torch.Generator(device=device if device_type != "mps" else "cpu").manual_seed(seed)
+        # SDXL: use diffusers.randn_tensor for exact parity with prepare_latents
+        if meta.get("base_model") == "sdxl":
+            try:
+                from diffusers.utils.torch_utils import randn_tensor
+                noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+            except ImportError:
+                if generator is not None:
+                    noise = torch.randn(shape, device=device, dtype=dtype, generator=generator)
+                else:
+                    noise = torch.randn(shape, device=device, dtype=dtype)
         else:
-            noise = torch.randn(batch_size, channels, h, w, dtype=dtype)
+            if generator is not None:
+                if device_type == "mps":
+                    g = torch.Generator().manual_seed(seed)
+                    noise = torch.randn(shape, dtype=dtype, generator=g).to(device=device)
+                else:
+                    noise = torch.randn(shape, device=device, dtype=dtype, generator=generator)
+            else:
+                noise = torch.randn(shape, device=device, dtype=dtype)
 
         if init_sigma != 1.0:
             noise = noise * init_sigma
@@ -1163,9 +1302,9 @@ class InferencePipeline:
                 # Audio: (batch, channels, time) or (batch, time)
                 output.audio = decoded
         
-        # If no decoded, check for raw output
+        # If no decoded, check for raw output (output, image — §11.5 N2 non-diffusion contract)
         if output.images is None and output.audio is None and output.video is None:
-            out_tensor = raw.get("output")
+            out_tensor = raw.get("output") or raw.get("image")
             if isinstance(out_tensor, torch.Tensor):
                 if out_tensor.dim() == 4:
                     output.images = self._tensor_to_images(out_tensor)
@@ -1223,10 +1362,11 @@ class TrainingPipeline:
         train_pipe.save_checkpoint("checkpoints/sd15_lora")
     """
 
-    def __init__(self, graph, *, train_nodes=None, train_stages=None, device=None, **config):
+    def __init__(self, graph, *, train_nodes=None, freeze_nodes=None, train_stages=None, device=None, **config):
         from yggdrasil.core.graph.graph import ComputeGraph
         self.graph: ComputeGraph = graph
         self.train_nodes = train_nodes or []
+        self.freeze_nodes = freeze_nodes  # T2: if set, train all nodes except these
         self.train_stages = train_stages  # for multi-stage; reserved
         self._config = config
         if device is not None:
@@ -1238,6 +1378,7 @@ class TrainingPipeline:
         model_id: str,
         *,
         train_nodes=None,
+        freeze_nodes=None,
         train_stages=None,
         device=None,
         **kwargs,
@@ -1251,7 +1392,7 @@ class TrainingPipeline:
             from yggdrasil.hub import resolve_model
             template_name, template_kwargs = resolve_model(model_id)
             graph = ComputeGraph.from_template(template_name, **template_kwargs)
-        return cls(graph, train_nodes=train_nodes, train_stages=train_stages, device=device)
+        return cls(graph, train_nodes=train_nodes, freeze_nodes=freeze_nodes, train_stages=train_stages, device=device)
 
     @classmethod
     def from_template(
@@ -1259,6 +1400,7 @@ class TrainingPipeline:
         template_name: str,
         *,
         train_nodes=None,
+        freeze_nodes=None,
         train_stages=None,
         device=None,
         **kwargs,
@@ -1279,19 +1421,43 @@ class TrainingPipeline:
             default = graph.metadata.get("default_train_nodes")
             if default is not None:
                 train_nodes = default if isinstance(default, (list, tuple)) else [default]
-        return cls(graph, train_nodes=train_nodes, train_stages=train_stages, device=device)
+        return cls(graph, train_nodes=train_nodes, freeze_nodes=freeze_nodes, train_stages=train_stages, device=device)
 
     @classmethod
-    def from_config(cls, path: str, *, train_nodes=None, train_stages=None, device=None, **overrides) -> "TrainingPipeline":
+    def from_config(cls, path: str, *, train_nodes=None, freeze_nodes=None, train_stages=None, device=None, **overrides) -> "TrainingPipeline":
         """Build training pipeline from YAML/JSON config."""
         from yggdrasil.core.graph.graph import ComputeGraph
         graph = ComputeGraph.from_yaml(path)
-        return cls(graph, train_nodes=train_nodes, train_stages=train_stages, device=device, **overrides)
+        return cls(graph, train_nodes=train_nodes, freeze_nodes=freeze_nodes, train_stages=train_stages, device=device, **overrides)
 
     @classmethod
-    def from_graph(cls, graph, *, train_nodes=None, train_stages=None, device=None, **config) -> "TrainingPipeline":
+    def from_graph(cls, graph, *, train_nodes=None, freeze_nodes=None, train_stages=None, device=None, **config) -> "TrainingPipeline":
         """Build training pipeline from an existing ComputeGraph."""
-        return cls(graph, train_nodes=train_nodes, train_stages=train_stages, device=device, **config)
+        return cls(graph, train_nodes=train_nodes, freeze_nodes=freeze_nodes, train_stages=train_stages, device=device, **config)
+
+    @classmethod
+    def from_spec(
+        cls,
+        spec: Union[Any, str, Path],
+        *,
+        train_nodes=None,
+        freeze_nodes=None,
+        train_stages=None,
+        device=None,
+        **kwargs,
+    ) -> "TrainingPipeline":
+        """Unified entry point: create training pipeline from graph or config path (§11.7 P4).
+
+        Dispatches by type: ComputeGraph -> from_graph(spec); str | Path -> from_config(spec).
+        """
+        from yggdrasil.core.graph.graph import ComputeGraph
+        if isinstance(spec, ComputeGraph):
+            return cls.from_graph(spec, train_nodes=train_nodes, freeze_nodes=freeze_nodes, train_stages=train_stages, device=device, **kwargs)
+        if isinstance(spec, (str, Path)):
+            return cls.from_config(str(spec), train_nodes=train_nodes, freeze_nodes=freeze_nodes, train_stages=train_stages, device=device, **kwargs)
+        raise TypeError(
+            f"TrainingPipeline.from_spec(spec) expects ComputeGraph or path; got {type(spec).__name__}"
+        )
 
     def train(
         self,
@@ -1323,9 +1489,12 @@ class TrainingPipeline:
             # Combined pipeline: train_stages = [0, 1] -> train first two stage nodes
             names = list(self.graph.nodes.keys())
             train_nodes = [names[i] for i in self.train_stages if 0 <= i < len(names)]
-        if not train_nodes:
+        if not train_nodes and self.freeze_nodes is None:
             train_nodes = list(self.graph.nodes)
-        trainer = GraphTrainer(graph=self.graph, train_nodes=train_nodes, config=cfg)
+        if self.freeze_nodes is not None:
+            trainer = GraphTrainer(graph=self.graph, freeze_nodes=self.freeze_nodes, config=cfg)
+        else:
+            trainer = GraphTrainer(graph=self.graph, train_nodes=train_nodes or [], config=cfg)
         trainer.train(dataset, **kwargs)
         self._trainer = trainer
         return self
