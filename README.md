@@ -43,7 +43,7 @@ python -m yggdrasil ui  # то же через модуль
 
 Дополнительные зависимости (обучение, LoRA, графы):
 ```bash
-pip install yggdrasil[full]   # networkx, safetensors, peft, torchvision, ...
+pip install yggdrasil[full]   # safetensors, peft, torchvision, ...
 pip install yggdrasil[train]  # для обучения
 pip install yggdrasil[dev]    # pytest, ruff, mypy
 ```
@@ -62,7 +62,7 @@ YggDrasil/
 │   │   ├── registry.py            # @register_block("category/name") + auto-discovery
 │   │   ├── builder.py             # BlockBuilder.build(config) → рекурсивная сборка графа
 │   │   ├── slot.py                # Slot (имя, тип, multiple=True, optional=True)
-│   │   └── graph.py               # BlockGraph (визуализация, валидация зависимостей)
+│   │   └── port.py                # Port, TensorSpec, InputPort, OutputPort
 │   │
 │   ├── diffusion/                 # Математические Lego-блоки процесса
 │   │   ├── process.py             # AbstractDiffusionProcess (forward, reverse_step)

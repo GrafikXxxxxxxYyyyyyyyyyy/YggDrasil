@@ -64,7 +64,6 @@ Documentation = "https://github.com/your-org/YggDrasil#readme"
 [project.optional-dependencies]
 # Полная установка со всеми зависимостями
 full = [
-    "networkx>=3.0",        # Для BlockGraph
     "torchvision>=0.18.0",  # Для ImageFolderSource
     "safetensors>=0.4.0",
     "scipy>=1.12.0",

@@ -32,7 +32,7 @@ YggDrasil — универсальный модульный фреймворк �
 ### 1.3 Зависимости
 
 - **Ядро:** Python ≥3.10, PyTorch ≥2.3, diffusers, transformers, accelerate, omegaconf, FastAPI, Gradio.
-- **Опционально:** full (networkx, safetensors, peft, torchvision и др.), train (wandb, tensorboard), dev (pytest, ruff, mypy).
+- **Опционально:** full (safetensors, peft, torchvision и др.), train (wandb, tensorboard), dev (pytest, ruff, mypy).
 - **Примечание:** В `pyproject.toml` упоминается `requirements-klein.txt` для FLUX.2 [klein]; файл в репозитории удалён (D).
 
 ---

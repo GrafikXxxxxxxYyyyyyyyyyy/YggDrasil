@@ -5,7 +5,6 @@ from .registry import register_block, get_block_class, list_blocks, BlockRegistr
 from .slot import Slot
 from .port import Port, TensorSpec, InputPort, OutputPort, PortValidator
 from .builder import BlockBuilder
-from .graph import BlockGraph
 
 __all__ = [
     "AbstractBaseBlock",
@@ -20,5 +19,4 @@ __all__ = [
     "OutputPort",
     "PortValidator",
     "BlockBuilder",
-    "BlockGraph",
 ]

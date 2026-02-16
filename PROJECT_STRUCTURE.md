@@ -152,13 +152,6 @@ This document describes the full structure of the YggDrasil project: every file,
 
 ---
 
-### `yggdrasil/core/block/graph.py`
-**Purpose:** Block-level graph (legacy `BlockGraph`).
-
-**Role:** Visualizes and validates slot-based dependencies between blocks (before ComputeGraph).
-
----
-
 ## `yggdrasil/core/diffusion/` — Diffusion Process
 
 ### `yggdrasil/core/diffusion/process.py`
@@ -296,13 +289,6 @@ This document describes the full structure of the YggDrasil project: every file,
 **Purpose:** Executes `ComputeGraph`.
 
 **Role:** Topological sort, gather inputs from cache and graph inputs, call `block.process(**inputs)`, cache outputs. Supports `execute_training()` (with gradients), callbacks, strict port validation, optional cache invalidation.
-
----
-
-### `yggdrasil/core/graph/compiler.py`
-**Purpose:** Graph compilation / optimization (if present).
-
-**Role:** Preprocessing before execution (e.g. fusion, constant folding).
 
 ---
 
