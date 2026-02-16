@@ -42,6 +42,7 @@ class UNet2DBatchedCFGBackbone(AbstractBackbone):
             "timestep": InputPort("timestep", data_type="tensor", description="Timestep"),
             "condition": InputPort("condition", data_type="dict", description="Condition embeddings (positive)"),
             "uncond": InputPort("uncond", data_type="dict", description="Unconditional embeddings (negative)"),
+            "image_prompt_embeds": InputPort("image_prompt_embeds", data_type="any", optional=True, description="IP-Adapter image embeddings (batch, num_tokens, dim)"),
             "adapter_features": InputPort("adapter_features", data_type="any", optional=True, description="ControlNet/Adapter residuals (dict or tuple)"),
             "output": OutputPort("output", spec=TensorSpec(space="latent"), description="Guided noise prediction"),
         }
@@ -86,10 +87,19 @@ class UNet2DBatchedCFGBackbone(AbstractBackbone):
         if timestep_2.dim() == 0:
             timestep_2 = timestep_2.unsqueeze(0)
 
+        # IP-Adapter: pass (text_embeds, image_embeds) so diffusers IPAdapterAttnProcessor2_0 can use them
+        image_embeds = port_inputs.get("image_prompt_embeds")
+        if image_embeds is not None:
+            image_embeds = image_embeds.to(device=model_device, dtype=model_dtype)
+            image_embeds_2 = torch.cat([image_embeds, image_embeds], dim=0)  # same for [uncond, cond]
+            encoder_hidden_states = (emb_2, image_embeds_2)
+        else:
+            encoder_hidden_states = emb_2
+
         unet_kw = dict(
             sample=latent_2,
             timestep=timestep_2,
-            encoder_hidden_states=emb_2,
+            encoder_hidden_states=encoder_hidden_states,
             return_dict=False,
         )
         if added_cond is not None and added_uncond is not None:
@@ -97,22 +107,39 @@ class UNet2DBatchedCFGBackbone(AbstractBackbone):
             time_ids_2 = torch.cat([added_uncond["time_ids"], added_cond["time_ids"]], dim=0)
             unet_kw["added_cond_kwargs"] = {"text_embeds": text_embeds_2.to(model_device), "time_ids": time_ids_2.to(model_device)}
         # ControlNet/Adapter: same residuals for both batch halves (uncond and cond)
+        # Multiple ControlNets: adapter_features can be a list of dicts (sum residuals)
         af = port_inputs.get("adapter_features")
         if af is not None:
-            # Unwrap if adapter passed full block output with "output" key
-            if isinstance(af, dict) and "output" in af and isinstance(af["output"], dict):
-                af = af["output"]
-            if isinstance(af, dict):
-                down_res = af.get("down_block_additional_residuals")
-                if down_res is None:
-                    down_res = af.get("down_block_residuals")
-                mid_res = af.get("mid_block_additional_residual")
-                if mid_res is None:
-                    mid_res = af.get("mid_block_residual")
-            elif isinstance(af, (tuple, list)) and len(af) >= 2:
-                down_res, mid_res = af[0], af[1]
+            if isinstance(af, list) and af and isinstance(af[0], dict):
+                # Multiple ControlNets: sum residuals element-wise (same as unet_2d_condition)
+                all_down = []
+                all_mid = []
+                for a in af:
+                    out = a.get("output") if isinstance(a.get("output"), dict) else a
+                    d = out.get("down_block_additional_residuals") or out.get("down_block_residuals")
+                    m = out.get("mid_block_additional_residual") or out.get("mid_block_residual")
+                    if d is not None:
+                        all_down.append(d if isinstance(d, (list, tuple)) else [d])
+                    if m is not None:
+                        all_mid.append(m)
+                down_res = None
+                if all_down:
+                    down_res = [torch.stack(list(t)).sum(dim=0) for t in zip(*all_down)]
+                mid_res = torch.stack(all_mid).sum(dim=0) if len(all_mid) > 1 else (all_mid[0] if all_mid else None)
             else:
-                down_res, mid_res = None, None
+                if isinstance(af, dict) and "output" in af and isinstance(af["output"], dict):
+                    af = af["output"]
+                if isinstance(af, dict):
+                    down_res = af.get("down_block_additional_residuals")
+                    if down_res is None:
+                        down_res = af.get("down_block_residuals")
+                    mid_res = af.get("mid_block_additional_residual")
+                    if mid_res is None:
+                        mid_res = af.get("mid_block_residual")
+                elif isinstance(af, (tuple, list)) and len(af) >= 2 and not (af and isinstance(af[0], dict)):
+                    down_res, mid_res = af[0], af[1]
+                else:
+                    down_res, mid_res = None, None
             # Ensure down_res is a sequence (list/tuple), not a single tensor (avoid bool(tensor))
             if isinstance(down_res, torch.Tensor):
                 down_res = [down_res]

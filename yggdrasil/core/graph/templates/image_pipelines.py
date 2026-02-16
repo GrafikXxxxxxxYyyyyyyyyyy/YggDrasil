@@ -196,6 +196,7 @@ def _build_denoise_step_batched_cfg_euler(
     step.connect("backbone", "output", "solver", "model_output")
     step.expose_input("condition", "backbone", "condition")
     step.expose_input("uncond", "backbone", "uncond")
+    step.expose_input("image_prompt_embeds", "backbone", "image_prompt_embeds")
     step.expose_input("next_timestep", "solver", "next_timestep")
     step.expose_output("next_latents", "solver", "next_latents")
     step.expose_output("latents", "solver", "next_latents")
@@ -576,6 +577,14 @@ class DenoiseLoopSDXLBlock(AbstractBaseBlock):
     def declare_io(cls) -> Dict[str, Port]:
         from yggdrasil.core.graph.subgraph import LoopSubGraph
         return LoopSubGraph.declare_io()
+
+    @property
+    def num_iterations(self) -> int:
+        return self._loop.num_iterations
+
+    @num_iterations.setter
+    def num_iterations(self, value: int) -> None:
+        self._loop.num_iterations = value
 
     def process(self, **port_inputs: Any) -> Dict[str, Any]:
         return self._loop.process(**port_inputs)

@@ -2,6 +2,7 @@
 
 Used by image-conditioned pipelines (I2V, image variation, etc.)
 """
+import logging
 import torch
 import torch.nn as nn
 from typing import Dict, Any
@@ -47,8 +48,16 @@ class CLIPVisionConditioner(AbstractConditioner):
     def _build_model(self):
         try:
             from transformers import CLIPVisionModelWithProjection, CLIPImageProcessor
-            self._model = CLIPVisionModelWithProjection.from_pretrained(self.pretrained)
-            self._processor = CLIPImageProcessor.from_pretrained(self.pretrained)
+            # Full CLIP (openai/clip-vit-large-patch14) has text+vision; we load only vision, so text keys
+            # are "unexpected" — suppress the load report to avoid noisy logs.
+            log = logging.getLogger("transformers")
+            old_level = log.level
+            log.setLevel(logging.ERROR)
+            try:
+                self._model = CLIPVisionModelWithProjection.from_pretrained(self.pretrained)
+                self._processor = CLIPImageProcessor.from_pretrained(self.pretrained)
+            finally:
+                log.setLevel(old_level)
             self._model.requires_grad_(False)
         except Exception:
             self._model = None

@@ -7,10 +7,76 @@ adapter_features. Исходные данные для адаптера можн
 """
 from __future__ import annotations
 
+import torch.nn.functional as F
 from typing import Any, Dict, Optional, Tuple, Union
 
 from .graph import ComputeGraph
 from ..block.builder import BlockBuilder
+
+
+def set_ip_adapter_processors_on_unet(unet: Any, scale: float = 0.6, num_tokens: Tuple[int, ...] = (4,)) -> None:
+    """Set diffusers UNet attention processors to IP-Adapter type so (text_embeds, image_embeds) are used.
+
+    Call this when the graph has an IP-Adapter node and the backbone will receive image_prompt_embeds.
+    Without this, the UNet would ignore the image part of encoder_hidden_states.
+    """
+    from diffusers.models.attention_processor import IPAdapterAttnProcessor, IPAdapterAttnProcessor2_0
+
+    attn_procs = {}
+    cross_attention_dim = getattr(unet.config, "cross_attention_dim", 2048)
+    block_out_channels = list(getattr(unet.config, "block_out_channels", [320, 640, 1280, 1280]))
+
+    for name in unet.attn_processors.keys():
+        is_cross = not name.endswith("attn1.processor") and "motion_modules" not in name
+        if not is_cross:
+            attn_procs[name] = unet.attn_processors[name].__class__()
+            continue
+        if name.startswith("mid_block"):
+            hidden_size = block_out_channels[-1]
+        elif name.startswith("up_blocks"):
+            # name is e.g. "up_blocks.0.attentions.0.transformer_blocks.0.attn2.processor"
+            block_id = int(name.split(".", 2)[1])
+            hidden_size = list(reversed(block_out_channels))[block_id]
+        elif name.startswith("down_blocks"):
+            block_id = int(name.split(".", 2)[1])
+            hidden_size = block_out_channels[block_id]
+        else:
+            attn_procs[name] = unet.attn_processors[name].__class__()
+            continue
+        processor_class = (
+            IPAdapterAttnProcessor2_0
+            if hasattr(F, "scaled_dot_product_attention")
+            else IPAdapterAttnProcessor
+        )
+        attn_procs[name] = processor_class(
+            hidden_size=hidden_size,
+            cross_attention_dim=cross_attention_dim,
+            num_tokens=num_tokens,
+            scale=scale,
+        )
+    unet.set_attn_processor(attn_procs)
+    # New processors are created in float32; UNet is often float16. Align dtype/device so matmuls don't fail.
+    first_param = next(unet.parameters(), None)
+    if first_param is not None and unet.attn_processors:
+        _device, _dtype = first_param.device, first_param.dtype
+        for _proc in unet.attn_processors.values():
+            if hasattr(_proc, "to"):
+                _proc.to(device=_device, dtype=_dtype)
+
+
+def set_ip_adapter_scale_on_unet(unet: Any, scale: float) -> None:
+    """Set IP-Adapter strength (0..1+) on all IP-Adapter attention processors of a diffusers UNet.
+
+    Call this before each generation if you want to change strength per call (e.g. pipe(..., ip_adapter_scale=0.9)).
+    """
+    from diffusers.models.attention_processor import IPAdapterAttnProcessor, IPAdapterAttnProcessor2_0
+
+    if not getattr(unet, "attn_processors", None):
+        return
+    for proc in unet.attn_processors.values():
+        if isinstance(proc, (IPAdapterAttnProcessor, IPAdapterAttnProcessor2_0)):
+            n = len(proc.scale) if isinstance(proc.scale, (list, tuple)) else 1
+            proc.scale = [scale] * n
 
 
 # Тип "источник по ссылке": (имя_узла, имя_порта)
@@ -36,6 +102,8 @@ def add_controlnet_to_graph(
     conditioning_scale: float = 1.0,
     fp16: bool = True,
     control_image_source: Optional[SourceRef] = None,
+    denoise_loop_node: str = "denoise_loop",
+    controlnet_block: Optional[Any] = None,
     **controlnet_kwargs: Any,
 ) -> ComputeGraph:
     """Добавить ControlNet как отдельный блок к существующему графу.
@@ -67,16 +135,15 @@ def add_controlnet_to_graph(
         graph.connect("source_image", "canny", "image")  # или expose_input
         add_controlnet_to_graph(graph, control_image_source=("canny", "output"))
     """
-    if "denoise_loop" not in graph.nodes:
-        raise ValueError("Graph must have a 'denoise_loop' node (LoopSubGraph)")
+    if denoise_loop_node not in graph.nodes:
+        raise ValueError(f"Graph must have node '{denoise_loop_node}' (LoopSubGraph)")
 
-    loop = graph.nodes["denoise_loop"]
-    if not hasattr(loop, "graph") or loop.graph is None:
-        raise ValueError("denoise_loop must be a LoopSubGraph with an inner graph")
-
-    inner = loop.graph
-    if "controlnet" in inner.nodes:
-        return graph  # already has ControlNet
+    loop = graph.nodes[denoise_loop_node]
+    inner = getattr(loop, "graph", None) or (
+        getattr(loop, "_loop", None) and getattr(loop._loop, "graph", None)
+    )
+    if inner is None:
+        raise ValueError(f"'{denoise_loop_node}' must have an inner graph (.graph or ._loop.graph)")
 
     if "backbone" not in inner.nodes:
         raise ValueError("Inner graph must have a 'backbone' node")
@@ -85,29 +152,52 @@ def add_controlnet_to_graph(
     if not _backbone_supports_adapters(backbone):
         return graph  # skip: DiT/WAN etc. do not support adapter_features
 
-    config = {
-        "type": "adapter/controlnet",
-        "pretrained": controlnet_pretrained,
-        "conditioning_scale": conditioning_scale,
-        "fp16": fp16,
-        **controlnet_kwargs,
-    }
-    controlnet = BlockBuilder.build(config)
-    inner.add_node("controlnet", controlnet)
+    # Multiple ControlNets: name nodes controlnet, controlnet_1, controlnet_2, ...
+    prefix = "controlnet_"
+    existing = [n for n in inner.nodes if n == "controlnet" or (n.startswith(prefix) and n[len(prefix):].isdigit())]
+    if not existing:
+        node_name = "controlnet"
+    else:
+        indices = [0]
+        for n in existing:
+            if n.startswith(prefix) and n[len(prefix):].isdigit():
+                indices.append(int(n[len(prefix):]))
+        node_name = f"controlnet_{max(indices) + 1}" if any(n != "controlnet" for n in existing) else "controlnet_1"
 
-    inner.expose_input("control_image", "controlnet", "control_image")
-    inner.expose_input("condition", "controlnet", "encoder_hidden_states")
-    inner.expose_input("latents", "controlnet", "sample")
-    inner.expose_input("timestep", "controlnet", "timestep")
-    inner.connect("controlnet", "output", "backbone", "adapter_features")
+    if controlnet_block is not None:
+        controlnet = controlnet_block
+    else:
+        config = {
+            "type": "adapter/controlnet",
+            "pretrained": controlnet_pretrained,
+            "conditioning_scale": conditioning_scale,
+            "fp16": fp16,
+            **controlnet_kwargs,
+        }
+        controlnet = BlockBuilder.build(config)
+    inner.add_node(node_name, controlnet)
+
+    # Unique graph input per ControlNet: control_image (first, backward compat), control_image_<node_name> (others)
+    control_type = getattr(controlnet, "control_type", "canny")
+    if node_name == "controlnet":
+        input_name = "control_image"  # backward compat: single ControlNet
+    else:
+        # e.g. control_image_controlnet_1 so pipeline can pass by list order or dict by key
+        input_name = f"control_image_{node_name}"
+
+    inner.expose_input(input_name, node_name, "control_image")
+    inner.expose_input("condition", node_name, "encoder_hidden_states")
+    inner.expose_input("latents", node_name, "sample")
+    inner.expose_input("timestep", node_name, "timestep")
+    inner.connect(node_name, "output", "backbone", "adapter_features")
 
     if control_image_source is not None:
         src_node, src_port = control_image_source
         if src_node not in graph.nodes:
             raise ValueError(f"control_image_source node '{src_node}' not found in graph")
-        graph.connect(src_node, src_port, "denoise_loop", "control_image")
+        graph.connect(src_node, src_port, denoise_loop_node, input_name)
     else:
-        graph.expose_input("control_image", "denoise_loop", "control_image")
+        graph.expose_input(input_name, denoise_loop_node, input_name)
     return graph
 
 

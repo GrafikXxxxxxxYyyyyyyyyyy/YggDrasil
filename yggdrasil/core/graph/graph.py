@@ -38,6 +38,14 @@ class Edge:
         return f"{self.src_node}.{self.src_port} -> {self.dst_node}.{self.dst_port}"
 
 
+class _DeferredPlaceholder:
+    """Placeholder for a node whose block is built later (in parallel) in to(device)."""
+    __slots__ = ("block_type",)
+
+    def __init__(self, block_type: str):
+        self.block_type = block_type
+
+
 # ---------------------------------------------------------------------------
 # ComputeGraph — DAG
 # ---------------------------------------------------------------------------
@@ -75,6 +83,8 @@ class ComputeGraph:
         # Device tracking
         self._device: Any = None
         self._dtype: Any = None
+        # Deferred building: (node_name, cfg, target_inner). target_inner None = top-level; str = add to that node's inner graph.
+        self._deferred: List[Tuple[str, Dict[str, Any], Optional[str]]] = []
     
     # ==================== DEVICE MANAGEMENT ====================
     
@@ -82,6 +92,7 @@ class ComputeGraph:
         """Перенести весь граф на устройство.
         
         Рекурсивно переносит все узлы, включая вложенные SubGraph.
+        Если есть отложенные узлы (UNet, VAE), сначала собирает их параллельно.
         
         Когда dtype=None (по умолчанию), каждый блок сохраняет свой
         оригинальный dtype. Это позволяет UNet оставаться в float16
@@ -96,23 +107,147 @@ class ComputeGraph:
         Returns:
             self (для chaining).
         """
+        import os
         import torch
-        
+
         if isinstance(device, str):
             device = torch.device(device)
-        
+
         self._device = device
         self._dtype = dtype  # None means "keep original per-block dtype"
-        
-        # Move all nodes recursively
+
+        # На CUDA уменьшаем фрагментацию (см. PyTorch Memory Management)
+        if device.type == "cuda":
+            if "PYTORCH_ALLOC_CONF" not in os.environ:
+                os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
+
+        def _maybe_empty_cache():
+            if device.type == "cuda" and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        # Build deferred (heavy) blocks in parallel before moving to device
+        if self._deferred:
+            self._materialize_deferred()
+
+        # Переносим узлы по одному и после каждого сбрасываем кэш CUDA — меньше шанс OOM из‑за фрагментации
         for name, block in self.nodes.items():
             self._move_block(block, device, dtype)
+            _maybe_empty_cache()
             # Recurse into SubGraphs (LoopSubGraph, SubGraph)
             if hasattr(block, 'graph') and block.graph is not None:
                 block.graph.to(device, dtype)
-        
+                _maybe_empty_cache()
+            # Recurse into wrapper blocks that hold _loop (e.g. DenoiseLoopSDXLBlock)
+            if hasattr(block, '_loop') and block._loop is not None:
+                self._move_block(block._loop, device, dtype)
+                _maybe_empty_cache()
+                if hasattr(block._loop, 'graph') and getattr(block._loop, 'graph', None) is not None:
+                    block._loop.graph.to(device, dtype)
+                    _maybe_empty_cache()
+
         return self
-    
+
+    def _materialize_deferred(self) -> None:
+        """Build all deferred blocks in parallel (UNet, VAE, IP-Adapter, ControlNet), then replace/wire."""
+        if not self._deferred:
+            return
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from yggdrasil.core.block.builder import BlockBuilder
+
+        # Normalize to 3-tuple (node_name, cfg, target_inner)
+        items = []
+        for item in self._deferred:
+            if len(item) == 2:
+                items.append((item[0], item[1], None))
+            else:
+                items.append(item)
+
+        top_level = [(n, c) for n, c, t in items if t is None]
+        adapters = [(n, c, t) for n, c, t in items if t is not None]
+        # IP-Adapter must be built after encoder so image_embed_dim matches encoder output (e.g. 768 for ViT-L, 1024 for ViT-H)
+        ip_adapter_top = [(n, c) for n, c in top_level if (c.get("type") or c.get("block_type")) == "adapter/ip_adapter"]
+        other_top = [(n, c) for n, c in top_level if (c.get("type") or c.get("block_type")) != "adapter/ip_adapter"]
+
+        def build_one(node_name: str, cfg: Dict) -> Any:
+            block_type = (cfg.get("type") or cfg.get("block_type") or "")
+            if block_type.startswith("loop/"):
+                print("  Loading denoise loop (UNet)...", flush=True)
+            elif block_type.startswith("codec/"):
+                print("  Loading VAE (codec)...", flush=True)
+            elif block_type == "adapter/ip_adapter":
+                print("  Loading IP-Adapter...", flush=True)
+            elif block_type == "adapter/controlnet":
+                print("  Loading ControlNet...", flush=True)
+            return BlockBuilder.build(cfg)
+
+        print("Loading pipeline weights in parallel (one-time)...", flush=True)
+        max_workers = min(4, len(other_top) + len(adapters) + (1 if ip_adapter_top else 0))
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            # Phase 1: build top-level except IP-Adapter (loop, codec)
+            built_top = {}
+            if other_top:
+                futures = {pool.submit(build_one, n, c): n for n, c in other_top}
+                for fut in as_completed(futures):
+                    node_name = futures[fut]
+                    built_top[node_name] = fut.result()
+            for node_name, block in built_top.items():
+                self.nodes[node_name] = block
+
+            # IP-Adapter: build encoder first to get image_embed_dim, then build adapter with that dim and wire
+            for node_name, cfg in ip_adapter_top:
+                encoder_pretrained = cfg.get("image_encoder_pretrained") or cfg.get("pretrained") or "openai/clip-vit-large-patch14"
+                print("  Loading IP-Adapter image encoder (CLIP vision)...", flush=True)
+                encoder = BlockBuilder.build({"type": "conditioner/clip_vision", "pretrained": encoder_pretrained})
+                image_embed_dim = getattr(encoder, "embedding_dim", None) or (
+                    768 if "clip-vit-large" in str(encoder_pretrained) else 1024
+                )
+                base = (self.metadata or {}).get("base_model", "")
+                cross_attention_dim = cfg.get("cross_attention_dim") or (
+                    2048 if (base == "sdxl" or "sdxl" in (base or "").lower()) else 768
+                )
+                ip_cfg = {k: v for k, v in cfg.items() if k not in ("image_encoder_pretrained", "pretrained")}
+                ip_cfg["type"] = "adapter/ip_adapter"
+                ip_cfg["image_embed_dim"] = image_embed_dim
+                ip_cfg.setdefault("cross_attention_dim", cross_attention_dim)
+                print("  Loading IP-Adapter...", flush=True)
+                ip_adapter = BlockBuilder.build(ip_cfg)
+                encoder_name = "ip_image_encoder"
+                if encoder_name in self.nodes:
+                    encoder_name = f"{encoder_name}_{len(self.nodes)}"
+                self.nodes[encoder_name] = encoder
+                self.nodes[node_name] = ip_adapter
+                self.connect(encoder_name, "embedding", node_name, "image_features")
+                self.expose_input("ip_image", encoder_name, "raw_condition")
+
+                # Wire IP-Adapter output into denoise loop and inject processors into UNet
+                denoise_loop_node = None
+                for n, block in self.nodes.items():
+                    if getattr(block, "block_type", "").startswith("loop/") or hasattr(block, "graph") or (hasattr(block, "_loop") and getattr(block._loop, "graph", None)):
+                        denoise_loop_node = n
+                        break
+                if denoise_loop_node:
+                    self.connect(node_name, "image_prompt_embeds", denoise_loop_node, "image_prompt_embeds")
+                    inner = getattr(self.nodes[denoise_loop_node], "graph", None) or (getattr(self.nodes[denoise_loop_node], "_loop", None) and getattr(self.nodes[denoise_loop_node]._loop, "graph", None))
+                    if inner and "backbone" in inner.nodes:
+                        backbone = inner.nodes["backbone"]
+                        unet = getattr(backbone, "unet", None)
+                        if unet is not None and hasattr(unet, "set_attn_processor"):
+                            from .adapters import set_ip_adapter_processors_on_unet
+                            scale = float(cfg.get("scale", 0.6))
+                            set_ip_adapter_processors_on_unet(unet, scale=scale)
+
+            # Phase 2: build adapters (controlnet) and add to inner graph
+            for node_name, cfg, target_inner in adapters:
+                block = build_one(node_name, cfg)
+                from .adapters import add_controlnet_to_graph
+                add_controlnet_to_graph(
+                    self,
+                    controlnet_block=block,
+                    denoise_loop_node=target_inner,
+                )
+
+        self._deferred.clear()
+
     @staticmethod
     def _move_block(block, device, dtype):
         """Move a single block to device/dtype."""
@@ -173,10 +308,9 @@ class ComputeGraph:
             name: Уникальное имя узла.
             block: Готовый блок (режим 1).
             type: block_type из реестра (режимы 2–3).
-            auto_connect: Авто-подключение по роли при type=.
-            target_inner: Если задан (например "denoise_loop") — узел добавляется в .graph этого узла,
-                а graph_input роли пробрасывается как вход верхнего графа.
-            **config: Параметры для BlockBuilder (при type).
+            auto_connect: If True, wire by role (adapters) and run pipeline auto-wire (conditioner -> denoise_loop -> codec, expose inputs/outputs). Set False for custom pipelines and use connect/expose_input/expose_output manually.
+            target_inner: Опционально. Для ControlNet не задаётся — место подключения определяется автоматически.
+            **config: Параметры для BlockBuilder (pretrained= для ControlNet и для IP-Adapter image encoder и т.д.).
 
         Returns:
             self (для chaining).
@@ -191,6 +325,11 @@ class ComputeGraph:
 
         if type is None:
             raise ValueError("Either (name, block) or type=... required")
+        if not isinstance(type, str):
+            raise ValueError(
+                "type= must be a string (e.g. type='conditioner/clip_sdxl', type='adapter/controlnet'). "
+                "Do not use type=... (Ellipsis)."
+            )
 
         from yggdrasil.core.block.builder import BlockBuilder
         from yggdrasil.core.graph.role_rules import (
@@ -198,37 +337,78 @@ class ComputeGraph:
             get_connection_rules,
             get_default_config_for_block_type,
             resolve_inner_target_for_adapter,
+            resolve_loop_for_backbone,
         )
 
         if target_inner is None and type.startswith("adapter/"):
             target_inner = resolve_inner_target_for_adapter(self.nodes, type)
 
-        defaults = get_default_config_for_block_type(type, getattr(self, "metadata", None) or {})
-        cfg = {**defaults, **{k: v for k, v in config.items() if k not in ("target_inner", "image_encoder_pretrained")}}
+        meta = getattr(self, "metadata", None) or {}
+        defaults = get_default_config_for_block_type(type, meta)
+        config_filter = {"target_inner"}
+        if type != "adapter/ip_adapter":
+            config_filter.add("image_encoder_pretrained")
+        cfg = {**defaults, **{k: v for k, v in config.items() if k not in config_filter}}
         cfg["type"] = type
-        if target_inner and type == "adapter/controlnet" and target_inner == "denoise_loop":
-            from .adapters import add_controlnet_to_graph
-            add_controlnet_to_graph(
-                self,
-                controlnet_pretrained=cfg.get("pretrained", "diffusers/controlnet-canny-sdxl-1.0"),
-                conditioning_scale=cfg.get("conditioning_scale", 1.0),
-                fp16=cfg.get("fp16", True),
-            )
+        if type == "adapter/ip_adapter" and config.get("pretrained") and not cfg.get("image_encoder_pretrained"):
+            cfg["image_encoder_pretrained"] = config["pretrained"]
+        if type.startswith("loop/"):
+            cfg["num_steps"] = int(meta.get("default_num_steps", 50))
+            cfg["guidance_scale"] = float(meta.get("default_guidance_scale", 7.5))
+        resolved_loop = False
+        if target_inner is None and type.startswith("backbone/"):
+            resolved = resolve_loop_for_backbone(type, cfg, meta)
+            if resolved is not None:
+                type, cfg = resolved
+                resolved_loop = True
+        # ControlNet: target_inner auto-resolved; no need to pass it. Defer to load in parallel in to(device).
+        if type == "adapter/controlnet" and target_inner:
+            cfg_plain = OmegaConf.to_container(cfg, resolve=True) if hasattr(cfg, "to_container") else dict(cfg)
+            self._deferred.append(("controlnet", cfg_plain, target_inner))
+            if auto_connect:
+                from .pipeline_auto_wire import apply_pipeline_auto_wire
+                apply_pipeline_auto_wire(self)
             return self
-        ip_adapter_with_encoder = type == "adapter/ip_adapter" and cfg.get("image_encoder_pretrained") is not None
+        ip_adapter_with_encoder = type == "adapter/ip_adapter" and (cfg.get("image_encoder_pretrained") or cfg.get("pretrained"))
+        node_name = name or type.replace("/", "_").replace(".", "_")
+        if node_name in self.nodes:
+            node_name = f"{node_name}_{len(self.nodes)}"
+
+        # Defer heavy blocks (loop, codec, IP-Adapter) to load in parallel in to(device)
+        if not target_inner and (type.startswith("loop/") or type.startswith("codec/") or type == "adapter/ip_adapter"):
+            if type == "adapter/ip_adapter" and not ip_adapter_with_encoder:
+                pass  # no encoder config, build now
+            else:
+                cfg_plain = OmegaConf.to_container(cfg, resolve=True) if hasattr(cfg, "to_container") else dict(cfg)
+                self._deferred.append((node_name, cfg_plain, None))
+                self.nodes[node_name] = _DeferredPlaceholder(type)
+                if auto_connect:
+                    from .pipeline_auto_wire import apply_pipeline_auto_wire
+                    apply_pipeline_auto_wire(self)
+                return self
+
         if ip_adapter_with_encoder:
             block = None
         else:
             block = BlockBuilder.build(cfg)
-        node_name = name or type.replace("/", "_").replace(".", "_")
+            if resolved_loop and block is not None:
+                bt = getattr(block, "block_type", "")
+                if not (bt and bt.startswith("loop/")):
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "Backbone was resolved to loop but built block has block_type=%r; ensure BlockBuilder builds loop for type=%r",
+                        bt, cfg.get("type"),
+                    )
 
         if target_inner:
             if target_inner not in self.nodes:
                 raise ValueError(f"target_inner node '{target_inner}' not found")
             inner_block = self.nodes[target_inner]
-            if not hasattr(inner_block, "graph") or inner_block.graph is None:
-                raise ValueError(f"'{target_inner}' has no inner graph")
-            inner = inner_block.graph
+            inner = getattr(inner_block, "graph", None) or (
+                getattr(inner_block, "_loop", None) and getattr(inner_block._loop, "graph", None)
+            )
+            if inner is None:
+                raise ValueError(f"'{target_inner}' has no inner graph (need .graph or ._loop.graph)")
             if node_name in inner.nodes:
                 node_name = f"{node_name}_{len(inner.nodes)}"
             inner.nodes[node_name] = block
@@ -278,6 +458,8 @@ class ComputeGraph:
                         self.connect(node_name, out_port, target_node, target_port)
                     if graph_input:
                         self.expose_input(graph_input, node_name, in_port)
+            from .pipeline_auto_wire import apply_pipeline_auto_wire
+            apply_pipeline_auto_wire(self)
 
         return self
 
@@ -286,7 +468,7 @@ class ComputeGraph:
     ) -> None:
         """Add IP-Adapter plus image encoder in one go (BlockBuilder inside)."""
         from yggdrasil.core.block.builder import BlockBuilder
-        encoder_pretrained = config.get("image_encoder_pretrained", "openai/clip-vit-large-patch14")
+        encoder_pretrained = config.get("image_encoder_pretrained") or config.get("pretrained") or "openai/clip-vit-large-patch14"
         encoder = BlockBuilder.build({"type": "conditioner/clip_vision", "pretrained": encoder_pretrained})
         image_embed_dim = getattr(encoder, "embedding_dim", None) or (
             768 if "clip-vit-large" in str(encoder_pretrained) else 1024
@@ -633,6 +815,7 @@ class ComputeGraph:
         new_graph.metadata = dict(self.metadata)
         new_graph._device = self._device
         new_graph._dtype = self._dtype
+        new_graph._deferred = list(self._deferred)
         return new_graph
     
     # ==================== ВАЛИДАЦИЯ ====================
@@ -1400,12 +1583,18 @@ class ComputeGraph:
         return self
 
     def _iter_all_blocks(self):
-        """Итерация по ВСЕМ блокам, включая вложенные SubGraph."""
+        """Итерация по ВСЕМ блокам, включая вложенные SubGraph и блоки с _loop (e.g. DenoiseLoopSDXLBlock)."""
         for name, block in self.nodes.items():
             yield name, block
-            if hasattr(block, 'graph') and block.graph is not None:
+            if hasattr(block, "graph") and getattr(block, "graph", None) is not None:
                 for inner_name, inner_block in block.graph.nodes.items():
                     yield f"{name}.{inner_name}", inner_block
+            if hasattr(block, "_loop") and getattr(block, "_loop", None) is not None:
+                inner = block._loop
+                yield f"{name}._loop", inner
+                if hasattr(inner, "graph") and getattr(inner, "graph", None) is not None:
+                    for inner_name, inner_block in inner.graph.nodes.items():
+                        yield f"{name}.{inner_name}", inner_block
 
     def list_all_nodes_and_edges(self) -> Tuple[List[str], List[Tuple[str, str, str, str]]]:
         """Собрать все узлы и все соединения (включая вложенные графы).

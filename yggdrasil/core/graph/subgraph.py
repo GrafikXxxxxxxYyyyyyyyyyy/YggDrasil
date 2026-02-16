@@ -184,6 +184,8 @@ class LoopSubGraph(AbstractBaseBlock):
             "timesteps": InputPort("timesteps", data_type="tensor", optional=True, description="Массив таймстепов"),
             "condition": InputPort("condition", data_type="any", optional=True, description="Условия (тензор или словарь)"),
             "uncond": InputPort("uncond", data_type="any", optional=True, description="Null condition for CFG"),
+            "image_prompt_embeds": InputPort("image_prompt_embeds", data_type="any", optional=True, description="IP-Adapter image prompt embeddings (batch, num_tokens, cross_attn_dim)"),
+            "control_image": InputPort("control_image", data_type="any", optional=True, description="ControlNet conditioning image (canny, depth, etc.); for Canny use an edge map, not a raw photo"),
             "latents": OutputPort("latents", description="Финальные латенты"),
         }
     
@@ -225,7 +227,7 @@ class LoopSubGraph(AbstractBaseBlock):
         else:
             timesteps = timesteps.to(device)
         
-        executor = GraphExecutor(no_grad=True)
+        executor = GraphExecutor(no_grad=True, strict=False)
         
         iterator = enumerate(timesteps)
         if self.show_progress:
@@ -250,11 +252,14 @@ class LoopSubGraph(AbstractBaseBlock):
                 "next_timestep": next_t.to(dtype=torch.float32) if next_t.dtype in (torch.float32, torch.float16, torch.float64) else next_t,
                 "condition": condition,
             }
+            uncond = port_inputs.get("uncond")
+            if uncond is not None:
+                step_inputs["uncond"] = uncond
             if i == 0:
                 step_inputs["num_steps"] = len(timesteps)
             # Forward extra inputs (e.g. control_image for ControlNet) to inner graph every step
             for k, v in port_inputs.items():
-                if k not in ("initial_latents", "timesteps", "condition"):
+                if k not in ("initial_latents", "timesteps", "condition", "uncond"):
                     step_inputs[k] = v
             
             step_outputs = executor.execute(self.graph, **step_inputs)
