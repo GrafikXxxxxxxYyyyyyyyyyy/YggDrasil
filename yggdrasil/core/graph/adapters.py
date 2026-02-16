@@ -14,6 +14,20 @@ from .graph import ComputeGraph
 from ..block.builder import BlockBuilder
 
 
+def _cross_attention_dim_from_model_config(config: Any) -> Optional[int]:
+    """Универсально прочитать cross-attention размерность из config модели (UNet, Transformer, DiT и т.д.)."""
+    if config is None:
+        return None
+    dim = (
+        getattr(config, "cross_attention_dim", None)
+        or getattr(config, "encoder_hidden_size", None)
+        or getattr(config, "joint_attention_dim", None)
+        or getattr(config, "hidden_size", None)
+        or getattr(config, "text_embed_dim", None)
+    )
+    return int(dim) if dim is not None and isinstance(dim, (int, float)) else None
+
+
 def set_ip_adapter_processors_on_unet(unet: Any, scale: float = 0.6, num_tokens: Tuple[int, ...] = (4,)) -> None:
     """Set diffusers UNet attention processors to IP-Adapter type so (text_embeds, image_embeds) are used.
 
@@ -23,7 +37,7 @@ def set_ip_adapter_processors_on_unet(unet: Any, scale: float = 0.6, num_tokens:
     from diffusers.models.attention_processor import IPAdapterAttnProcessor, IPAdapterAttnProcessor2_0
 
     attn_procs = {}
-    cross_attention_dim = getattr(unet.config, "cross_attention_dim", 2048)
+    cross_attention_dim = _cross_attention_dim_from_model_config(getattr(unet, "config", None)) or 2048
     block_out_channels = list(getattr(unet.config, "block_out_channels", [320, 640, 1280, 1280]))
 
     for name in unet.attn_processors.keys():
@@ -56,12 +70,45 @@ def set_ip_adapter_processors_on_unet(unet: Any, scale: float = 0.6, num_tokens:
         )
     unet.set_attn_processor(attn_procs)
     # New processors are created in float32; UNet is often float16. Align dtype/device so matmuls don't fail.
+    # Skip when UNet is still on meta (lazy load): .to() would raise "Cannot copy out of meta tensor".
+    # Processors will be moved when the graph is moved to device (graph.to(device)).
     first_param = next(unet.parameters(), None)
     if first_param is not None and unet.attn_processors:
         _device, _dtype = first_param.device, first_param.dtype
+        if str(_device) == "meta" or getattr(_device, "type", None) == "meta":
+            pass
+        else:
+            try:
+                for _proc in unet.attn_processors.values():
+                    if hasattr(_proc, "to"):
+                        _proc.to(device=_device, dtype=_dtype)
+            except NotImplementedError as e:
+                if "meta" in str(e) or "Cannot copy out of meta" in str(e):
+                    pass
+                else:
+                    raise
+
+
+def ensure_ip_adapter_processors_on_device(unet: Any) -> None:
+    """Перенести процессоры IP-Adapter на устройство и dtype UNet (после graph.to(device)).
+
+    Вызывать после переноса графа на устройство: процессоры могли не перенестись, если UNet
+    при материализации был на meta. Без этого генерация может давать серый/поломанный вывод.
+    """
+    if not getattr(unet, "attn_processors", None):
+        return
+    first_param = next(unet.parameters(), None)
+    if first_param is None:
+        return
+    _device, _dtype = first_param.device, first_param.dtype
+    if str(_device) == "meta" or getattr(_device, "type", None) == "meta":
+        return
+    try:
         for _proc in unet.attn_processors.values():
             if hasattr(_proc, "to"):
                 _proc.to(device=_device, dtype=_dtype)
+    except NotImplementedError:
+        pass
 
 
 def set_ip_adapter_scale_on_unet(unet: Any, scale: float) -> None:
@@ -81,6 +128,45 @@ def set_ip_adapter_scale_on_unet(unet: Any, scale: float) -> None:
 
 # Тип "источник по ссылке": (имя_узла, имя_порта)
 SourceRef = Tuple[str, str]
+
+
+def get_cross_attention_dim_from_graph(graph: ComputeGraph) -> Optional[int]:
+    """Универсально получить cross_attention_dim из уже собранного backbone в графе.
+
+    Ищет узел-цикл (loop), внутри — backbone, затем модель (unet / transformer / _model)
+    и читает размерность из config. Подходит для любой диффузионной модели (SD 1.5, SDXL,
+    SD3, FLUX, WAN, Animate Diffusion, LDM и т.д.), если у модели в config есть одна из
+    типичных полей.
+
+    Returns:
+        cross_attention_dim или None, если backbone ещё не собран или атрибут не найден.
+    """
+    for _node_name, block in (graph.nodes or {}).items():
+        inner = None
+        if getattr(block, "block_type", "").startswith("loop/"):
+            inner = getattr(block, "graph", None) or (
+                getattr(block, "_loop", None) and getattr(block._loop, "graph", None)
+            )
+        if inner is None:
+            continue
+        inodes = getattr(inner, "nodes", {}) or {}
+        backbone = inodes.get("backbone")
+        if backbone is None:
+            for _n, b in inodes.items():
+                if getattr(b, "block_type", "").startswith("backbone/"):
+                    backbone = b
+                    break
+        if backbone is None:
+            continue
+        # Модель: unet (SD/UNet2D), transformer (FLUX, SD3), _model (общий запас)
+        model = getattr(backbone, "unet", None) or getattr(backbone, "transformer", None) or getattr(backbone, "_model", None)
+        if model is None:
+            continue
+        dim = _cross_attention_dim_from_model_config(getattr(model, "config", None))
+        if dim is not None:
+            return dim
+    return None
+
 
 # Backbone types that accept adapter_features (ControlNet/T2I residuals)
 _BACKBONE_TYPES_WITH_ADAPTER = (
@@ -104,6 +190,7 @@ def add_controlnet_to_graph(
     control_image_source: Optional[SourceRef] = None,
     denoise_loop_node: str = "denoise_loop",
     controlnet_block: Optional[Any] = None,
+    controlnet_node_name: Optional[str] = None,
     **controlnet_kwargs: Any,
 ) -> ComputeGraph:
     """Добавить ControlNet как отдельный блок к существующему графу.
@@ -152,17 +239,22 @@ def add_controlnet_to_graph(
     if not _backbone_supports_adapters(backbone):
         return graph  # skip: DiT/WAN etc. do not support adapter_features
 
-    # Multiple ControlNets: name nodes controlnet, controlnet_1, controlnet_2, ...
-    prefix = "controlnet_"
-    existing = [n for n in inner.nodes if n == "controlnet" or (n.startswith(prefix) and n[len(prefix):].isdigit())]
-    if not existing:
-        node_name = "controlnet"
+    # Имя узла: задано пользователем (controlnet_node_name) или controlnet, controlnet_1, ...
+    if controlnet_node_name:
+        node_name = controlnet_node_name
+        if node_name in inner.nodes:
+            node_name = f"{controlnet_node_name}_{len(inner.nodes)}"
     else:
-        indices = [0]
-        for n in existing:
-            if n.startswith(prefix) and n[len(prefix):].isdigit():
-                indices.append(int(n[len(prefix):]))
-        node_name = f"controlnet_{max(indices) + 1}" if any(n != "controlnet" for n in existing) else "controlnet_1"
+        prefix = "controlnet_"
+        existing = [n for n in inner.nodes if n == "controlnet" or (n.startswith(prefix) and n[len(prefix):].isdigit())]
+        if not existing:
+            node_name = "controlnet"
+        else:
+            indices = [0]
+            for n in existing:
+                if n.startswith(prefix) and n[len(prefix):].isdigit():
+                    indices.append(int(n[len(prefix):]))
+            node_name = f"controlnet_{max(indices) + 1}" if any(n != "controlnet" for n in existing) else "controlnet_1"
 
     if controlnet_block is not None:
         controlnet = controlnet_block
@@ -212,9 +304,15 @@ def add_ip_adapter_to_graph(
     """Добавить IP-Adapter к графу: блок кодирования изображения + IP-Adapter.
 
     Добавляет узел image_encoder (CLIP vision) и adapter/ip_adapter. Входное
-    изображение можно передать новым входом графа ``ip_image`` или по ссылке
-    (image_source=(node_name, port_name)). Для полной работы IP-Adapter backbone
-    должен поддерживать инъекцию (inject_into) или порт ip_adapter_embeds.
+    изображение передаётся входом графа ``ip_image`` или по ссылке
+    (image_source=(node_name, port_name)).
+
+    Поддержка нескольких изображений (multi-image):
+        - В pipeline: ip_image может быть один (Path/URL/PIL/tensor), список таких,
+          или словарь (словарь образов: ключ -> изображение).
+        - Граф ожидает ip_image в виде dict: {"image": один} или {"images": [img1, img2, ...]}.
+        - Энкодер выдаёт батч эмбеддингов; IP-Adapter объединяет их в один conditioning
+          (multi_image_mode: "mean" или "first").
 
     Args:
         graph: Граф с denoise_loop и backbone.
@@ -222,8 +320,8 @@ def add_ip_adapter_to_graph(
         image_source: Если задано (node_name, port_name) — изображение берётся
             с выхода узла. Иначе добавляется вход графа ip_image.
         image_encoder_pretrained: HF model ID для CLIP image encoder (по умолчанию из контекста).
-        cross_attention_dim: UNet cross-attention dim (768 SD 1.5, 2048 SDXL). Auto from graph.metadata["base_model"] if None.
-        **ip_adapter_kwargs: Доп. параметры для adapter/ip_adapter.
+        cross_attention_dim: Cross-attention dim модели. Если None — берётся из уже собранного backbone в графе (универсально для любой модели: SD, SDXL, SD3, FLUX, WAN и т.д.).
+        **ip_adapter_kwargs: Доп. параметры для adapter/ip_adapter (в т.ч. multi_image_mode: "mean" | "first").
 
     Returns:
         Тот же граф (in-place).
@@ -248,10 +346,14 @@ def add_ip_adapter_to_graph(
     if "image_embed_dim" in ip_adapter_kwargs:
         image_embed_dim = ip_adapter_kwargs.pop("image_embed_dim")
 
-    # cross_attention_dim: SD 1.5 = 768, SDXL = 2048 (infer from graph if not set)
+    # cross_attention_dim: универсально из собранного backbone в графе (любая модель)
     if cross_attention_dim is None:
-        base = (graph.metadata or {}).get("base_model", "")
-        cross_attention_dim = 2048 if (base == "sdxl" or "sdxl" in base.lower()) else 768
+        cross_attention_dim = get_cross_attention_dim_from_graph(graph)
+    if cross_attention_dim is None and "cross_attention_dim" not in ip_adapter_kwargs:
+        raise ValueError(
+            "IP-Adapter requires cross_attention_dim. Either build the backbone first (e.g. call graph.to(device) before adding IP-Adapter), "
+            "or pass cross_attention_dim=... when adding the adapter (e.g. from your model's config)."
+        )
     if "cross_attention_dim" in ip_adapter_kwargs:
         cross_attention_dim = ip_adapter_kwargs.pop("cross_attention_dim")
 

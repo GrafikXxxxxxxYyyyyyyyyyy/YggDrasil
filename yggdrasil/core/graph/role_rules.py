@@ -196,13 +196,12 @@ def resolve_loop_for_backbone(
     by_backbone = BACKBONE_TO_LOOP.get(backbone_type)
     if not by_backbone:
         return None
-    base = (meta.get("base_model") or "").lower()
-    if "sdxl" in base:
+    base = (meta.get("base_model") or meta.get("backbone_pretrained") or config.get("pretrained") or "").lower()
+    if "sdxl" in base or "xl" in base.split("/")[-1]:
         key = "sdxl"
-    elif "sd15" in base or "sd1.5" in base:
+    elif "sd15" in base or "sd1.5" in base or "v1-5" in base:
         key = "sd15"
     else:
-        # Default to sdxl so backbone is always wrapped when type is backbone/unet2d_condition
         key = "sdxl"
     if key not in by_backbone:
         return None

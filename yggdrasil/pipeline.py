@@ -59,6 +59,82 @@ def _pil_to_tensor(pil_img: Any) -> torch.Tensor:
     return t
 
 
+def _normalize_ip_image(
+    value: Any,
+) -> List[Any]:
+    """Normalize IP-Adapter input to a list of images (PIL or tensor).
+
+    Accepts:
+        - Single: Path, URL (str), PIL Image, tensor (3,H,W) or (1,3,H,W), or dict with "image"/"images".
+        - List/tuple: list of any of the above (paths, URLs, PILs, tensors).
+        - Dict (vocabulary): mapping of keys to images (e.g. {"style": url1, "face": url2}); values as above.
+
+    Returns:
+        List of PIL Images or tensors (already on correct device if tensor). Empty list if nothing valid.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        Image = None
+
+    def is_pil(x):
+        return Image is not None and hasattr(x, "size") and hasattr(x, "mode")
+
+    def is_tensor_img(x):
+        if not isinstance(x, torch.Tensor):
+            return False
+        return x.dim() in (3, 4) and x.shape[-3] == 3
+
+    def one_to_item(item: Any) -> Optional[Any]:
+        if item is None:
+            return None
+        if is_pil(item) or is_tensor_img(item):
+            return item
+        if isinstance(item, (str, Path)):
+            out = load_image_from_url_or_path(item)
+            return out
+        if isinstance(item, dict):
+            img = item.get("image") or (item.get("images") and item["images"][0])
+            return one_to_item(img) if img is not None else None
+        return None
+
+    if value is None:
+        return []
+    if isinstance(value, dict) and ("image" in value or "images" in value):
+        img = value.get("image")
+        imgs = value.get("images", [])
+        if img is not None and not isinstance(img, (list, tuple)):
+            v = one_to_item(img)
+            return [v] if v is not None else []
+        if isinstance(img, (list, tuple)):
+            imgs = img
+        if isinstance(imgs, (list, tuple)):
+            out = []
+            for i in imgs:
+                v = one_to_item(i)
+                if v is not None:
+                    out.append(v)
+            return out
+        return []
+    if isinstance(value, (list, tuple)):
+        out = []
+        for i in value:
+            v = one_to_item(i)
+            if v is not None:
+                out.append(v)
+        return out
+    if isinstance(value, dict):
+        # Vocabulary: key -> image
+        out = []
+        for v in value.values():
+            x = one_to_item(v)
+            if x is not None:
+                out.append(x)
+        return out
+    v = one_to_item(value)
+    return [v] if v is not None else []
+
+
 @dataclass
 class PipelineOutput:
     """Structured output from InferencePipeline execution.
@@ -447,8 +523,8 @@ class InferencePipeline:
             seed: Random seed for reproducibility
             batch_size: Number of outputs to generate
             control_image: For ControlNet: single image; or list of images (order must match graph: first = first ControlNet, second = second, …); or dict for any order — key by control_type (e.g. {"canny": url1, "depth": url2}) or by input name (e.g. {"control_image": url1, "control_image_controlnet_1": url2}).
-            controlnet_scale: Сила ControlNet: число (для всех), список по порядку (первый — первому ControlNet) или словарь по control_type: {"canny": 0.8, "depth": 0.5}. По умолчанию 1.0.
-            ip_image: Path, URL, or PIL Image for IP-Adapter (style/reference image). Pass when graph has IP-Adapter.
+            controlnet_scale: Сила ControlNet: число (для всех), список по порядку или словарь. Ключи словаря: control_type (\"depth\", \"canny\"), имя узла (\"controlnet-depth\", \"controlnet-canny\") или \"controlnet-<type>\". По умолчанию 1.0.
+            ip_image: IP-Adapter input: single (Path, URL, PIL, or tensor), list of such, or dict vocabulary (key -> image). All images are encoded and combined (e.g. mean-pooled) for one conditioning. Pass when graph has IP-Adapter.
             ip_adapter_scale: Strength of IP-Adapter effect (0.0–1.5+). Higher = output follows reference image more.
                               Default 0.6; 0.8–1.0 for noticeable style; 1.2–1.5 for strong resemblance (e.g. same object/shape).
             **kwargs: Additional graph inputs (passed directly to graph)
@@ -501,20 +577,42 @@ class InferencePipeline:
             kwargs["width"] = width
 
         # ── Multiple ControlNets: control_image can be list (by order) or dict (by control_type or input name) ──
+        control_inputs, ctype_to_input = self._get_controlnet_input_names_and_types()
+        # Fallback: if ctype_to_input empty (e.g. loop not ready at first call), build from blocks order
+        if not ctype_to_input and control_inputs:
+            for _name, blk in self._get_controlnet_blocks_ordered():
+                ct = getattr(blk, "control_type", None)
+                if ct is not None:
+                    name = next((c for c in control_inputs if c == f"control_image_{_name}" or (c == "control_image" and _name == "controlnet")), None)
+                    if name:
+                        ctype_to_input[ct] = name
         if "control_image" in kwargs:
             val = kwargs.pop("control_image")
-            control_inputs, ctype_to_input = self._get_controlnet_input_names_and_types()
-            if isinstance(val, (list, tuple)):
-                for i, name in enumerate(control_inputs):
-                    if i < len(val):
-                        kwargs[name] = val[i]
-            elif isinstance(val, dict):
-                for k, v in val.items():
-                    name = ctype_to_input.get(k, k)  # k can be control_type ("canny", "depth") or graph input name
-                    if name in control_inputs:
-                        kwargs[name] = v
-            else:
-                kwargs["control_image"] = val  # single image (backward compat)
+            if val is not None:
+                if isinstance(val, (list, tuple)):
+                    for i, name in enumerate(control_inputs):
+                        if i < len(val):
+                            kwargs[name] = val[i]
+                elif isinstance(val, dict):
+                    for k, v in val.items():
+                        name = ctype_to_input.get(k, k)
+                        if name in control_inputs:
+                            kwargs[name] = v
+                else:
+                    kwargs["control_image"] = val  # single image (backward compat)
+
+        # ── Explicitly clear optional control/ip inputs when not provided (no stale cache / "sticky" image) ──
+        for opt in list(graph_input_names):
+            if opt == "ip_image":
+                if opt not in kwargs:
+                    kwargs[opt] = None
+                elif kwargs[opt] is None or kwargs[opt] == [] or kwargs[opt] == {}:
+                    kwargs[opt] = None
+                elif isinstance(kwargs[opt], dict) and not kwargs[opt].get("image") and not kwargs[opt].get("images"):
+                    kwargs[opt] = None
+            elif opt == "control_image" or opt.startswith("control_image_"):
+                if opt not in kwargs:
+                    kwargs[opt] = None
 
         # ── Resolve image inputs from URL or path (control_image*, t2i_control_image, ip_image, source_image) ──
         control_keys = {k for k in kwargs if k == "control_image" or k.startswith("control_image_")}
@@ -522,8 +620,18 @@ class InferencePipeline:
             if key not in kwargs:
                 continue
             val = kwargs[key]
-            if key == "ip_image" and not isinstance(val, str) and not isinstance(val, dict) and hasattr(val, "size"):
-                kwargs[key] = {"image": val}
+            if val is None:
+                continue
+            if key == "ip_image":
+                # Full multi-image support: single, list, or dict (vocabulary)
+                images = _normalize_ip_image(val)
+                if not images:
+                    kwargs[key] = None
+                    continue
+                if len(images) == 1:
+                    kwargs[key] = {"image": images[0]}
+                else:
+                    kwargs[key] = {"images": images}
                 continue
             if not isinstance(val, str):
                 continue
@@ -533,17 +641,14 @@ class InferencePipeline:
                 warnings.warn(f"Failed to load image from {val!r}; passing None for {key}.", UserWarning)
                 kwargs[key] = None
                 continue
-            if key == "ip_image":
-                kwargs[key] = {"image": pil_img}
-            else:
-                t = _pil_to_tensor(pil_img)
-                if t.shape[2] != height or t.shape[3] != width:
-                    t = torch.nn.functional.interpolate(
-                        t, size=(height, width), mode="bilinear", align_corners=False
-                    )
-                if self.graph._device is not None and hasattr(t, "to"):
-                    t = t.to(self.graph._device)
-                kwargs[key] = t
+            t = _pil_to_tensor(pil_img)
+            if t.shape[2] != height or t.shape[3] != width:
+                t = torch.nn.functional.interpolate(
+                    t, size=(height, width), mode="bilinear", align_corners=False
+                )
+            if self.graph._device is not None and hasattr(t, "to"):
+                t = t.to(self.graph._device)
+            kwargs[key] = t
 
         # ── Use scheduler's timesteps in the loop (diffusers parity: Euler, PNDM, SD3 flow, etc.)
         if "timesteps" not in kwargs and "timesteps" in graph_input_names:
@@ -604,9 +709,13 @@ class InferencePipeline:
                     batch_size=batch_size, width=width, height=height, seed=seed,
                 )
         
-        # ── IP-Adapter strength: set on UNet processors so reference image has stronger/weaker effect ──
+        # ── IP-Adapter: включить только если передан ip_image; иначе — голый пайплайн или только ControlNet
+        use_ip = bool(kwargs.get("ip_image"))
+        self._apply_ip_adapter_switch(use_ip=use_ip)
+
+        # ── IP-Adapter strength: only when ip_image is used; otherwise scale must not affect generation ──
         ip_adapter_scale = kwargs.pop("ip_adapter_scale", None)
-        if ip_adapter_scale is not None:
+        if use_ip and ip_adapter_scale is not None:
             from yggdrasil.core.graph.adapters import set_ip_adapter_scale_on_unet
             for _n, block in self.graph._iter_all_blocks():
                 unet = getattr(block, "unet", None)
@@ -630,6 +739,8 @@ class InferencePipeline:
                     scale = controlnet_scale.get(ct) if ct is not None else None
                     if scale is None:
                         scale = controlnet_scale.get(_name)
+                    if scale is None and ct is not None:
+                        scale = controlnet_scale.get(f"controlnet-{ct}")
                     if scale is not None:
                         block.conditioning_scale = float(scale)
             else:
@@ -695,6 +806,55 @@ class InferencePipeline:
             if hasattr(block, 'num_iterations'):
                 block.num_iterations = num_steps
 
+    def _apply_ip_adapter_switch(self, use_ip: bool) -> None:
+        """Включить или выключить IP-Adapter на UNet по наличию ip_image.
+
+        use_ip=True  — ставим процессоры IP-Adapter (пайплайн с референсным изображением).
+        use_ip=False — восстанавливаем обычные процессоры (голый пайплайн / только ControlNet).
+        Если при материализации UNet был на meta, процессоры инициализируются при первом use_ip=True.
+        """
+        from yggdrasil.core.graph.adapters import (
+            ensure_ip_adapter_processors_on_device,
+            set_ip_adapter_processors_on_unet,
+        )
+        for _n, block in self.graph._iter_all_blocks():
+            unet = getattr(block, "unet", None)
+            if unet is None or not hasattr(unet, "set_attn_processor"):
+                continue
+            has_original = getattr(block, "_ip_adapter_original_processors", None) is not None
+            has_scale = getattr(block, "_ip_adapter_scale", None) is not None
+            if not has_original and not has_scale:
+                continue
+            n_attn = len(getattr(unet, "attn_processors", {}))
+            if use_ip:
+                procs = getattr(block, "_ip_adapter_processors", None)
+                if procs is not None and n_attn > 0 and len(procs) == n_attn:
+                    unet.set_attn_processor(procs)
+                    ensure_ip_adapter_processors_on_device(unet)
+                elif n_attn > 0 and has_scale:
+                    # Отложенная инициализация: UNet при материализации был на meta
+                    scale = float(getattr(block, "_ip_adapter_scale", 0.6))
+                    block._ip_adapter_original_processors = dict(unet.attn_processors)
+                    set_ip_adapter_processors_on_unet(unet, scale=scale)
+                    block._ip_adapter_processors = dict(unet.attn_processors)
+                    ensure_ip_adapter_processors_on_device(unet)
+            else:
+                if has_original and n_attn > 0 and len(block._ip_adapter_original_processors) == n_attn:
+                    unet.set_attn_processor(block._ip_adapter_original_processors)
+
+    def _get_denoise_loop_node(self) -> Tuple[Optional[str], Any]:
+        """Return (loop_node_name, loop_block) for the graph's denoise loop (by name 'denoise_loop' or by role loop/)."""
+        nodes = self.graph.nodes
+        loop = nodes.get("denoise_loop")
+        if loop is not None:
+            return "denoise_loop", loop
+        for name, block in nodes.items():
+            if getattr(block, "block_type", "").startswith("loop/"):
+                return name, block
+            if hasattr(block, "_loop") and getattr(block, "_loop", None) is not None:
+                return name, block
+        return None, None
+
     def _get_controlnet_input_names_and_types(self) -> Tuple[List[str], Dict[str, str]]:
         """Return (ordered control_image* graph input names, control_type -> input_name map) for multiple ControlNets."""
         graph_input_names = list(self.graph.graph_inputs.keys())
@@ -708,7 +868,7 @@ class InferencePipeline:
             return (1, 0)
         control_inputs.sort(key=_sort_key)
         ctype_to_input: Dict[str, str] = {}
-        loop = self.graph.nodes.get("denoise_loop")
+        _loop_name, loop = self._get_denoise_loop_node()
         if loop is not None:
             inner = getattr(loop, "graph", None) or (
                 getattr(loop, "_loop", None) and getattr(loop._loop, "graph", None)
@@ -726,31 +886,40 @@ class InferencePipeline:
         return control_inputs, ctype_to_input
 
     def _get_controlnet_blocks_ordered(self) -> List[Tuple[str, Any]]:
-        """Возвращает список (имя_узла, блок) для всех ControlNet во внутреннем графе цикла, в порядке графа (controlnet, controlnet_1, …)."""
+        """Возвращает список (имя_узла, блок) для всех ControlNet во внутреннем графе цикла.
+        Учитываются узлы controlnet, controlnet_1, controlnet_2, а также controlnet-depth, controlnet-canny и т.п."""
         result: List[Tuple[str, Any]] = []
-        loop = self.graph.nodes.get("denoise_loop")
+        _loop_name, loop = self._get_denoise_loop_node()
         if loop is None:
             return result
-        inner = getattr(loop, "graph", None) or (
-            getattr(loop, "_loop", None) and getattr(loop._loop, "graph", None)
-        )
+        inner = getattr(loop, "graph", None)
+        if inner is None and hasattr(loop, "_loop") and getattr(loop, "_loop", None) is not None:
+            inner = getattr(loop._loop, "graph", None)
         if inner is None:
             return result
-        prefix = "controlnet"
-        candidates = [(n, inner.nodes[n]) for n in inner.nodes if n == prefix or (n.startswith(prefix + "_") and n[len(prefix) + 1:].isdigit())]
+        # Все узлы с block_type adapter/controlnet (в т.ч. controlnet-depth, controlnet-canny)
+        candidates = [
+            (n, inner.nodes[n]) for n in inner.nodes
+            if getattr(inner.nodes[n], "block_type", None) == "adapter/controlnet"
+        ]
         if not candidates:
             return result
+        # Сортируем: "controlnet" первый, затем controlnet_1, controlnet_2, затем по имени (controlnet-canny, controlnet-depth)
+        prefix = "controlnet"
         def _order_key(item):
             name = item[0]
             if name == prefix:
-                return (0, 0)
-            return (1, int(name[len(prefix) + 1:]))
+                return (0, 0, "")
+            if name.startswith(prefix + "_") and name[len(prefix) + 1:].isdigit():
+                return (1, int(name[len(prefix) + 1:]), "")
+            return (2, 0, name)
         candidates.sort(key=_order_key)
-        return [(n, b) for n, b in candidates if getattr(b, "block_type", None) == "adapter/controlnet"]
+        return candidates
 
     def _is_flat_diffusers_graph(self) -> bool:
         """True if graph is a flat diffusers-imported graph (backbone + solver, no LoopSubGraph)."""
-        if "denoise_loop" in self.graph.nodes:
+        loop_name, _ = self._get_denoise_loop_node()
+        if loop_name is not None:
             return False
         if "solver" not in self.graph.nodes or "backbone" not in self.graph.nodes:
             return False
@@ -878,10 +1047,12 @@ class InferencePipeline:
             return None, None
         graph = self.graph
         codec = graph.nodes.get("codec")
-        loop = graph.nodes.get("denoise_loop")
-        if not codec or not getattr(codec, "encode", None) or not loop or not getattr(loop, "graph", None):
+        _loop_name, loop = self._get_denoise_loop_node()
+        if not codec or not getattr(codec, "encode", None) or not loop:
             return None, None
-        inner = loop.graph
+        inner = getattr(loop, "graph", None) or (getattr(loop, "_loop", None) and getattr(loop._loop, "graph", None))
+        if not inner:
+            return None, None
         solver = inner.nodes.get("solver") if inner else None
         if not solver or not getattr(solver, "alphas_cumprod", None):
             return None, None

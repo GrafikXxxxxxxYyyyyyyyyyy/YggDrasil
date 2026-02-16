@@ -10,7 +10,7 @@ import copy
 from collections import OrderedDict, defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Self, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from omegaconf import OmegaConf
 
@@ -145,7 +145,87 @@ class ComputeGraph:
                     block._loop.graph.to(device, dtype)
                     _maybe_empty_cache()
 
+        # IP-Adapter: процессоры могли не перенестись при материализации (UNet был на meta)
+        self._ensure_ip_adapter_processors_on_device()
         return self
+
+    def infer_metadata_if_needed(self) -> None:
+        """Обновить метаданные из состава графа. Вызывается после add_node и replace_node.
+        Подставляет только общие поля (default_num_steps, default_guidance_scale, modality,
+        backbone_pretrained); не привязывается к конкретным моделям (SDXL/SD15 и т.д.).
+        Существующие ключи в self.metadata не перезаписываются.
+        """
+        meta = self.metadata
+        if meta is None:
+            self.metadata = {}
+            meta = self.metadata
+        # backbone_pretrained — из узлов (loop/backbone) или из отложенных конфигов (для любых диффузий)
+        pretrained = None
+        for _n, block in self.nodes.items():
+            bt = getattr(block, "block_type", "")
+            if bt.startswith("loop/"):
+                pretrained = getattr(block, "pretrained", None) or (
+                    getattr(block, "_loop", None) and getattr(block._loop, "pretrained", None)
+                )
+                break
+            if bt.startswith("backbone/"):
+                pretrained = getattr(block, "pretrained", None)
+                break
+        for _name, cfg, _target in getattr(self, "_deferred", []):
+            if isinstance(cfg, dict) and (cfg.get("type") or "").startswith("loop/"):
+                pretrained = pretrained or cfg.get("pretrained")
+                break
+        if pretrained and "backbone_pretrained" not in meta:
+            meta.setdefault("backbone_pretrained", pretrained)
+        # base_model — из pretrained (нужно для IP-Adapter cross_attention_dim: sdxl=2048, sd15=768)
+        if "base_model" not in meta and pretrained:
+            p = (pretrained or "").lower()
+            if "xl" in p or p.rstrip("/").endswith("xl"):
+                meta.setdefault("base_model", "sdxl")
+            else:
+                meta.setdefault("base_model", "sd15")
+        meta.setdefault("default_num_steps", 50)
+        meta.setdefault("default_guidance_scale", 7.5)
+        # default_width/height — автоматически из pretrained
+        if "default_width" not in meta and pretrained:
+            p = (pretrained or "").lower()
+            if "xl" in p or p.rstrip("/").endswith("xl"):
+                meta.setdefault("default_width", 1024)
+                meta.setdefault("default_height", 1024)
+            else:
+                meta.setdefault("default_width", 512)
+                meta.setdefault("default_height", 512)
+        # modality — по наличию loop/codec
+        if "modality" not in meta:
+            has_loop = any(getattr(b, "block_type", "").startswith("loop/") for b in self.nodes.values())
+            has_codec = any(getattr(b, "block_type", "").startswith("codec/") for b in self.nodes.values())
+            if has_loop or has_codec:
+                for _name, cfg, _ in getattr(self, "_deferred", []):
+                    if isinstance(cfg, dict):
+                        t = cfg.get("type") or cfg.get("block_type") or ""
+                        if t.startswith("loop/"):
+                            has_loop = True
+                        if t.startswith("codec/"):
+                            has_codec = True
+                if has_loop and has_codec:
+                    meta.setdefault("modality", "image")
+        # use_euler_init_sigma — обязателен для EulerDiscreteScheduler (SDXL parity): начальный шум масштабируется init_noise_sigma
+        if "use_euler_init_sigma" not in meta:
+            for _n, block in self.nodes.items():
+                inner = getattr(block, "graph", None) or (getattr(block, "_loop", None) and getattr(block._loop, "graph", None))
+                if inner and getattr(inner, "nodes", None):
+                    for _sn, sblock in inner.nodes.items():
+                        if getattr(sblock, "block_type", "") == "solver/euler_discrete":
+                            meta.setdefault("use_euler_init_sigma", True)
+                            break
+                if meta.get("use_euler_init_sigma"):
+                    break
+            # Отложенная сборка: loop/denoise_sdxl всегда использует Euler внутри
+            if not meta.get("use_euler_init_sigma"):
+                for _name, cfg, _ in getattr(self, "_deferred", []):
+                    if isinstance(cfg, dict) and (cfg.get("type") or "").startswith("loop/"):
+                        meta.setdefault("use_euler_init_sigma", True)
+                        break
 
     def _materialize_deferred(self) -> None:
         """Build all deferred blocks in parallel (UNet, VAE, IP-Adapter, ControlNet), then replace/wire."""
@@ -193,7 +273,8 @@ class ComputeGraph:
             for node_name, block in built_top.items():
                 self.nodes[node_name] = block
 
-            # IP-Adapter: build encoder first to get image_embed_dim, then build adapter with that dim and wire
+            # IP-Adapter: build encoder first, then adapter; cross_attention_dim — из уже собранного backbone (универсально)
+            from .adapters import get_cross_attention_dim_from_graph
             for node_name, cfg in ip_adapter_top:
                 encoder_pretrained = cfg.get("image_encoder_pretrained") or cfg.get("pretrained") or "openai/clip-vit-large-patch14"
                 print("  Loading IP-Adapter image encoder (CLIP vision)...", flush=True)
@@ -201,10 +282,12 @@ class ComputeGraph:
                 image_embed_dim = getattr(encoder, "embedding_dim", None) or (
                     768 if "clip-vit-large" in str(encoder_pretrained) else 1024
                 )
-                base = (self.metadata or {}).get("base_model", "")
-                cross_attention_dim = cfg.get("cross_attention_dim") or (
-                    2048 if (base == "sdxl" or "sdxl" in (base or "").lower()) else 768
-                )
+                cross_attention_dim = cfg.get("cross_attention_dim") or get_cross_attention_dim_from_graph(self)
+                if cross_attention_dim is None:
+                    raise ValueError(
+                        "IP-Adapter: could not infer cross_attention_dim from graph backbone. "
+                        "Ensure the denoise loop is built first, or set cross_attention_dim in the adapter config."
+                    )
                 ip_cfg = {k: v for k, v in cfg.items() if k not in ("image_encoder_pretrained", "pretrained")}
                 ip_cfg["type"] = "adapter/ip_adapter"
                 ip_cfg["image_embed_dim"] = image_embed_dim
@@ -228,13 +311,30 @@ class ComputeGraph:
                 if denoise_loop_node:
                     self.connect(node_name, "image_prompt_embeds", denoise_loop_node, "image_prompt_embeds")
                     inner = getattr(self.nodes[denoise_loop_node], "graph", None) or (getattr(self.nodes[denoise_loop_node], "_loop", None) and getattr(self.nodes[denoise_loop_node]._loop, "graph", None))
-                    if inner and "backbone" in inner.nodes:
-                        backbone = inner.nodes["backbone"]
-                        unet = getattr(backbone, "unet", None)
-                        if unet is not None and hasattr(unet, "set_attn_processor"):
-                            from .adapters import set_ip_adapter_processors_on_unet
-                            scale = float(cfg.get("scale", 0.6))
-                            set_ip_adapter_processors_on_unet(unet, scale=scale)
+                    if inner:
+                        inodes = getattr(inner, "nodes", {}) or {}
+                        backbone = inodes.get("backbone")
+                        if backbone is None:
+                            for _n, b in inodes.items():
+                                if getattr(b, "block_type", "").startswith("backbone/"):
+                                    backbone = b
+                                    break
+                        if backbone is not None:
+                            unet = getattr(backbone, "unet", None)
+                            if unet is not None and hasattr(unet, "set_attn_processor"):
+                                from .adapters import set_ip_adapter_processors_on_unet
+                                scale = float(cfg.get("scale", 0.6))
+                                backbone._ip_adapter_scale = scale
+                                # Сохраняем исходные процессоры, чтобы при вызове без ip_image включать «голый» пайплайн
+                                attn_procs = getattr(unet, "attn_processors", None)
+                                if attn_procs is not None and len(attn_procs) > 0:
+                                    backbone._ip_adapter_original_processors = dict(attn_procs)
+                                    set_ip_adapter_processors_on_unet(unet, scale=scale)
+                                    backbone._ip_adapter_processors = dict(unet.attn_processors)
+                                else:
+                                    # UNet на meta: attn_processors ещё пустой; отложить инициализацию до первого вызова с ip_image
+                                    backbone._ip_adapter_original_processors = None
+                                    backbone._ip_adapter_processors = None
 
             # Phase 2: build adapters (controlnet) and add to inner graph
             for node_name, cfg, target_inner in adapters:
@@ -244,6 +344,7 @@ class ComputeGraph:
                     self,
                     controlnet_block=block,
                     denoise_loop_node=target_inner,
+                    controlnet_node_name=node_name,
                 )
 
         self._deferred.clear()
@@ -321,6 +422,7 @@ class ComputeGraph:
             if name in self.nodes:
                 raise ValueError(f"Node '{name}' already exists in graph '{self.name}'")
             self.nodes[name] = block
+            self.infer_metadata_if_needed()
             return self
 
         if type is None:
@@ -340,6 +442,7 @@ class ComputeGraph:
             resolve_loop_for_backbone,
         )
 
+        # Адаптеры (ControlNet, T2I): target_inner не задан — подставляем узел цикла денойзинга автоматически
         if target_inner is None and type.startswith("adapter/"):
             target_inner = resolve_inner_target_for_adapter(self.nodes, type)
 
@@ -361,13 +464,17 @@ class ComputeGraph:
             if resolved is not None:
                 type, cfg = resolved
                 resolved_loop = True
-        # ControlNet: target_inner auto-resolved; no need to pass it. Defer to load in parallel in to(device).
+        # ControlNet: target_inner уже подставлен (или задан пользователем). Откладываем сборку до to(device).
         if type == "adapter/controlnet" and target_inner:
             cfg_plain = OmegaConf.to_container(cfg, resolve=True) if hasattr(cfg, "to_container") else dict(cfg)
-            self._deferred.append(("controlnet", cfg_plain, target_inner))
+            adapter_node_name = name or "controlnet"
+            if adapter_node_name in self.nodes:
+                adapter_node_name = f"{adapter_node_name}_{len(self.nodes)}"
+            self._deferred.append((adapter_node_name, cfg_plain, target_inner))
             if auto_connect:
                 from .pipeline_auto_wire import apply_pipeline_auto_wire
                 apply_pipeline_auto_wire(self)
+            self.infer_metadata_if_needed()
             return self
         ip_adapter_with_encoder = type == "adapter/ip_adapter" and (cfg.get("image_encoder_pretrained") or cfg.get("pretrained"))
         node_name = name or type.replace("/", "_").replace(".", "_")
@@ -385,6 +492,7 @@ class ComputeGraph:
                 if auto_connect:
                     from .pipeline_auto_wire import apply_pipeline_auto_wire
                     apply_pipeline_auto_wire(self)
+                self.infer_metadata_if_needed()
                 return self
 
         if ip_adapter_with_encoder:
@@ -424,6 +532,9 @@ class ComputeGraph:
                     if target_node and target_node in inner.nodes and target_port:
                         inner.connect(node_name, out_port, target_node, target_port)
                     if graph_input:
+                        # Несколько ControlNet: уникальный вход control_image_<node_name>, иначе второй перезапишет первый
+                        if type == "adapter/controlnet" and graph_input == "control_image" and graph_input in inner.graph_inputs:
+                            graph_input = f"control_image_{node_name}"
                         inner.expose_input(graph_input, node_name, in_port)
                     if role == "adapter" and type == "adapter/controlnet":
                         for inp, port in (
@@ -433,8 +544,10 @@ class ComputeGraph:
                         ):
                             if inp in inner.graph_inputs:
                                 inner.expose_input(inp, node_name, port)
-                if rules and rules.get("graph_input"):
-                    self.expose_input(rules["graph_input"], target_inner, rules["graph_input"])
+                # Проброс входа цикла на верхний уровень (имя = graph_input, для нескольких ControlNet — control_image_<node_name>)
+                if rules and graph_input:
+                    self.expose_input(graph_input, target_inner, graph_input)
+            self.infer_metadata_if_needed()
             return self
 
         if node_name in self.nodes:
@@ -461,6 +574,7 @@ class ComputeGraph:
             from .pipeline_auto_wire import apply_pipeline_auto_wire
             apply_pipeline_auto_wire(self)
 
+        self.infer_metadata_if_needed()
         return self
 
     def _add_node_ip_adapter_with_encoder(
@@ -468,15 +582,18 @@ class ComputeGraph:
     ) -> None:
         """Add IP-Adapter plus image encoder in one go (BlockBuilder inside)."""
         from yggdrasil.core.block.builder import BlockBuilder
+        from .adapters import get_cross_attention_dim_from_graph
         encoder_pretrained = config.get("image_encoder_pretrained") or config.get("pretrained") or "openai/clip-vit-large-patch14"
         encoder = BlockBuilder.build({"type": "conditioner/clip_vision", "pretrained": encoder_pretrained})
         image_embed_dim = getattr(encoder, "embedding_dim", None) or (
             768 if "clip-vit-large" in str(encoder_pretrained) else 1024
         )
-        base = (self.metadata or {}).get("base_model", "")
-        cross_attention_dim = adapter_cfg.get("cross_attention_dim") or (
-            2048 if (base == "sdxl" or "sdxl" in base.lower()) else 768
-        )
+        cross_attention_dim = adapter_cfg.get("cross_attention_dim") or get_cross_attention_dim_from_graph(self)
+        if cross_attention_dim is None:
+            raise ValueError(
+                "IP-Adapter: could not infer cross_attention_dim from graph (backbone not built yet?). "
+                "Add the backbone and call graph.to(device) first, or pass cross_attention_dim=... when adding the node."
+            )
         ip_cfg = {
             **{k: v for k, v in adapter_cfg.items() if k != "image_encoder_pretrained"},
             "type": adapter_type,
@@ -684,43 +801,57 @@ class ComputeGraph:
     
     def replace_node(self, name: str, new_block: Any, *, validate: bool = True) -> ComputeGraph:
         """Заменить узел, сохраняя все его соединения.
-        
-        Это главная Lego-операция: замена одного кирпичика.
-        
+
+        Поддерживается замена внутреннего узла цикла: name вида "loop_node.inner_name"
+        (например "MyAwesomeBackbone.backbone") — тогда заменяется узел inner_name
+        во внутреннем графе узла loop_node; цикл денойзинга не пересоздаётся.
+
         Args:
-            name: Имя узла для замены.
+            name: Имя узла для замены или "outer.inner" для узла внутри loop.
             new_block: Новый блок.
-            validate: Проверять ли совместимость портов нового блока
-                      с существующими соединениями (default True).
+            validate: Проверять ли совместимость портов с существующими соединениями.
         """
+        if "." in name:
+            outer_name, inner_name = name.split(".", 1)
+            if outer_name not in self.nodes:
+                raise ValueError(f"Node '{outer_name}' not found in graph '{self.name}'")
+            outer_block = self.nodes[outer_name]
+            inner = getattr(outer_block, "graph", None) or (
+                getattr(outer_block, "_loop", None) and getattr(outer_block._loop, "graph", None)
+            )
+            if inner is None or not getattr(inner, "nodes", None):
+                raise ValueError(f"Node '{outer_name}' has no inner graph (cannot replace '{inner_name}')")
+            if inner_name not in inner.nodes:
+                raise ValueError(f"Inner node '{inner_name}' not found in '{outer_name}'")
+            if validate:
+                self._validate_replacement(inner_name, new_block, graph=inner)
+            inner.nodes[inner_name] = new_block
+            self.infer_metadata_if_needed()
+            return self
         if name not in self.nodes:
             raise ValueError(f"Node '{name}' not found in graph '{self.name}'")
-        
         if validate:
             self._validate_replacement(name, new_block)
-        
         self.nodes[name] = new_block
+        self.infer_metadata_if_needed()
         return self
     
-    def _validate_replacement(self, name: str, new_block: Any):
+    def _validate_replacement(self, name: str, new_block: Any, graph: Optional["ComputeGraph"] = None):
         """Check that new_block's ports are compatible with existing edges."""
         import logging
         _logger = logging.getLogger(__name__)
-        
-        new_ports = getattr(new_block, 'declare_io', lambda: {})()
+        g = graph if graph is not None else self
+        edges = getattr(g, "edges", [])
+        new_ports = getattr(new_block, "declare_io", lambda: {})()
         if not new_ports:
-            return  # Can't validate without port declarations
-        
-        # Check incoming edges (need matching input ports)
-        for edge in self.edges:
+            return
+        for edge in edges:
             if edge.dst_node == name and edge.dst_port not in new_ports:
                 _logger.warning(
                     f"Replace warning: new block has no input port '{edge.dst_port}' "
                     f"(required by edge from '{edge.src_node}.{edge.src_port}')"
                 )
-        
-        # Check outgoing edges (need matching output ports)
-        for edge in self.edges:
+        for edge in edges:
             if edge.src_node == name and edge.src_port not in new_ports:
                 _logger.warning(
                     f"Replace warning: new block has no output port '{edge.src_port}' "
@@ -1581,6 +1712,17 @@ class ComputeGraph:
             **kwargs,
         )
         return self
+
+    def _ensure_ip_adapter_processors_on_device(self) -> None:
+        """После переноса графа на устройство — синхронизировать процессоры IP-Adapter с UNet (device/dtype)."""
+        try:
+            from .adapters import ensure_ip_adapter_processors_on_device
+        except ImportError:
+            return
+        for _name, block in self._iter_all_blocks():
+            unet = getattr(block, "unet", None)
+            if unet is not None and getattr(unet, "attn_processors", None):
+                ensure_ip_adapter_processors_on_device(unet)
 
     def _iter_all_blocks(self):
         """Итерация по ВСЕМ блокам, включая вложенные SubGraph и блоки с _loop (e.g. DenoiseLoopSDXLBlock)."""

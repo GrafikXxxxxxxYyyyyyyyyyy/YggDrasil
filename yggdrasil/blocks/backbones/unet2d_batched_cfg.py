@@ -87,13 +87,14 @@ class UNet2DBatchedCFGBackbone(AbstractBackbone):
         if timestep_2.dim() == 0:
             timestep_2 = timestep_2.unsqueeze(0)
 
-        # IP-Adapter: pass (text_embeds, image_embeds) so diffusers IPAdapterAttnProcessor2_0 can use them
+        # IP-Adapter: если передан image — (text, image), иначе только text (пайплайн без IP-Adapter)
         image_embeds = port_inputs.get("image_prompt_embeds")
         if image_embeds is not None:
             image_embeds = image_embeds.to(device=model_device, dtype=model_dtype)
             image_embeds_2 = torch.cat([image_embeds, image_embeds], dim=0)  # same for [uncond, cond]
             encoder_hidden_states = (emb_2, image_embeds_2)
         else:
+            # Нет ip_image: pipeline без IP-Adapter — один тензор (UNet с обычными процессорами)
             encoder_hidden_states = emb_2
 
         unet_kw = dict(

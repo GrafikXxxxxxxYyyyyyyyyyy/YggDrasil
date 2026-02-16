@@ -154,6 +154,7 @@ class IPAdapter(AbstractAdapter):
             "cross_attention_dim": 768,
             "scale": 0.6,
             "num_tokens": 4,
+            "multi_image_mode": "mean",  # or "first" when multiple images are passed
         })
         adapter.inject_into(backbone)
     """
@@ -163,6 +164,7 @@ class IPAdapter(AbstractAdapter):
     def __init__(self, config: DictConfig):
         super().__init__(config)
         self.scale = config.get("scale", 1.0)
+        self.multi_image_mode = config.get("multi_image_mode", "mean")
         self.image_embed_dim = config.get("image_embed_dim", 1024)
         self.cross_attention_dim = config.get("cross_attention_dim", 768)
         self.num_tokens = config.get("num_tokens", 4)
@@ -181,22 +183,32 @@ class IPAdapter(AbstractAdapter):
     @classmethod
     def declare_io(cls):
         return {
-            "image_features": InputPort("image_features", 
-                                         description="CLIP image embeddings (batch, embed_dim)"),
+            "image_features": InputPort("image_features",
+                                        optional=True,
+                                        description="CLIP image embeddings (batch, embed_dim) or (batch, 1, embed_dim). None when no ip_image — output will be None (text-only)."),
             "image_prompt_embeds": OutputPort("image_prompt_embeds",
-                                              description="Projected tokens for cross-attention"),
+                                              description="Projected tokens for cross-attention (1 or batch, num_tokens, dim)"),
         }
-    
+
     def process(self, **kw) -> Dict[str, Any]:
-        """Project image features to cross-attention tokens."""
+        """Project image features to cross-attention tokens. Supports multiple images (batch): combined via mean or first."""
         image_features = kw.get("image_features")
         if image_features is None:
             return {"image_prompt_embeds": None}
-        # Ensure same device/dtype as model (avoids "mat1 on cpu, other on cuda")
         device = next(self.image_proj.parameters()).device
         dtype = next(self.image_proj.parameters()).dtype
         if image_features.device != device or image_features.dtype != dtype:
             image_features = image_features.to(device=device, dtype=dtype)
+        # Flatten (batch, 1, embed_dim) -> (batch, embed_dim) if needed
+        if image_features.dim() == 3:
+            image_features = image_features.squeeze(1)
+        # Multiple images: combine to single conditioning (backbone expects one conditioning vector per generation batch)
+        if image_features.shape[0] > 1:
+            if self.multi_image_mode == "first":
+                image_features = image_features[0:1]
+            else:
+                # mean (default): average embeddings then project
+                image_features = image_features.mean(dim=0, keepdim=True)
         # Project to cross-attention space
         image_prompt_embeds = self.image_proj(image_features)
         return {"image_prompt_embeds": image_prompt_embeds}

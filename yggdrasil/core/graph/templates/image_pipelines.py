@@ -557,7 +557,14 @@ def _build_sdxl_denoise_loop_block(pretrained: str, num_steps: int = 50, guidanc
 
 @register_block("loop/denoise_sdxl")
 class DenoiseLoopSDXLBlock(AbstractBaseBlock):
-    """SDXL denoise loop buildable via add_node(type=\"loop/denoise_sdxl\", pretrained=..., num_steps=..., guidance_scale=...)."""
+    """SDXL denoise loop: один узел «цикл денойзинга» с Euler + batched CFG внутри.
+
+    Существует чтобы add_node(type=\"backbone/unet2d_condition\", ...) мог подменяться на полный
+    цикл (resolve_loop_for_backbone): пользователь добавляет «бэкбон», а в графе оказывается готовый
+    loop с UNet, scale_model_input, solver и правильными timesteps/init_noise_sigma (parity с diffusers).
+    Сборка через add_node(type=\"loop/denoise_sdxl\", pretrained=..., num_steps=..., guidance_scale=...)
+    тоже поддерживается.
+    """
     block_type = "loop/denoise_sdxl"
 
     def __init__(self, config: Dict | Any):

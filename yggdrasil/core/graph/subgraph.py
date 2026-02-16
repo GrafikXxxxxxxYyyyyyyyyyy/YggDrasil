@@ -206,6 +206,17 @@ class LoopSubGraph(AbstractBaseBlock):
         latents = port_inputs.get("initial_latents")
         timesteps = port_inputs.get("timesteps")
         condition = port_inputs.get("condition")
+        uncond = port_inputs.get("uncond")
+        if condition is None:
+            raise ValueError(
+                "Denoise loop received condition=None. Подключите conditioner к циклу (conditioner -> condition, conditioner -> uncond) "
+                "и передавайте prompt в pipe(...). Проверьте, что add_node вызван с auto_connect=True и что apply_pipeline_auto_wire выполнился."
+            )
+        if uncond is None:
+            raise ValueError(
+                "Denoise loop received uncond=None. Для CFG нужен uncond (negative prompt). "
+                "Убедитесь, что conditioner выдаёт оба выхода (condition, uncond) и они подключены к циклу."
+            )
         
         # Determine device from latents
         device = latents.device if latents is not None and hasattr(latents, 'device') else torch.device("cpu")
@@ -252,7 +263,6 @@ class LoopSubGraph(AbstractBaseBlock):
                 "next_timestep": next_t.to(dtype=torch.float32) if next_t.dtype in (torch.float32, torch.float16, torch.float64) else next_t,
                 "condition": condition,
             }
-            uncond = port_inputs.get("uncond")
             if uncond is not None:
                 step_inputs["uncond"] = uncond
             if i == 0:

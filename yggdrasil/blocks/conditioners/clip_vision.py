@@ -5,7 +5,7 @@ Used by image-conditioned pipelines (I2V, image variation, etc.)
 import logging
 import torch
 import torch.nn as nn
-from typing import Dict, Any
+from typing import Dict, Any, List, Union
 from omegaconf import DictConfig
 
 from ...core.block.registry import register_block
@@ -30,8 +30,12 @@ class CLIPVisionConditioner(AbstractConditioner):
     @classmethod
     def declare_io(cls) -> dict:
         return {
-            "raw_condition": InputPort("raw_condition", data_type="dict",
-                                       description="Dict with 'image' key (PIL or tensor)"),
+            "raw_condition": InputPort(
+                "raw_condition",
+                data_type="dict",
+                optional=True,
+                description="Dict with 'image' (single PIL/tensor) or 'images' (list of PIL/tensors)",
+            ),
             "embedding": OutputPort("embedding", spec=TensorSpec(space="embedding")),
             "pooled_embedding": OutputPort("pooled_embedding", spec=TensorSpec(space="embedding")),
         }
@@ -62,31 +66,47 @@ class CLIPVisionConditioner(AbstractConditioner):
         except Exception:
             self._model = None
     
+    def _images_to_list(self, raw: dict) -> List[Any]:
+        """Return a list of images from raw_condition (single or 'images' list)."""
+        images = raw.get("images")
+        if images is not None and isinstance(images, (list, tuple)):
+            return list(images)
+        image = raw.get("image")
+        if image is not None:
+            return [image]
+        return []
+
     def process(self, **port_inputs) -> dict:
         raw = port_inputs.get("raw_condition", {})
         if not isinstance(raw, dict):
             raw = {"image": raw}
-        
-        image = raw.get("image")
-        if image is None:
-            emb = torch.zeros(1, 1, 768)
-            return {"embedding": emb, "pooled_embedding": emb[:, 0], "output": emb}
-        
-        if self._model is not None and self._processor is not None:
-            with torch.no_grad():
-                inputs = self._processor(images=image, return_tensors="pt")
-                inputs = {k: v.to(next(self._model.parameters()).device) for k, v in inputs.items()}
-                outputs = self._model(**inputs)
-                emb = outputs.image_embeds.unsqueeze(1)
-                return {
-                    "embedding": emb,
-                    "pooled_embedding": outputs.image_embeds,
-                    "output": emb,
-                }
-        
-        # Stub
-        emb = torch.randn(1, 1, 768)
-        return {"embedding": emb, "pooled_embedding": emb[:, 0], "output": emb}
+
+        image_list = self._images_to_list(raw)
+        if not image_list:
+            # Не передаём нули в IP-Adapter — пусть backbone работает в режиме только текст (image_prompt_embeds=None)
+            return {"embedding": None, "pooled_embedding": None, "output": None}
+
+        if self._model is None or self._processor is None:
+            dim = self.embedding_dim
+            emb = torch.randn(len(image_list), 1, dim)
+            return {
+                "embedding": emb,
+                "pooled_embedding": emb.squeeze(1),
+                "output": emb,
+            }
+
+        device = next(self._model.parameters()).device
+        with torch.no_grad():
+            inputs = self._processor(images=image_list, return_tensors="pt")
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            outputs = self._model(**inputs)
+            image_embeds = outputs.image_embeds  # (N, embed_dim)
+            emb = image_embeds.unsqueeze(1)  # (N, 1, embed_dim)
+            return {
+                "embedding": emb,
+                "pooled_embedding": image_embeds,
+                "output": emb,
+            }
     
     def __call__(self, condition):
         return self.process(raw_condition=condition)
