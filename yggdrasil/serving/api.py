@@ -256,7 +256,7 @@ def create_api(config: ServerConfig | None = None) -> "FastAPI":
     app = FastAPI(
         title="YggDrasil Diffusion API",
         description="Универсальный API для генерации любой модальности любой диффузионной моделью",
-        version="0.1.0",
+        version="0.2.0",
         lifespan=lifespan,
     )
     

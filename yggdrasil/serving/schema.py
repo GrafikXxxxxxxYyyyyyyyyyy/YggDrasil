@@ -139,7 +139,7 @@ class ModelInfo(BaseModel):
 class ServerStatus(BaseModel):
     """Статус сервера."""
     status: str = "ok"
-    version: str = "0.1.0"
+    version: str = "0.2.0"
     loaded_models: List[ModelInfo] = Field(default_factory=list)
     device: str = "cpu"
     gpu_memory_used: Optional[float] = None    # GB

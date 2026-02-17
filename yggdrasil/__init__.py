@@ -16,7 +16,7 @@ Build your diffusion like Lego, even if it hasn't been invented yet.
     python -m yggdrasil generate ...    # CLI генерация
     python -m yggdrasil train ...       # Обучение
 """
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # Workaround: TensorFlow Metal конфликтует с PyTorch MPS при параллельной загрузке.
 # Предотвращаем краш "platform is already registered with name: METAL",
