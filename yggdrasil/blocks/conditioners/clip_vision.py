@@ -25,6 +25,7 @@ class CLIPVisionConditioner(AbstractConditioner):
         self._model = None
         self._processor = None
         self.pretrained = self.config.get("pretrained", "openai/clip-vit-large-patch14")
+        self.output_mode = self.config.get("output_mode", "pooled")  # "pooled" | "patches" (IP-Adapter Plus)
         self._build_model()
     
     @classmethod
@@ -34,10 +35,12 @@ class CLIPVisionConditioner(AbstractConditioner):
                 "raw_condition",
                 data_type="dict",
                 optional=True,
-                description="Dict with 'image' (single PIL/tensor) or 'images' (list of PIL/tensors)",
+                description="Dict with 'image' (single PIL/tensor) or 'images' (list of PIL/tensors), optional 'scales' (list of floats)",
             ),
             "embedding": OutputPort("embedding", spec=TensorSpec(space="embedding")),
             "pooled_embedding": OutputPort("pooled_embedding", spec=TensorSpec(space="embedding")),
+            "patches": OutputPort("patches", description="Patch embeddings (N, num_patches+1, dim) for IP-Adapter Plus. Set output_mode='patches'."),
+            "scales": OutputPort("scales", description="Per-image weights for IP-Adapter (pass-through from raw_condition)"),
         }
     
     @property
@@ -58,7 +61,9 @@ class CLIPVisionConditioner(AbstractConditioner):
             old_level = log.level
             log.setLevel(logging.ERROR)
             try:
-                self._model = CLIPVisionModelWithProjection.from_pretrained(self.pretrained)
+                self._model = CLIPVisionModelWithProjection.from_pretrained(
+                    self.pretrained, low_cpu_mem_usage=False
+                )
                 self._processor = CLIPImageProcessor.from_pretrained(self.pretrained)
             finally:
                 log.setLevel(old_level)
@@ -73,6 +78,8 @@ class CLIPVisionConditioner(AbstractConditioner):
             return list(images)
         image = raw.get("image")
         if image is not None:
+            if isinstance(image, (list, tuple)):
+                return list(image)
             return [image]
         return []
 
@@ -83,16 +90,22 @@ class CLIPVisionConditioner(AbstractConditioner):
 
         image_list = self._images_to_list(raw)
         if not image_list:
-            # Не передаём нули в IP-Adapter — пусть backbone работает в режиме только текст (image_prompt_embeds=None)
-            return {"embedding": None, "pooled_embedding": None, "output": None}
+            return {"embedding": None, "pooled_embedding": None, "output": None, "patches": None, "scales": None}
+
+        scales = raw.get("scales")  # Per-image weights for IP-Adapter weighted mean
+        if scales is not None and not isinstance(scales, (list, tuple)):
+            scales = None
 
         if self._model is None or self._processor is None:
             dim = self.embedding_dim
             emb = torch.randn(len(image_list), 1, dim)
+            patches_out = torch.randn(len(image_list), 257, dim) if self.output_mode == "patches" else None
             return {
                 "embedding": emb,
                 "pooled_embedding": emb.squeeze(1),
                 "output": emb,
+                "patches": patches_out,
+                "scales": scales,
             }
 
         device = next(self._model.parameters()).device
@@ -102,10 +115,15 @@ class CLIPVisionConditioner(AbstractConditioner):
             outputs = self._model(**inputs)
             image_embeds = outputs.image_embeds  # (N, embed_dim)
             emb = image_embeds.unsqueeze(1)  # (N, 1, embed_dim)
+            patches_out = None
+            if self.output_mode == "patches" and hasattr(outputs, "last_hidden_state"):
+                patches_out = outputs.last_hidden_state  # (N, num_patches+1, dim)
             return {
                 "embedding": emb,
                 "pooled_embedding": image_embeds,
                 "output": emb,
+                "patches": patches_out,
+                "scales": scales,
             }
     
     def __call__(self, condition):

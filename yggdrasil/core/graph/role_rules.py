@@ -241,10 +241,20 @@ def resolve_inner_target_for_adapter(graph_nodes: Any, block_type: str) -> Optio
         return None
     if block_type == "adapter/ip_adapter":
         return None
+    return _resolve_loop_node(graph_nodes)
+
+
+def resolve_loop_node_for_solver(graph_nodes: Any) -> Optional[str]:
+    """Return the denoise loop node name if one exists (for solver injection)."""
+    return _resolve_loop_node(graph_nodes)
+
+
+def _resolve_loop_node(graph_nodes: Any) -> Optional[str]:
+    """Return the denoise loop node name. Handles denoise_loop or backbone (placeholder has block_type=loop/...)."""
     if "denoise_loop" in graph_nodes:
         return "denoise_loop"
     for node_name, block in (graph_nodes.items() if hasattr(graph_nodes, "items") else []):
         bt = getattr(block, "block_type", "")
-        if bt.startswith("loop/"):
+        if bt and str(bt).startswith("loop/"):
             return node_name
     return None

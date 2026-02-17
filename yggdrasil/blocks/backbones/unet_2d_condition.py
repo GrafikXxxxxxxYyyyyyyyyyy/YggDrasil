@@ -55,7 +55,7 @@ class UNet2DConditionBackbone(AbstractBackbone):
             self.unet = self.unet.to(dtype=dtype)
         else:
             self.unet = UNet2DConditionModel.from_pretrained(
-                pretrained, subfolder=subfolder, torch_dtype=dtype
+                pretrained, subfolder=subfolder, torch_dtype=dtype, low_cpu_mem_usage=False
             )
         self.unet.requires_grad_(False)  # по умолчанию заморожен
     

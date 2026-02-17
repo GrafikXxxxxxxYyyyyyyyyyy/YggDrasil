@@ -310,16 +310,19 @@ class ComputeGraph:
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from yggdrasil.core.block.builder import BlockBuilder
 
-        # Normalize to 3-tuple (node_name, cfg, target_inner)
+        # Normalize to (node_name, cfg, target_inner, defer_kind)
         items = []
         for item in self._deferred:
             if len(item) == 2:
-                items.append((item[0], item[1], None))
+                items.append((item[0], item[1], None, None))
+            elif len(item) == 3:
+                items.append((item[0], item[1], item[2], None))
             else:
                 items.append(item)
 
-        top_level = [(n, c) for n, c, t in items if t is None]
-        adapters = [(n, c, t) for n, c, t in items if t is not None]
+        top_level = [(n, c) for n, c, t, k in items if t is None and k != "solver_inject"]
+        adapters = [(n, c, t) for n, c, t, k in items if t is not None and k != "solver_inject"]
+        solver_injects = [(n, c, t) for n, c, t, k in items if k == "solver_inject"]
         # IP-Adapter must be built after encoder so image_embed_dim matches encoder output (e.g. 768 for ViT-L, 1024 for ViT-H)
         ip_adapter_top = [(n, c) for n, c in top_level if (c.get("type") or c.get("block_type")) == "adapter/ip_adapter"]
         other_top = [(n, c) for n, c in top_level if (c.get("type") or c.get("block_type")) != "adapter/ip_adapter"]
@@ -387,6 +390,7 @@ class ComputeGraph:
                 self.nodes[encoder_name] = encoder
                 self.nodes[node_name] = ip_adapter
                 self.connect(encoder_name, "embedding", node_name, "image_features")
+                self.connect(encoder_name, "scales", node_name, "image_scales")
                 self.expose_input("ip_image", encoder_name, "raw_condition")
 
                 # Wire IP-Adapter output into denoise loop and inject processors into UNet
@@ -423,6 +427,23 @@ class ComputeGraph:
                                     backbone._ip_adapter_original_processors = None
                                     backbone._ip_adapter_processors = None
 
+            # Phase 1.5: inject user solver into loop (replaces default solver)
+            for node_name, cfg, target_inner in solver_injects:
+                if target_inner not in self.nodes:
+                    continue
+                loop_block = self.nodes[target_inner]
+                inner = getattr(loop_block, "graph", None) or (
+                    getattr(loop_block, "_loop", None) and getattr(loop_block._loop, "graph", None)
+                )
+                if inner is None or "solver" not in getattr(inner, "nodes", {}):
+                    continue
+                print("  Loading user solver...", flush=True)
+                user_solver = build_one(node_name, cfg)
+                inner.nodes["solver"] = user_solver
+                scale_block = getattr(inner, "nodes", {}).get("scale_input")
+                if scale_block is not None and hasattr(scale_block, "set_solver"):
+                    scale_block.set_solver(user_solver)
+
             # Phase 2: build adapters (controlnet) and add to inner graph
             for node_name, cfg, target_inner in adapters:
                 block = build_one(node_name, cfg)
@@ -435,6 +456,7 @@ class ComputeGraph:
                 )
 
         self._deferred.clear()
+        self.infer_metadata_if_needed()
 
     @staticmethod
     def _move_block(block, device, dtype):
@@ -459,9 +481,13 @@ class ComputeGraph:
                     f"to {device}: {e}"
                 )
         except Exception as e:
+            err_msg = str(e)
+            hint = ""
+            if "meta tensor" in err_msg or "Cannot copy out of meta" in err_msg:
+                hint = " (ensure all from_pretrained use low_cpu_mem_usage=False)"
             _logger.warning(
                 f"Failed to move block {getattr(block, 'block_type', type(block).__name__)} "
-                f"to {device}/{dtype}: {e}"
+                f"to {device}/{dtype}: {e}{hint}"
             )
     
     @property
@@ -527,6 +553,7 @@ class ComputeGraph:
             get_default_config_for_block_type,
             resolve_inner_target_for_adapter,
             resolve_loop_for_backbone,
+            resolve_loop_node_for_solver,
         )
 
         # Адаптеры (ControlNet, T2I): target_inner не задан — подставляем узел цикла денойзинга автоматически
@@ -540,6 +567,22 @@ class ComputeGraph:
             config_filter.add("image_encoder_pretrained")
         cfg = {**defaults, **{k: v for k, v in config.items() if k not in config_filter}}
         cfg["type"] = type
+
+        # Solver: inject into loop (user solver overrides default). Defer until materialization.
+        if type.startswith("solver/"):
+            target_inner = target_inner or resolve_loop_node_for_solver(self.nodes)
+            if target_inner:
+                cfg_plain = OmegaConf.to_container(cfg, resolve=True) if hasattr(cfg, "to_container") else dict(cfg)
+                solver_node_name = name or "solver"
+                if solver_node_name in self.nodes:
+                    solver_node_name = f"{solver_node_name}_{len(self.nodes)}"
+                self._deferred.append((solver_node_name, cfg_plain, target_inner, "solver_inject"))
+                if auto_connect:
+                    from .pipeline_auto_wire import apply_pipeline_auto_wire
+                    apply_pipeline_auto_wire(self)
+                self.infer_metadata_if_needed()
+                return self
+
         if type == "adapter/ip_adapter" and config.get("pretrained") and not cfg.get("image_encoder_pretrained"):
             cfg["image_encoder_pretrained"] = config["pretrained"]
         if type.startswith("loop/"):
@@ -709,6 +752,7 @@ class ComputeGraph:
         self.nodes[encoder_name] = encoder
         self.nodes[adapter_node_name] = ip_adapter
         self.connect(encoder_name, "embedding", adapter_node_name, "image_features")
+        self.connect(encoder_name, "scales", adapter_node_name, "image_scales")
         self.expose_input("ip_image", encoder_name, "raw_condition")
 
     def add_stage(

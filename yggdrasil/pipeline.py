@@ -27,14 +27,15 @@ from urllib.error import URLError
 
 
 def load_image_from_url_or_path(source: Union[str, Path]) -> Optional[Any]:
-    """Загрузить изображение по URL или с диска. Возвращает PIL.Image или None при ошибке.
+    """Загрузить изображение по URL, data: URI (base64) или с диска. Возвращает PIL.Image или None при ошибке.
 
-    source: http(s)://... или путь к файлу.
+    source: http(s)://..., data:image/...;base64,..., или путь к файлу.
     """
     try:
         from PIL import Image
     except ImportError:
         return None
+    import base64
     source = str(source).strip()
     if not source:
         return None
@@ -43,6 +44,15 @@ def load_image_from_url_or_path(source: Union[str, Path]) -> Optional[Any]:
             with urlopen(source, timeout=30) as resp:
                 data = resp.read()
             img = Image.open(io.BytesIO(data)).convert("RGB")
+        elif source.startswith("data:image/"):
+            # data:image/jpeg;base64,<base64data> — strip whitespace/newlines from base64
+            idx = source.find(",")
+            if idx >= 0:
+                b64 = source[idx + 1 :].replace(" ", "").replace("\n", "").replace("\r", "").strip()
+                data = base64.b64decode(b64)
+                img = Image.open(io.BytesIO(data)).convert("RGB")
+            else:
+                return None
         else:
             img = Image.open(source).convert("RGB")
         return img
@@ -658,8 +668,11 @@ class InferencePipeline:
             control_image: For ControlNet: single image; or list of images (order must match graph: first = first ControlNet, second = second, …); or dict for any order — key by control_type (e.g. {"canny": url1, "depth": url2}) or by input name (e.g. {"control_image": url1, "control_image_controlnet_1": url2}).
             controlnet_scale: Сила ControlNet: число (для всех), список по порядку или словарь. Ключи словаря: control_type (\"depth\", \"canny\"), имя узла (\"controlnet-depth\", \"controlnet-canny\") или \"controlnet-<type>\". По умолчанию 1.0.
             ip_image: IP-Adapter input: single (Path, URL, PIL, or tensor), list of such, or dict vocabulary (key -> image). All images are encoded and combined (e.g. mean-pooled) for one conditioning. Pass when graph has IP-Adapter.
-            ip_adapter_scale: Strength of IP-Adapter effect (0.0–1.5+). Higher = output follows reference image more.
-                              Default 0.6; 0.8–1.0 for noticeable style; 1.2–1.5 for strong resemblance (e.g. same object/shape).
+            ip_adapter_scale: Strength of IP-Adapter:
+                              - float: overall (0.0–1.5+).
+                              - list: per-image scales.
+                              - dict: per-layer (InstantStyle), e.g. {"down": {"block_2": [0,1]}, "up": {"block_0": [0,1,0]}}.
+            ip_image_embeds: Pre-computed embeddings from prepare_ip_adapter_embeds() — bypasses encoding.
             **kwargs: Additional graph inputs (passed directly to graph)
         
         Returns:
@@ -712,6 +725,11 @@ class InferencePipeline:
             kwargs["width"] = width
 
         # ── Multiple ControlNets: control_image can be list (by order) or dict (by control_type or input name) ──
+        # Ensure graph is materialized so controlnet_input_mapping is populated (ControlNet added during to(device))
+        if "control_image" in kwargs and kwargs.get("control_image") is not None:
+            _g = self.graph
+            if getattr(_g, "_deferred", None):
+                _g.to(getattr(_g, "_device", None) or "cpu")
         control_inputs, ctype_to_input = self._get_controlnet_input_names_and_types()
         # Fallback: if ctype_to_input empty (e.g. loop not ready at first call), build from blocks order
         if not ctype_to_input and control_inputs:
@@ -749,9 +767,9 @@ class InferencePipeline:
                 if opt not in kwargs:
                     kwargs[opt] = None
 
-        # ── Resolve image inputs from URL or path (control_image*, t2i_control_image, ip_image, source_image) ──
+        # ── Resolve image inputs from URL or path (control_image*, t2i_control_image, ip_image*, source_image) ──
         control_keys = {k for k in kwargs if k == "control_image" or k.startswith("control_image_")}
-        for key in list(control_keys) + ["t2i_control_image", "ip_image", "source_image"]:
+        for key in list(control_keys) + ["t2i_control_image", "ip_image", "ip_image_plus", "ip_face_image", "source_image"]:
             if key not in kwargs:
                 continue
             val = kwargs[key]
@@ -759,6 +777,7 @@ class InferencePipeline:
                 continue
             if key == "ip_image":
                 # Full multi-image support: single, list, or dict (vocabulary)
+                ip_scale_raw = kwargs.get("ip_adapter_scale")
                 images = _normalize_ip_image(val)
                 if not images:
                     kwargs[key] = None
@@ -767,6 +786,22 @@ class InferencePipeline:
                     kwargs[key] = {"image": images[0]}
                 else:
                     kwargs[key] = {"images": images}
+                # Per-image scales (like controlnet_scale): float | list | dict
+                scales = None
+                if ip_scale_raw is not None and len(images) > 0:
+                    if isinstance(ip_scale_raw, (list, tuple)):
+                        scales = [float(ip_scale_raw[i]) if i < len(ip_scale_raw) else 1.0 for i in range(len(images))]
+                    elif isinstance(ip_scale_raw, dict) and isinstance(val, dict):
+                        keys = list(val.keys())
+                        scales = [float(ip_scale_raw.get(k, 1.0)) for k in keys]
+                    # float: no per-image scales, used only for UNet processor
+                if scales is not None and len(scales) == len(images):
+                    kwargs[key]["scales"] = scales
+                continue
+            if key in ("ip_image_plus", "ip_face_image"):
+                images = _normalize_ip_image(val)
+                if images:
+                    kwargs[key] = {"image": images[0]} if len(images) == 1 else {"images": images}
                 continue
             if not isinstance(val, str):
                 continue
@@ -844,18 +879,61 @@ class InferencePipeline:
                     batch_size=batch_size, width=width, height=height, seed=seed,
                 )
         
-        # ── IP-Adapter: включить только если передан ip_image; иначе — голый пайплайн или только ControlNet
-        use_ip = bool(kwargs.get("ip_image"))
+        # ── IP-Adapter: включить если передан любой IP-вход
+        use_ip = bool(
+            kwargs.get("ip_image") is not None
+            or kwargs.get("ip_image_embeds") is not None
+            or kwargs.get("ip_image_plus") is not None
+            or kwargs.get("ip_face_image") is not None
+        )
         self._apply_ip_adapter_switch(use_ip=use_ip)
 
-        # ── IP-Adapter strength: only when ip_image is used; otherwise scale must not affect generation ──
+        # ── IP-Adapter strength: only when ip_image/ip_image_embeds is used (Diffusers-style)
+        # ip_adapter_scale: float | list | dict. Per-layer (InstantStyle): dict with "down"/"up" or "down_blocks.X".
         ip_adapter_scale = kwargs.pop("ip_adapter_scale", None)
         if use_ip and ip_adapter_scale is not None:
             from yggdrasil.core.graph.adapters import set_ip_adapter_scale_on_unet
+            unet_scale_arg: Union[float, List[float], Dict[str, Any]] = 1.0
+            # Per-layer (InstantStyle): {"down": {"block_2": [0,1]}, "up": {"block_0": [0,1,0]}}
+            is_per_layer = (
+                isinstance(ip_adapter_scale, dict)
+                and ip_adapter_scale
+                and any(
+                    k in ("down", "up")
+                    or str(k).startswith(("down_blocks", "up_blocks", "mid_block"))
+                    for k in ip_adapter_scale.keys()
+                )
+            )
+            if is_per_layer:
+                unet_scale_arg = ip_adapter_scale
+            else:
+                ip_img = kwargs.get("ip_image") or {}
+                scales_in_img = ip_img.get("scales") if isinstance(ip_img, dict) else None
+                imgs = ip_img.get("images")
+                n_img = len(imgs) if (imgs and isinstance(imgs, (list, tuple))) else (1 if ip_img.get("image") else 1)
+                if ip_img and ip_img.get("image") and "images" not in ip_img:
+                    n_img = 1
+                if not ip_img and kwargs.get("ip_image_embeds") is not None:
+                    n_img = 1  # pre-computed embeds: assume single or use scale as-is
+                if scales_in_img is not None and len(scales_in_img) == n_img:
+                    unet_scale_arg = [float(s) for s in scales_in_img]
+                elif isinstance(ip_adapter_scale, (int, float)):
+                    unet_scale_arg = float(ip_adapter_scale)
+                elif isinstance(ip_adapter_scale, (list, tuple)) and ip_adapter_scale:
+                    if n_img > 1:
+                        unet_scale_arg = [float(ip_adapter_scale[i]) if i < len(ip_adapter_scale) else 1.0 for i in range(n_img)]
+                    else:
+                        unet_scale_arg = float(ip_adapter_scale[0])
+                elif isinstance(ip_adapter_scale, dict) and ip_adapter_scale:
+                    vals = list(ip_adapter_scale.values())
+                    if n_img > 1 and vals:
+                        unet_scale_arg = [float(vals[i]) if i < len(vals) else 1.0 for i in range(n_img)]
+                    else:
+                        unet_scale_arg = float(next(iter(ip_adapter_scale.values())))
             for _n, block in self.graph._iter_all_blocks():
                 unet = getattr(block, "unet", None)
                 if unet is not None and getattr(unet, "attn_processors", None):
-                    set_ip_adapter_scale_on_unet(unet, float(ip_adapter_scale))
+                    set_ip_adapter_scale_on_unet(unet, unet_scale_arg)
                     break
 
         # ── Сила ControlNet: одно значение для всех, список по порядку или словарь по control_type / имени ──
@@ -896,6 +974,47 @@ class InferencePipeline:
         """Move pipeline to device."""
         self.graph.to(device, dtype)
         return self
+
+    def prepare_ip_adapter_embeds(
+        self,
+        ip_adapter_image: Union[str, Path, Any, List[Any], Dict[str, Any]],
+        *,
+        ip_adapter_scale: Optional[Union[float, List[float]]] = None,
+        device: Optional[Union[str, torch.device]] = None,
+    ) -> Optional[torch.Tensor]:
+        """Precompute IP-Adapter image embeddings for reuse (Diffusers prepare_ip_adapter_image_embeds).
+
+        Encode images and project to cross-attention tokens. Save with torch.save(embeds, path)
+        and pass to pipe(..., ip_image_embeds=torch.load(path)) to skip encoding on each run.
+
+        Args:
+            ip_adapter_image: Single image or list/dict (same as ip_image).
+            ip_adapter_scale: Optional; applied when using embeds in generation.
+            device: Target device. Default: graph device.
+
+        Returns:
+            Tensor (1, num_tokens, dim) or (1, N*num_tokens, dim), or None if no IP-Adapter.
+        """
+        if "ip_image_encoder" not in (self.graph.nodes or {}) or "ip_adapter" not in (self.graph.nodes or {}):
+            return None
+        images = _normalize_ip_image(ip_adapter_image)
+        if not images:
+            return None
+        raw = {"image": images[0]} if len(images) == 1 else {"images": images}
+        encoder = self.graph.nodes["ip_image_encoder"]
+        adapter = self.graph.nodes["ip_adapter"]
+        enc_out = encoder.process(raw_condition=raw)
+        emb = enc_out.get("embedding")
+        if emb is None:
+            return None
+        proj_out = adapter.process(image_features=emb)
+        out = proj_out.get("image_prompt_embeds")
+        if out is None:
+            return None
+        dev = device or getattr(self.graph, "_device", None) or torch.device("cpu")
+        if hasattr(out, "to"):
+            out = out.to(device=dev)
+        return out
 
     def load_lora_weights(
         self,
@@ -947,6 +1066,10 @@ class InferencePipeline:
         use_ip=True  — ставим процессоры IP-Adapter (пайплайн с референсным изображением).
         use_ip=False — восстанавливаем обычные процессоры (голый пайплайн / только ControlNet).
         Если при материализации UNet был на meta, процессоры инициализируются при первом use_ip=True.
+
+        When restoring (use_ip=False), we pass a shallow copy of the original processors dict
+        to avoid reference aliasing: diffusers may store the passed dict, and mutation would
+        corrupt our saved originals and leave residual IP-Adapter influence on the next switch.
         """
         from yggdrasil.core.graph.adapters import (
             ensure_ip_adapter_processors_on_device,
@@ -964,7 +1087,8 @@ class InferencePipeline:
             if use_ip:
                 procs = getattr(block, "_ip_adapter_processors", None)
                 if procs is not None and n_attn > 0 and len(procs) == n_attn:
-                    unet.set_attn_processor(procs)
+                    # Shallow copy so diffusers does not alias our stored dict
+                    unet.set_attn_processor(dict(procs))
                     ensure_ip_adapter_processors_on_device(unet)
                 elif n_attn > 0 and has_scale:
                     # Отложенная инициализация: UNet при материализации был на meta
@@ -975,7 +1099,9 @@ class InferencePipeline:
                     ensure_ip_adapter_processors_on_device(unet)
             else:
                 if has_original and n_attn > 0 and len(block._ip_adapter_original_processors) == n_attn:
-                    unet.set_attn_processor(block._ip_adapter_original_processors)
+                    # Shallow copy: avoid passing our stored dict by reference so diffusers cannot
+                    # mutate it. Otherwise residual IP-Adapter state can "stick" across calls.
+                    unet.set_attn_processor(dict(block._ip_adapter_original_processors))
 
     def _get_denoise_loop_node(self) -> Tuple[Optional[str], Any]:
         """Return (loop_node_name, loop_block) for the graph's denoise loop (by name 'denoise_loop' or by role loop/)."""

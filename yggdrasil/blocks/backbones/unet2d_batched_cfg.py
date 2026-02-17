@@ -30,6 +30,7 @@ class UNet2DBatchedCFGBackbone(AbstractBackbone):
             config.get("pretrained", "runwayml/stable-diffusion-v1-5"),
             subfolder="unet",
             torch_dtype=torch.float16 if config.get("fp16", True) else torch.float32,
+            low_cpu_mem_usage=False,
         )
         self.unet.requires_grad_(False)
         self.scale = float(config.get("scale", 7.5))
@@ -43,6 +44,7 @@ class UNet2DBatchedCFGBackbone(AbstractBackbone):
             "condition": InputPort("condition", data_type="dict", description="Condition embeddings (positive)"),
             "uncond": InputPort("uncond", data_type="dict", description="Unconditional embeddings (negative)"),
             "image_prompt_embeds": InputPort("image_prompt_embeds", data_type="any", optional=True, description="IP-Adapter image embeddings (batch, num_tokens, dim)"),
+            "ip_adapter_masks": InputPort("ip_adapter_masks", data_type="any", optional=True, description="Spatial masks for IP-Adapter region conditioning (N, 1, h, w)"),
             "adapter_features": InputPort("adapter_features", data_type="any", optional=True, description="ControlNet/Adapter residuals (dict or tuple)"),
             "output": OutputPort("output", spec=TensorSpec(space="latent"), description="Guided noise prediction"),
         }
@@ -103,6 +105,12 @@ class UNet2DBatchedCFGBackbone(AbstractBackbone):
             encoder_hidden_states=encoder_hidden_states,
             return_dict=False,
         )
+        ip_masks = port_inputs.get("ip_adapter_masks")
+        if ip_masks is not None:
+            ip_masks = ip_masks.to(device=model_device, dtype=model_dtype)
+            if ip_masks.dim() >= 4 and ip_masks.shape[0] < latent_2.shape[0]:
+                ip_masks = ip_masks.repeat(2, 1, 1, 1)
+            unet_kw["cross_attention_kwargs"] = {"ip_adapter_masks": ip_masks}
         if added_cond is not None and added_uncond is not None:
             text_embeds_2 = torch.cat([added_uncond["text_embeds"], added_cond["text_embeds"]], dim=0)
             time_ids_2 = torch.cat([added_uncond["time_ids"], added_cond["time_ids"]], dim=0)
@@ -117,8 +125,12 @@ class UNet2DBatchedCFGBackbone(AbstractBackbone):
                 all_mid = []
                 for a in af:
                     out = a.get("output") if isinstance(a.get("output"), dict) else a
-                    d = out.get("down_block_additional_residuals") or out.get("down_block_residuals")
-                    m = out.get("mid_block_additional_residual") or out.get("mid_block_residual")
+                    d = out.get("down_block_additional_residuals")
+                    if d is None:
+                        d = out.get("down_block_residuals")
+                    m = out.get("mid_block_additional_residual")
+                    if m is None:
+                        m = out.get("mid_block_residual")
                     if d is not None:
                         all_down.append(d if isinstance(d, (list, tuple)) else [d])
                     if m is not None:
@@ -164,6 +176,8 @@ class UNet2DBatchedCFGBackbone(AbstractBackbone):
             if mid_res is not None and isinstance(mid_res, torch.Tensor):
                 mid_res_2 = mid_res.repeat(2, 1, 1, 1).to(device=model_device, dtype=model_dtype)
                 unet_kw["mid_block_additional_residual"] = mid_res_2
+        # Ensure UNet dtype consistency (fix "Input type Half and bias type float" with ControlNet/IP-Adapter)
+        self.unet.to(dtype=model_dtype)
         noise_pred = self.unet(**unet_kw)[0]
         uncond_pred, cond_pred = noise_pred.chunk(2, dim=0)
         # CFG in float32 to avoid banding from float16 cancellation (diffusers / guidance/cfg parity)

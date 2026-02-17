@@ -72,6 +72,26 @@ class ImagePlugin(AbstractPlugin):
             from ...blocks.guidances.cfg import ClassifierFreeGuidance
         except ImportError:
             pass
+        try:
+            from ...blocks.conditioners.ip_adapter_mask import IPAdapterMaskConditioner
+        except ImportError:
+            pass
+        try:
+            from ...blocks.conditioners.faceid import FaceIDConditioner
+        except ImportError:
+            pass
+        try:
+            from ...blocks.adapters.ip_adapter_plus import IPAdapterPlus
+        except ImportError:
+            pass
+        try:
+            from ...blocks.adapters.ip_adapter_faceid import IPAdapterFaceID
+        except ImportError:
+            pass
+        try:
+            from ...blocks.adapters.ip_adapter_merge import IPAdapterMerge
+        except ImportError:
+            pass
     
     @classmethod
     def get_ui_schema(cls) -> Dict[str, Any]:

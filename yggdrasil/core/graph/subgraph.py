@@ -185,6 +185,7 @@ class LoopSubGraph(AbstractBaseBlock):
             "condition": InputPort("condition", data_type="any", optional=True, description="Условия (тензор или словарь)"),
             "uncond": InputPort("uncond", data_type="any", optional=True, description="Null condition for CFG"),
             "image_prompt_embeds": InputPort("image_prompt_embeds", data_type="any", optional=True, description="IP-Adapter image prompt embeddings (batch, num_tokens, cross_attn_dim)"),
+            "ip_adapter_masks": InputPort("ip_adapter_masks", data_type="any", optional=True, description="Spatial masks for IP-Adapter region conditioning (N, 1, h, w)"),
             "control_image": InputPort("control_image", data_type="any", optional=True, description="ControlNet conditioning image (canny, depth, etc.); for Canny use an edge map, not a raw photo"),
             "latents": OutputPort("latents", description="Финальные латенты"),
         }

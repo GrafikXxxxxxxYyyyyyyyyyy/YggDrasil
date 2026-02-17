@@ -34,21 +34,26 @@ class EulerDiscreteSolver(AbstractSolver):
         super().__init__(config)
         from diffusers import EulerDiscreteScheduler
 
-        num_train_timesteps = int(self.config.get("num_train_timesteps", 1000))
-        beta_start = float(self.config.get("beta_start", 0.00085))
-        beta_end = float(self.config.get("beta_end", 0.012))
-        beta_schedule = self.config.get("beta_schedule", "scaled_linear")
-        steps_offset = int(self.config.get("steps_offset", 1))
-        timestep_spacing = self.config.get("timestep_spacing", "leading")
-
-        self.scheduler = EulerDiscreteScheduler(
-            num_train_timesteps=num_train_timesteps,
-            beta_start=beta_start,
-            beta_end=beta_end,
-            beta_schedule=beta_schedule,
-            steps_offset=steps_offset,
-            timestep_spacing=timestep_spacing,
-        )
+        pretrained = self.config.get("pretrained")
+        if pretrained:
+            self.scheduler = EulerDiscreteScheduler.from_pretrained(
+                pretrained, subfolder="scheduler"
+            )
+        else:
+            num_train_timesteps = int(self.config.get("num_train_timesteps", 1000))
+            beta_start = float(self.config.get("beta_start", 0.00085))
+            beta_end = float(self.config.get("beta_end", 0.012))
+            beta_schedule = self.config.get("beta_schedule", "scaled_linear")
+            steps_offset = int(self.config.get("steps_offset", 1))
+            timestep_spacing = self.config.get("timestep_spacing", "leading")
+            self.scheduler = EulerDiscreteScheduler(
+                num_train_timesteps=num_train_timesteps,
+                beta_start=beta_start,
+                beta_end=beta_end,
+                beta_schedule=beta_schedule,
+                steps_offset=steps_offset,
+                timestep_spacing=timestep_spacing,
+            )
         self._num_inference_steps = None
         self._device = None
 

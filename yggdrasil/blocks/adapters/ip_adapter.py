@@ -185,13 +185,22 @@ class IPAdapter(AbstractAdapter):
         return {
             "image_features": InputPort("image_features",
                                         optional=True,
-                                        description="CLIP image embeddings (batch, embed_dim) or (batch, 1, embed_dim). None when no ip_image — output will be None (text-only)."),
+                                        description="CLIP image embeddings (batch, embed_dim). None when using ip_image_embeds."),
+            "image_embeds": InputPort("image_embeds",
+                                     optional=True,
+                                     description="Pre-computed projected tokens (1, N*num_tokens, dim). Bypass encoder+projection when provided (Diffusers ip_adapter_image_embeds)."),
+            "image_scales": InputPort("image_scales",
+                                     optional=True,
+                                     description="(Unused.) Per-image scales applied in UNet processor."),
             "image_prompt_embeds": OutputPort("image_prompt_embeds",
-                                              description="Projected tokens for cross-attention (1 or batch, num_tokens, dim)"),
+                                              description="Projected tokens for cross-attention (1, num_tokens, dim) or (1, N*num_tokens, dim)"),
         }
 
     def process(self, **kw) -> Dict[str, Any]:
-        """Project image features to cross-attention tokens. Supports multiple images (batch): combined via mean or first."""
+        """Project image features to cross-attention tokens. If image_embeds provided, pass through (prepare_ip_adapter_embeds reuse)."""
+        image_embeds = kw.get("image_embeds")
+        if image_embeds is not None:
+            return {"image_prompt_embeds": image_embeds}
         image_features = kw.get("image_features")
         if image_features is None:
             return {"image_prompt_embeds": None}
@@ -202,15 +211,13 @@ class IPAdapter(AbstractAdapter):
         # Flatten (batch, 1, embed_dim) -> (batch, embed_dim) if needed
         if image_features.dim() == 3:
             image_features = image_features.squeeze(1)
-        # Multiple images: combine to single conditioning (backbone expects one conditioning vector per generation batch)
-        if image_features.shape[0] > 1:
-            if self.multi_image_mode == "first":
-                image_features = image_features[0:1]
-            else:
-                # mean (default): average embeddings then project
-                image_features = image_features.mean(dim=0, keepdim=True)
-        # Project to cross-attention space
-        image_prompt_embeds = self.image_proj(image_features)
+        n = image_features.shape[0]
+        if n > 1:
+            # Diffusers-style: project each image separately, concat along sequence (1, N*num_tokens, dim)
+            proj_per_img = self.image_proj(image_features)  # (N, num_tokens, dim)
+            image_prompt_embeds = proj_per_img.reshape(1, -1, proj_per_img.shape[-1])  # (1, N*num_tokens, dim)
+        else:
+            image_prompt_embeds = self.image_proj(image_features)
         return {"image_prompt_embeds": image_prompt_embeds}
     
     def inject_into(self, target):

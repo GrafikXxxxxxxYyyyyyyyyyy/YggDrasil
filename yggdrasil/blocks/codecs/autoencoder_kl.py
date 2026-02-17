@@ -30,6 +30,7 @@ class AutoencoderKLCodec(AbstractLatentCodec):
         }
         if config.get("token") is not None:
             load_kwargs["token"] = config.get("token")
+        load_kwargs.setdefault("low_cpu_mem_usage", False)
         self.vae = AutoencoderKL.from_pretrained(
             config.get("pretrained", "runwayml/stable-diffusion-v1-5"),
             **load_kwargs,

@@ -64,7 +64,7 @@ class ControlNetAdapter(AbstractAdapter):
             try:
                 dtype = torch.float16 if config.get("fp16", True) else torch.float32
                 self.controlnet = ControlNetModel.from_pretrained(
-                    self.pretrained, torch_dtype=dtype,
+                    self.pretrained, torch_dtype=dtype, low_cpu_mem_usage=False
                 )
                 self.controlnet.requires_grad_(config.get("trainable", False))
                 logger.info(f"Loaded ControlNet: {self.pretrained}")

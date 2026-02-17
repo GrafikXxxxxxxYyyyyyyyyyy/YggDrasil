@@ -30,7 +30,7 @@ class ImageEncoderConditioner(AbstractConditioner):
         
         self._processor = CLIPImageProcessor.from_pretrained(self.pretrained)
         self._model = CLIPVisionModelWithProjection.from_pretrained(
-            self.pretrained, torch_dtype=torch.float16
+            self.pretrained, torch_dtype=torch.float16, low_cpu_mem_usage=False
         )
         self._model.eval()
     

@@ -8,7 +8,7 @@ adapter_features. Исходные данные для адаптера можн
 from __future__ import annotations
 
 import torch.nn.functional as F
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .graph import ComputeGraph
 from ..block.builder import BlockBuilder
@@ -111,19 +111,59 @@ def ensure_ip_adapter_processors_on_device(unet: Any) -> None:
         pass
 
 
-def set_ip_adapter_scale_on_unet(unet: Any, scale: float) -> None:
-    """Set IP-Adapter strength (0..1+) on all IP-Adapter attention processors of a diffusers UNet.
+def set_ip_adapter_scale_on_unet(
+    unet: Any,
+    scale: Union[float, List[float], Dict[str, Any]],
+) -> None:
+    """Set IP-Adapter strength on attention processors (Diffusers-style).
 
-    Call this before each generation if you want to change strength per call (e.g. pipe(..., ip_adapter_scale=0.9)).
+    scale:
+        - float: same strength for all layers and images.
+        - List[float]: per-image scales (e.g. [0.7, 0.8] for 2 images).
+        - Dict (InstantStyle): per-block scale. Keys are attn name prefixes; values are
+          scale or list. E.g. {"down_blocks.2": [0.0, 1.0], "up_blocks.0": [0.0, 1.0, 0.0]}.
+          Layers not in dict get 0 (disabled).
     """
     from diffusers.models.attention_processor import IPAdapterAttnProcessor, IPAdapterAttnProcessor2_0
 
     if not getattr(unet, "attn_processors", None):
         return
-    for proc in unet.attn_processors.values():
-        if isinstance(proc, (IPAdapterAttnProcessor, IPAdapterAttnProcessor2_0)):
+    # Flatten nested dict {"down": {"block_2": s}, "up": {"block_0": s}} -> {"down_blocks.2": s, "up_blocks.0": s}
+    scale_dict: Optional[Dict[str, Any]] = None
+    scale_list: Optional[List[float]] = None
+    if isinstance(scale, dict):
+        flat: Dict[str, Any] = {}
+        for k, v in scale.items():
+            if isinstance(v, dict):
+                dir_prefix = "down_blocks." if k == "down" else "up_blocks." if k == "up" else f"{k}."
+                for bk, bv in v.items():
+                    block_id = bk.replace("block_", "")
+                    flat[f"{dir_prefix}{block_id}"] = bv
+            else:
+                flat[k] = v
+        scale_dict = flat if flat else None
+    elif isinstance(scale, (list, tuple)):
+        scale_list = [float(s) for s in scale]
+    else:
+        scale_list = [float(scale)]
+
+    for attn_name, proc in unet.attn_processors.items():
+        if not isinstance(proc, (IPAdapterAttnProcessor, IPAdapterAttnProcessor2_0)):
+            continue
+        if scale_dict is not None:
+            best_key, best_val = None, 0.0
+            for k, v in scale_dict.items():
+                if attn_name.startswith(k) and (best_key is None or len(k) > len(best_key or "")):
+                    best_key, best_val = k, v
+            val = best_val if best_key is not None else 0.0
+            if isinstance(val, (list, tuple)):
+                proc.scale = [float(x) for x in val]
+            else:
+                n = len(proc.scale) if isinstance(proc.scale, (list, tuple)) else 1
+                proc.scale = [float(val)] * n
+        else:
             n = len(proc.scale) if isinstance(proc.scale, (list, tuple)) else 1
-            proc.scale = [scale] * n
+            proc.scale = [scale_list[i % len(scale_list)] for i in range(n)]
 
 
 # Тип "источник по ссылке": (имя_узла, имя_порта)
@@ -314,8 +354,12 @@ def add_controlnet_to_graph(
 
     inner.expose_input(input_name, node_name, "control_image")
     inner.expose_input("condition", node_name, "encoder_hidden_states")
-    inner.expose_input("latents", node_name, "sample")
     inner.expose_input("timestep", node_name, "timestep")
+    # SDXL/Euler: ControlNet must receive scaled latents (parity with diffusers pipeline_controlnet_sd_xl)
+    if "scale_input" in inner.nodes and hasattr(inner.nodes["scale_input"], "block_type"):
+        inner.connect("scale_input", "scaled", node_name, "sample")
+    else:
+        inner.expose_input("latents", node_name, "sample")
     inner.connect(node_name, "output", "backbone", "adapter_features")
 
     if control_image_source is not None:
@@ -406,6 +450,7 @@ def add_ip_adapter_to_graph(
     graph.add_node("ip_image_encoder", image_encoder)
     graph.add_node("ip_adapter", ip_adapter)
     graph.connect("ip_image_encoder", "embedding", "ip_adapter", "image_features")
+    graph.connect("ip_image_encoder", "scales", "ip_adapter", "image_scales")
 
     if image_source is not None:
         src_node, src_port = image_source
@@ -414,9 +459,183 @@ def add_ip_adapter_to_graph(
         graph.connect(src_node, src_port, "ip_image_encoder", "raw_condition")
     else:
         graph.expose_input("ip_image", "ip_image_encoder", "raw_condition")
+    # Optional: pre-computed embeds (Diffusers ip_adapter_image_embeds). Bypasses encoder when provided.
+    graph.expose_input("ip_image_embeds", "ip_adapter", "image_embeds")
 
-    # IP-Adapter output can be wired to loop if backbone accepts ip_adapter_embeds
-    # (optional: connect to denoise_loop.ip_adapter_embeds when loop supports it)
+    # Wire adapter output to denoise loop
+    graph.connect("ip_adapter", "image_prompt_embeds", "denoise_loop", "image_prompt_embeds")
+
+    # Set IP-Adapter attention processors on UNet
+    loop_block = graph.nodes.get("denoise_loop")
+    if loop_block is not None:
+        inner = getattr(loop_block, "graph", None) or getattr(getattr(loop_block, "_loop", None), "graph", None)
+        if inner and "backbone" in getattr(inner, "nodes", {}):
+            backbone = inner.nodes["backbone"]
+            unet = getattr(backbone, "unet", None)
+            if unet is not None and hasattr(unet, "set_attn_processor"):
+                backbone._ip_adapter_scale = ip_adapter_scale
+                attn_procs = getattr(unet, "attn_processors", None)
+                if attn_procs and len(attn_procs) > 0 and getattr(backbone, "_ip_adapter_original_processors", None) is None:
+                    backbone._ip_adapter_original_processors = dict(attn_procs)
+                set_ip_adapter_processors_on_unet(unet, scale=ip_adapter_scale)
+
+    # Optional: spatial masks for region-specific IP conditioning (conditioner/ip_adapter_mask output)
+    graph.expose_input("ip_adapter_masks", "denoise_loop", "ip_adapter_masks")
+
+    return graph
+
+
+def add_ip_adapter_plus_to_graph(
+    graph: ComputeGraph,
+    ip_adapter_scale: float = 0.6,
+    image_source: Optional[SourceRef] = None,
+    image_encoder_pretrained: str = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K",
+    cross_attention_dim: Optional[int] = None,
+    **ip_adapter_kwargs: Any,
+) -> ComputeGraph:
+    """Add IP-Adapter Plus (patch-level, ViT-H) to graph.
+
+    Uses CLIP ViT-H with output_mode='patches' and adapter/ip_adapter_plus.
+    If base IP-Adapter already exists, adds merge block and wires both to loop.
+    """
+    if "denoise_loop" not in graph.nodes:
+        raise ValueError("Graph must have a 'denoise_loop' node")
+    if cross_attention_dim is None:
+        meta = getattr(graph, "metadata", None) or {}
+        cross_attention_dim = meta.get("cross_attention_dim") or get_cross_attention_dim_from_graph(graph)
+    if cross_attention_dim is None:
+        raise ValueError("IP-Adapter Plus requires cross_attention_dim")
+
+    encoder_cfg = {
+        "type": "conditioner/clip_vision",
+        "pretrained": image_encoder_pretrained,
+        "output_mode": "patches",
+    }
+    image_encoder = BlockBuilder.build(encoder_cfg)
+    image_embed_dim = getattr(image_encoder, "embedding_dim", None) or 1280
+    ip_config = {
+        "type": "adapter/ip_adapter_plus",
+        "scale": ip_adapter_scale,
+        "image_embed_dim": image_embed_dim,
+        "cross_attention_dim": cross_attention_dim,
+        **ip_adapter_kwargs,
+    }
+    ip_adapter = BlockBuilder.build(ip_config)
+    enc_name, adp_name = "ip_image_encoder_plus", "ip_adapter_plus"
+    graph.add_node(enc_name, image_encoder)
+    graph.add_node(adp_name, ip_adapter)
+    graph.connect(enc_name, "patches", adp_name, "image_features")
+    if image_source is not None:
+        src_node, src_port = image_source
+        if src_node in graph.nodes:
+            graph.connect(src_node, src_port, enc_name, "raw_condition")
+    else:
+        graph.expose_input("ip_image_plus", enc_name, "raw_condition")
+
+    denoise_loop_node = "denoise_loop"
+    if "ip_adapter" in graph.nodes and "ip_adapter_merge" not in graph.nodes:
+        graph.edges = [e for e in graph.edges if not (
+            e.src_node == "ip_adapter" and e.src_port == "image_prompt_embeds"
+            and e.dst_node == denoise_loop_node and e.dst_port == "image_prompt_embeds"
+        )]
+        merge = BlockBuilder.build({"type": "adapter/ip_adapter_merge"})
+        graph.add_node("ip_adapter_merge", merge)
+        graph.connect("ip_adapter", "image_prompt_embeds", "ip_adapter_merge", "embeds_0")
+        graph.connect(adp_name, "image_prompt_embeds", "ip_adapter_merge", "embeds_1")
+        graph.connect("ip_adapter_merge", "image_prompt_embeds", denoise_loop_node, "image_prompt_embeds")
+    elif "ip_adapter_merge" in graph.nodes:
+        graph.connect(adp_name, "image_prompt_embeds", "ip_adapter_merge", "embeds_1")
+    else:
+        graph.connect(adp_name, "image_prompt_embeds", denoise_loop_node, "image_prompt_embeds")
+
+    loop_block = graph.nodes.get(denoise_loop_node)
+    if loop_block is not None:
+        inner = getattr(loop_block, "graph", None) or getattr(getattr(loop_block, "_loop", None), "graph", None)
+        if inner and "backbone" in getattr(inner, "nodes", {}):
+            backbone = inner.nodes["backbone"]
+            unet = getattr(backbone, "unet", None)
+            if unet is not None and hasattr(unet, "set_attn_processor"):
+                backbone._ip_adapter_scale = ip_adapter_scale
+                attn_procs = getattr(unet, "attn_processors", None)
+                if attn_procs and len(attn_procs) > 0 and not getattr(backbone, "_ip_adapter_original_processors", None):
+                    backbone._ip_adapter_original_processors = dict(attn_procs)
+                set_ip_adapter_processors_on_unet(unet, scale=ip_adapter_scale, num_tokens=(16,))
+    graph.expose_input("ip_adapter_masks", denoise_loop_node, "ip_adapter_masks")
+    return graph
+
+
+def add_ip_adapter_faceid_to_graph(
+    graph: ComputeGraph,
+    ip_adapter_scale: float = 0.6,
+    image_source: Optional[SourceRef] = None,
+    cross_attention_dim: Optional[int] = None,
+    **ip_adapter_kwargs: Any,
+) -> ComputeGraph:
+    """Add IP-Adapter FaceID to graph.
+
+    Uses conditioner/faceid (InsightFace) and adapter/ip_adapter_faceid.
+    Requires: pip install insightface
+    """
+    if "denoise_loop" not in graph.nodes:
+        raise ValueError("Graph must have a 'denoise_loop' node")
+    if cross_attention_dim is None:
+        meta = getattr(graph, "metadata", None) or {}
+        cross_attention_dim = meta.get("cross_attention_dim") or get_cross_attention_dim_from_graph(graph)
+    if cross_attention_dim is None:
+        raise ValueError("IP-Adapter FaceID requires cross_attention_dim")
+
+    face_encoder = BlockBuilder.build({"type": "conditioner/faceid"})
+    ip_config = {
+        "type": "adapter/ip_adapter_faceid",
+        "scale": ip_adapter_scale,
+        "face_embed_dim": 512,
+        "cross_attention_dim": cross_attention_dim,
+        "num_tokens": 4,
+        **ip_adapter_kwargs,
+    }
+    ip_adapter = BlockBuilder.build(ip_config)
+    enc_name, adp_name = "ip_faceid_encoder", "ip_adapter_faceid"
+    graph.add_node(enc_name, face_encoder)
+    graph.add_node(adp_name, ip_adapter)
+    graph.connect(enc_name, "embedding", adp_name, "image_features")
+    if image_source is not None:
+        src_node, src_port = image_source
+        if src_node in graph.nodes:
+            graph.connect(src_node, src_port, enc_name, "raw_condition")
+    else:
+        graph.expose_input("ip_face_image", enc_name, "raw_condition")
+
+    denoise_loop_node = "denoise_loop"
+    if "ip_adapter" in graph.nodes or "ip_adapter_plus" in graph.nodes:
+        if "ip_adapter_merge" not in graph.nodes:
+            merge = BlockBuilder.build({"type": "adapter/ip_adapter_merge"})
+            graph.add_node("ip_adapter_merge", merge)
+            prev = "ip_adapter" if "ip_adapter" in graph.nodes else "ip_adapter_plus"
+            graph.edges = [e for e in graph.edges if not (
+                e.src_node == prev and e.src_port == "image_prompt_embeds"
+                and e.dst_node == denoise_loop_node and e.dst_port == "image_prompt_embeds"
+            )]
+            graph.connect(prev, "image_prompt_embeds", "ip_adapter_merge", "embeds_0")
+            graph.connect(adp_name, "image_prompt_embeds", "ip_adapter_merge", "embeds_1")
+            graph.connect("ip_adapter_merge", "image_prompt_embeds", denoise_loop_node, "image_prompt_embeds")
+        else:
+            graph.connect(adp_name, "image_prompt_embeds", "ip_adapter_merge", "embeds_2")
+    else:
+        graph.connect(adp_name, "image_prompt_embeds", denoise_loop_node, "image_prompt_embeds")
+
+    loop_block = graph.nodes.get(denoise_loop_node)
+    if loop_block is not None:
+        inner = getattr(loop_block, "graph", None) or getattr(getattr(loop_block, "_loop", None), "graph", None)
+        if inner and "backbone" in getattr(inner, "nodes", {}):
+            backbone = inner.nodes["backbone"]
+            unet = getattr(backbone, "unet", None)
+            if unet is not None and hasattr(unet, "set_attn_processor"):
+                backbone._ip_adapter_scale = ip_adapter_scale
+                attn_procs = getattr(unet, "attn_processors", None)
+                if attn_procs and len(attn_procs) > 0 and not getattr(backbone, "_ip_adapter_original_processors", None):
+                    backbone._ip_adapter_original_processors = dict(attn_procs)
+                set_ip_adapter_processors_on_unet(unet, scale=ip_adapter_scale)
+    graph.expose_input("ip_adapter_masks", denoise_loop_node, "ip_adapter_masks")
     return graph
 
 
@@ -451,6 +670,10 @@ def add_adapter_to_graph(
             image_source=input_source,
             **kwargs,
         )
+    if adapter_type == "ip_adapter_plus":
+        return add_ip_adapter_plus_to_graph(graph, image_source=input_source, **kwargs)
+    if adapter_type == "ip_adapter_faceid":
+        return add_ip_adapter_faceid_to_graph(graph, image_source=input_source, **kwargs)
     if adapter_type == "t2i_adapter" or adapter_type == "t2i":
         return add_t2i_adapter_to_graph(
             graph,
