@@ -32,9 +32,6 @@ class AbstractAdapter(AbstractBaseBlock):
         result = self.apply(x, context)
         return {"output": result}
     
-    def _define_slots(self):
-        return {}
-    
     @abstractmethod
     def inject_into(self, target: AbstractBackbone | ModularDiffusionModel):
         """Инжектирует себя в целевую модель/backbone."""

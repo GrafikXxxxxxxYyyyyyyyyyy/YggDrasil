@@ -7,7 +7,6 @@ from omegaconf import DictConfig
 from typing import Dict, Any, List
 
 from yggdrasil.core.block.registry import register_block
-from yggdrasil.core.block.slot import Slot
 from yggdrasil.core.model.backbone import AbstractBackbone
 from .base import AbstractAdapter
 
@@ -24,27 +23,15 @@ class CrossAttentionFusionAdapter(AbstractAdapter):
         self.dim = config.get("dim", 768)
         self.num_heads = config.get("num_heads", 8)
         self.scale = config.get("scale", 1.0)
-        
         self.projectors = nn.ModuleDict({
             mod: nn.Linear(self.dim, self.dim) for mod in self.modalities
         })
-        
         self.cross_attn = nn.MultiheadAttention(
             embed_dim=self.dim,
             num_heads=self.num_heads,
             batch_first=True
         )
-    
-    def _define_slots(self):
-        return {
-            "conditioners": Slot(
-                name="conditioners",
-                accepts=AbstractBaseBlock,
-                multiple=True,
-                optional=True
-            )
-        }
-    
+
     def inject_into(self, target: AbstractBackbone):
         if hasattr(target, "unet"):
             original_forward = target.unet.forward

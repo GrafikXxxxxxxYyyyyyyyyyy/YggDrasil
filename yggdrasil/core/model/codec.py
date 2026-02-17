@@ -52,9 +52,6 @@ class AbstractLatentCodec(AbstractBaseBlock):
             encoded = self.encode(x)
             return {"encoded": encoded, "output": encoded}
     
-    def _define_slots(self):
-        return {}
-    
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         """x -> latents. Override this or process()."""
         raise NotImplementedError(f"{type(self).__name__} must implement encode()")

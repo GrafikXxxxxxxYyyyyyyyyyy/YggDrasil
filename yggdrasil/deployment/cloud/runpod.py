@@ -137,7 +137,8 @@ def _handle_legacy(input_data: Dict[str, Any]) -> Dict[str, Any]:
     width = input_data.get("width", 512)
     height = input_data.get("height", 512)
     
-    codec = model._slot_children.get("codec")
+    nodes = getattr(getattr(model, "_graph", None), "nodes", None) or getattr(model, "_slot_children", {})
+    codec = nodes.get("codec")
     if codec and hasattr(codec, "get_latent_shape"):
         shape = codec.get_latent_shape(1, height, width)
     else:

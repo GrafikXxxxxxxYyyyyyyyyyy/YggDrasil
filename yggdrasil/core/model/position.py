@@ -29,9 +29,6 @@ class AbstractPositionEmbedder(AbstractBaseBlock):
         emb = self(timestep, shape)
         return {"embedding": emb, "output": emb}
     
-    def _define_slots(self):
-        return {}
-
     def _forward_impl(self, *args, **kwargs) -> torch.Tensor:
         """Требуется AbstractBaseBlock; делегирует в __call__(timestep, shape)."""
         return self(*args, **kwargs)

@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Dict, Any, Union, Optional
 import copy
 
-from ...core.block.slot import Slot
 from ...core.block.registry import list_blocks
 
 
@@ -36,17 +35,6 @@ def merge_configs(*configs: DictConfig) -> DictConfig:
 
 
 def validate_slots(config: DictConfig, block_type: str) -> None:
-    """Валидация слотов перед сборкой (очень полезно в runtime)."""
-    from ...core.block.registry import get_block_class
-    
-    BlockClass = get_block_class(block_type)
-    expected_slots = BlockClass._define_slots() if hasattr(BlockClass, "_define_slots") else {}
-    
-    for slot_name, slot in expected_slots.items():
-        if not slot.optional and slot_name not in config:
-            raise ValueError(f"Слот '{slot_name}' обязателен для {block_type}")
-        
-        if slot_name in config and "type" in config[slot_name]:
-            # Рекурсивная проверка вложенных блоков
-            child_type = config[slot_name].get("type")
-            validate_slots(config[slot_name], child_type)
+    """Validate required config keys for known block types (graph engine; no slots)."""
+    if block_type == "model/modular" and "backbone" not in config:
+        raise ValueError("model/modular requires 'backbone' in config")

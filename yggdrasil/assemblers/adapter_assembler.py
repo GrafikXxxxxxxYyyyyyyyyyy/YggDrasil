@@ -155,7 +155,9 @@ class AdapterAssembler:
     @staticmethod
     def list_adapters(model: ModularDiffusionModel) -> List[str]:
         """List all adapters currently attached to a model."""
-        adapters = model._slot_children.get("adapters", [])
+        nodes = getattr(model, "_graph", None)
+        nodes = nodes.nodes if nodes and getattr(nodes, "nodes", None) else getattr(model, "_slot_children", {})
+        adapters = list(nodes.get("adapters", [])) if isinstance(nodes.get("adapters"), list) else [nodes[k] for k in (nodes or {}) if isinstance(k, str) and k.startswith("adapter_")]
         return [
             f"{getattr(a, 'block_type', type(a).__name__)} (id={getattr(a, 'block_id', '?')})"
             for a in adapters

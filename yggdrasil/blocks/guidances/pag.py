@@ -52,29 +52,24 @@ class PerturbedAttentionGuidance(AbstractGuidance):
         if self.scale <= 0.0 or model is None or x is None or t is None:
             return model_output
         
-        # Save and temporarily disable guidance to avoid recursion
-        original_guidances = model._slot_children.get("guidance", [])
-        model._slot_children["guidance"] = []
-        
+        nodes = getattr(getattr(model, "_graph", None), "nodes", None) or getattr(model, "_slot_children", {})
+        guidance_keys = [k for k in (nodes or {}) if isinstance(k, str) and k.startswith("guidance_")]
+        saved = {}
+        if hasattr(model, "_graph") and model._graph and guidance_keys:
+            for k in guidance_keys:
+                saved[k] = model._graph.nodes.pop(k, None)
         try:
-            # Install attention perturbation hooks
             hooks = self._install_perturbation_hooks(model)
-            
-            # Run model with perturbed attention
-            perturbed_output = model._forward_impl(
-                x=x, t=t, condition=condition, return_dict=False
-            )
-            
-            # Remove hooks
+            perturbed_output = model._forward_impl(x=x, t=t, condition=condition, return_dict=False)
             for h in hooks:
                 h.remove()
-            
-            # PAG formula: output + scale * (output - perturbed_output)
             guided = model_output + self.scale * (model_output - perturbed_output)
             return guided
-            
         finally:
-            model._slot_children["guidance"] = original_guidances
+            if hasattr(model, "_graph") and model._graph and saved:
+                for k, v in saved.items():
+                    if v is not None:
+                        model._graph.nodes[k] = v
     
     def _install_perturbation_hooks(self, model) -> list:
         """Install hooks that replace attention with identity.
@@ -82,7 +77,8 @@ class PerturbedAttentionGuidance(AbstractGuidance):
         Returns list of hook handles for cleanup.
         """
         hooks = []
-        backbone = model._slot_children.get("backbone")
+        nodes = getattr(getattr(model, "_graph", None), "nodes", None) or getattr(model, "_slot_children", {})
+        backbone = nodes.get("backbone") if nodes else None
         if backbone is None:
             return hooks
         

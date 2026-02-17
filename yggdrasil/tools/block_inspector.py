@@ -62,24 +62,8 @@ def inspect_block(block_type: str):
     print(f"  Module:  {cls.__module__}")
     print(f"  Version: {getattr(cls, 'block_version', 'N/A')}")
     
-    # Show slots
-    try:
-        instance = cls.__new__(cls)
-        instance.config = {}
-        slots = cls._define_slots(instance)
-        if slots:
-            print(f"\n  Slots:")
-            for name, slot in slots.items():
-                accepts = getattr(slot.accepts, "__name__", str(slot.accepts))
-                optional = "optional" if slot.optional else "required"
-                multi = "multiple" if slot.multiple else "single"
-                print(f"    {name:20s} accepts={accepts:30s} [{optional}, {multi}]")
-                if slot.default:
-                    print(f"    {'':20s} default={slot.default}")
-        else:
-            print(f"\n  Slots: None")
-    except Exception:
-        print(f"\n  Slots: (could not inspect)")
+    # Graph nodes (no slots)
+    print(f"\n  Composition: graph-based (use declare_io() for ports)")
     
     # Show docstring
     if cls.__doc__:

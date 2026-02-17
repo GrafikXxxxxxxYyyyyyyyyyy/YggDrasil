@@ -6,6 +6,7 @@ ComputeGraph — DAG из блоков, соединённых через тип
 
 from .graph import ComputeGraph, Edge
 from .executor import GraphExecutor
+from .model_graph_builder import build_model_graph
 from .subgraph import SubGraph
 from .stage import AbstractStage
 from .adapters import (
@@ -79,4 +80,5 @@ __all__ = [
     "add_adapter_to_graph",
     "get_controlnet_input_mapping",
     "get_cross_attention_dim_from_graph",
+    "build_model_graph",
 ]

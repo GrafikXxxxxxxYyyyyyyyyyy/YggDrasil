@@ -10,7 +10,6 @@ from diffusers.models import UNet2DConditionModel
 
 from yggdrasil.core.block.registry import register_block
 from yggdrasil.core.block.port import InputPort, OutputPort
-from yggdrasil.core.block.slot import Slot
 from yggdrasil.core.block.base import AbstractBaseBlock
 from .base import AbstractAdapter
 from yggdrasil.core.model.backbone import AbstractBackbone
@@ -69,17 +68,7 @@ class T2IAdapter(AbstractAdapter):
             down_res = [x * self.scale for x in down_res]
             mid_res = None
         return {"output": {"down_block_additional_residuals": down_res, "mid_block_additional_residual": mid_res}}
-    
-    def _define_slots(self):
-        return {
-            "conditioner": Slot(
-                name="conditioner",
-                accepts=AbstractBaseBlock,
-                multiple=True,
-                optional=True
-            )
-        }
-    
+
     def inject_into(self, target: AbstractBackbone):
         if hasattr(target, "unet") and isinstance(target.unet, UNet2DConditionModel):
             original_forward = target.unet.forward

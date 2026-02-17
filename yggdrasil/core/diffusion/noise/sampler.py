@@ -32,9 +32,6 @@ class NoiseSampler(AbstractBaseBlock):
         noise = self.sample(shape, device, generator)
         return {"noise": noise, "output": noise}
     
-    def _define_slots(self):
-        return {}
-    
     def _forward_impl(self, *args, **kwargs):
         return self.sample(*args, **kwargs)
     

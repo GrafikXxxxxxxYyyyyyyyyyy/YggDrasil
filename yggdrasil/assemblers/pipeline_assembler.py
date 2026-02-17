@@ -58,8 +58,8 @@ class PipelineAssembler:
             sampler = DiffusionSampler(sampler_config, model=result.get("model"))
             
             # Attach process to sampler if not already in sampler config
-            if "process" in result and "diffusion_process" not in sampler._slot_children:
-                sampler.attach_slot("diffusion_process", result["process"])
+            if "process" in result and getattr(sampler, "_process", None) is None:
+                sampler._process = result["process"]
             
             result["sampler"] = sampler
         
@@ -121,12 +121,11 @@ class PipelineAssembler:
         # Build and attach process
         process_config = {"type": f"diffusion/process/{process}"}
         process_block = BlockBuilder.build(process_config)
-        sampler.attach_slot("diffusion_process", process_block)
+        sampler._process = process_block
         
-        # Build and attach solver
         solver_config = {"type": f"diffusion/solver/{solver}"}
         solver_block = BlockBuilder.build(solver_config)
-        sampler.attach_slot("solver", solver_block)
+        sampler._solver = solver_block
         
         return sampler
     

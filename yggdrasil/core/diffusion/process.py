@@ -7,21 +7,15 @@ from omegaconf import DictConfig
 
 from ...core.block.base import AbstractBaseBlock
 from ...core.block.registry import register_block
-from ...core.block.slot import Slot
 from ...core.block.port import Port, InputPort, OutputPort, TensorSpec
-
-from .noise.schedule import NoiseSchedule
 
 
 @register_block("diffusion/process/abstract")
 class AbstractDiffusionProcess(AbstractBaseBlock):
-    """Абстрактный диффузионный процесс (DDPM, Flow Matching, Consistency, SDE и т.д.).
-    
-    Это главный математический Lego-кирпичик.
-    """
-    
+    """Abstract diffusion process (DDPM, Flow Matching, etc.) — no slots; schedule from graph if needed."""
+
     block_type = "diffusion/process/abstract"
-    
+
     @classmethod
     def declare_io(cls) -> dict:
         return {
@@ -31,24 +25,14 @@ class AbstractDiffusionProcess(AbstractBaseBlock):
             "xt": OutputPort("xt", spec=TensorSpec(space="latent"), description="Noised data"),
             "target": OutputPort("target", description="Target for loss computation"),
         }
-    
+
     def process(self, **port_inputs) -> dict:
         x0 = port_inputs.get("x0")
         t = port_inputs.get("t")
         noise = port_inputs.get("noise")
         result = self.forward_process(x0, t, noise)
         return result
-    
-    def _define_slots(self) -> Dict[str, Slot]:
-        return {
-            "noise_schedule": Slot(
-                name="noise_schedule",
-                accepts=NoiseSchedule,
-                multiple=False,
-                optional=True
-            )
-        }
-    
+
     def _forward_impl(self, x0: torch.Tensor, t: torch.Tensor, noise: Optional[torch.Tensor] = None, **kwargs) -> Dict[str, torch.Tensor]:
         """Требуется AbstractBaseBlock; делегирует в forward_process."""
         return self.forward_process(x0, t, noise)

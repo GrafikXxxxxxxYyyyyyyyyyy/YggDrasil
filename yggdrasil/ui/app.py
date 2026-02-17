@@ -99,7 +99,8 @@ def create_app(
             generator = torch.Generator().manual_seed(int(seed))
         
         # Determine shape
-        codec = model._slot_children.get("codec")
+        _g = getattr(model, "_graph", None)
+        codec = _g.nodes.get("codec") if _g and getattr(_g, "nodes", None) else getattr(model, "_slot_children", {}).get("codec")
         if codec and hasattr(codec, "get_latent_shape"):
             shape = codec.get_latent_shape(1, int(height), int(width))
         else:

@@ -42,24 +42,21 @@ def get_model_structure(model) -> dict:
     structure = {
         "block_id": getattr(model, "block_id", "unknown"),
         "block_type": getattr(model, "block_type", "unknown"),
-        "slots": {},
+        "nodes": {},
     }
-    
-    for slot_name, child in model._slot_children.items():
-        if isinstance(child, list):
-            structure["slots"][slot_name] = [
-                {
-                    "type": getattr(c, "block_type", type(c).__name__),
-                    "id": getattr(c, "block_id", "?"),
+    nodes = getattr(model, "_graph", None) and getattr(model._graph, "nodes", None) or getattr(model, "_slot_children", {})
+    if hasattr(nodes, "items"):
+        for node_name, block in nodes.items():
+            if isinstance(block, list):
+                structure["nodes"][node_name] = [
+                    {"type": getattr(c, "block_type", type(c).__name__), "id": getattr(c, "block_id", "?")}
+                    for c in block
+                ]
+            elif block is not None:
+                structure["nodes"][node_name] = {
+                    "type": getattr(block, "block_type", type(block).__name__),
+                    "id": getattr(block, "block_id", "?"),
                 }
-                for c in child
-            ]
-        elif child is not None:
-            structure["slots"][slot_name] = {
-                "type": getattr(child, "block_type", type(child).__name__),
-                "id": getattr(child, "block_id", "?"),
-            }
-    
     return structure
 
 

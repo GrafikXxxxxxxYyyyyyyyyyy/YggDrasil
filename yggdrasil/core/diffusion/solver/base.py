@@ -53,9 +53,6 @@ class AbstractSolver(AbstractBaseBlock):
         result = self.step(model_output, current_latents, timestep, process, **extra)
         return {"next_latents": result, "output": result, "latents": result}
     
-    def _define_slots(self):
-        return {}
-
     def _forward_impl(self, *args, **kwargs):
         return None
     

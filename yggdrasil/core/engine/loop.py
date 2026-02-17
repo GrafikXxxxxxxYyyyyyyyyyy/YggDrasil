@@ -7,34 +7,24 @@ from omegaconf import DictConfig
 
 from ...core.block.base import AbstractBaseBlock
 from ...core.block.registry import register_block
-from ...core.block.slot import Slot
-
+from ...core.block.builder import BlockBuilder
 from .state import DiffusionState
 from .sampler import DiffusionSampler
-from ...core.model.modular import ModularDiffusionModel
 
 
 @register_block("engine/loop")
 class SamplingLoop(AbstractBaseBlock):
-    """Универсальный цикл сэмплирования с хуками.
-    
-    Используется внутри sampler и pipeline для максимальной гибкости.
-    """
-    
+    """Sampling loop with hooks — holds sampler from config (no slots)."""
+
     block_type = "engine/loop"
-    
-    def _define_slots(self) -> Dict[str, Slot]:
-        return {
-            "sampler": Slot(
-                name="sampler",
-                accepts=DiffusionSampler,
-                multiple=False,
-                optional=False
-            )
-        }
-    
+
     def __init__(self, config: DictConfig):
         super().__init__(config)
+        sampler_cfg = self.config.get("sampler")
+        self._sampler: Optional[DiffusionSampler] = (
+            sampler_cfg if isinstance(sampler_cfg, DiffusionSampler)
+            else BlockBuilder.build(sampler_cfg) if isinstance(sampler_cfg, dict) else None
+        )
         self.hooks: List[Callable[[DiffusionState, int], None]] = []
         self.pre_step_hooks: List[Callable] = []
         self.post_step_hooks: List[Callable] = []
@@ -59,7 +49,9 @@ class SamplingLoop(AbstractBaseBlock):
         **kwargs
     ) -> DiffusionState:
         """Запуск полного цикла."""
-        sampler = self._slot_children["sampler"]
+        sampler = self._sampler
+        if sampler is None:
+            raise RuntimeError("SamplingLoop: sampler not set")
         steps = num_steps or sampler.num_inference_steps
         
         # Инициализация состояния

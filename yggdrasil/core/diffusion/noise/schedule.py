@@ -27,9 +27,6 @@ class NoiseSchedule(AbstractBaseBlock):
         timesteps = self.get_timesteps(int(num_steps))
         return {"timesteps": timesteps, "output": timesteps}
     
-    def _define_slots(self):
-        return {}
-    
     def _forward_impl(self, *args, **kwargs):
         return None
     

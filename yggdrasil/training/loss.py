@@ -25,9 +25,6 @@ class DiffusionLoss(AbstractBaseBlock, ABC):
     
     block_type = "training/loss/abstract"
     
-    def _define_slots(self):
-        return {}
-    
     @abstractmethod
     def compute(
         self,

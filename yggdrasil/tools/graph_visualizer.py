@@ -34,8 +34,9 @@ def model_to_mermaid(model, title: str = "Model Graph") -> str:
 
 def _add_children(lines: list, block, parent_id: str, depth: int):
     """Recursively add child blocks to the diagram."""
-    children = getattr(block, "_slot_children", {})
-    
+    children = getattr(getattr(block, "_graph", None), "nodes", None) or getattr(block, "_slot_children", {})
+    if not hasattr(children, "items"):
+        children = {}
     for slot_name, child in children.items():
         if child is None:
             continue

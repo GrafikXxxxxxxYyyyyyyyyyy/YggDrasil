@@ -74,9 +74,6 @@ class AbstractConditioner(AbstractBaseBlock):
         out["output"] = emb
         return out
     
-    def _define_slots(self):
-        return {}
-    
     def _forward_impl(self, *args, **kwargs) -> Dict[str, torch.Tensor]:
         condition = kwargs.get("condition", args[0] if args else {})
         return self(condition)

@@ -7,7 +7,6 @@ from omegaconf import DictConfig
 
 from ...core.block.base import AbstractBaseBlock
 from ...core.block.registry import register_block
-from ...core.block.slot import Slot
 from ...core.block.port import Port, InputPort, OutputPort, TensorSpec
 
 
@@ -52,7 +51,14 @@ class AbstractBackbone(AbstractBaseBlock, nn.Module):
         condition = port_inputs.get("condition")
         position_embedding = port_inputs.get("position_embedding")
         
-        # Normalize condition: если пришёл голый тензор — оборачиваем в dict
+        # Merge list of condition dicts (from graph: multiple conditioners -> one backbone)
+        if isinstance(condition, list):
+            merged = {}
+            for c in condition:
+                if isinstance(c, dict):
+                    merged.update(c)
+            condition = merged if merged else None
+        # Normalize: bare tensor -> dict
         if condition is not None and not isinstance(condition, dict):
             condition = {"encoder_hidden_states": condition}
         
@@ -63,16 +69,6 @@ class AbstractBackbone(AbstractBaseBlock, nn.Module):
             position_embedding=position_embedding, **extra,
         )
         return {"output": output}
-    
-    def _define_slots(self) -> Dict[str, Slot]:
-        return {
-            "adapters": Slot(
-                name="adapters",
-                accepts=AbstractBaseBlock,
-                multiple=True,
-                optional=True
-            )
-        }
     
     def _forward_impl(
         self,
@@ -89,10 +85,9 @@ class AbstractBackbone(AbstractBaseBlock, nn.Module):
     
     def forward(self, *args, **kwargs) -> torch.Tensor:
         output = super().forward(*args, **kwargs)
-        for adapter in self._slot_children.get("adapters", []):
-            if hasattr(adapter, "apply"):
-                output = adapter.apply(output, self)
+        # Adapters are wired via graph (adapter node -> backbone.adapter_features); no slot
         return output
     
     def inject_adapter(self, adapter: AbstractBaseBlock):
-        self.attach_slot("adapters", adapter)
+        """No-op: adapters are wired via graph (adapter node -> backbone.adapter_features)."""
+        pass

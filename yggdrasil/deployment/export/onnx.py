@@ -28,7 +28,8 @@ def export_backbone_to_onnx(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
-    backbone = model._slot_children.get("backbone")
+    nodes = getattr(getattr(model, "_graph", None), "nodes", None) or getattr(model, "_slot_children", {})
+    backbone = nodes.get("backbone")
     if backbone is None:
         raise ValueError("Model has no backbone to export")
     
@@ -74,8 +75,8 @@ def export_vae_to_onnx(
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    
-    codec = model._slot_children.get("codec")
+    nodes = getattr(getattr(model, "_graph", None), "nodes", None) or getattr(model, "_slot_children", {})
+    codec = nodes.get("codec")
     if codec is None:
         raise ValueError("Model has no codec to export")
     

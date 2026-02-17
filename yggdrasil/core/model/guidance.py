@@ -58,9 +58,6 @@ class AbstractGuidance(AbstractBaseBlock):
             result = model_output  # passthrough
         return {"guided_output": result, "output": result}
     
-    def _define_slots(self):
-        return {}
-    
     def _forward_impl(self, *args, **kwargs) -> torch.Tensor:
         return self(*args, **kwargs)
 

@@ -4,38 +4,29 @@ from typing import Dict, Any, List
 from omegaconf import DictConfig
 
 from ...core.block.registry import register_block
-from ...core.block.slot import Slot
+from ...core.block.builder import BlockBuilder
 from ...core.model.conditioner import AbstractConditioner
 
 
 @register_block("conditioner/multi_modal")
 class MultiModalConditioner(AbstractConditioner):
-    """Combines multiple conditioners into one.
-    
-    Merges outputs from text, image, audio, and other conditioners
-    into a single condition dict.
-    """
-    
+    """Combines multiple conditioners — built from config (no slots)."""
+
     block_type = "conditioner/multi_modal"
-    
-    def _define_slots(self):
-        return {
-            "conditioners": Slot(
-                name="conditioners",
-                accepts=AbstractConditioner,
-                multiple=True,
-                optional=True,
-            )
-        }
-    
+
     def __init__(self, config: DictConfig):
         super().__init__(config)
-        self.fusion = config.get("fusion", "concat")  # concat, add, cross_attention
-    
+        self.fusion = config.get("fusion", "concat")
+        self._conditioners: List[Any] = []
+        for c in config.get("conditioners", []) or []:
+            if isinstance(c, dict) and (c.get("type") or c.get("block_type")):
+                self._conditioners.append(BlockBuilder.build(c))
+            elif hasattr(c, "block_type"):
+                self._conditioners.append(c)
+
     def __call__(self, condition: Dict[str, Any]) -> Dict[str, torch.Tensor]:
         all_embeds = {}
-        
-        conditioners = self._slot_children.get("conditioners", [])
+        conditioners = self._conditioners
         for cond in conditioners:
             embeds = cond(condition)
             all_embeds.update(embeds)

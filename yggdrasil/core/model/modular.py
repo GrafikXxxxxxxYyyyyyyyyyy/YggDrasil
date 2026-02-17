@@ -4,34 +4,48 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 from omegaconf import DictConfig
-from typing import Any, Dict, Optional, Tuple, List
+from typing import Any, Dict, Optional
 
 from yggdrasil.core.block.base import AbstractBaseBlock
 from yggdrasil.core.block.registry import register_block
-from yggdrasil.core.block.slot import Slot
 from yggdrasil.core.block.port import Port, InputPort, OutputPort, TensorSpec
+from yggdrasil.core.graph.graph import ComputeGraph
+from yggdrasil.core.graph.model_graph_builder import build_model_graph
+from yggdrasil.core.graph.executor import GraphExecutor
 
 
 @register_block("model/modular")
 class ModularDiffusionModel(AbstractBaseBlock, nn.Module):
-    """Модульная диффузионная модель — Lego-конструктор.
-    
-    Поддерживает два режима выполнения:
-    1. Legacy (slot-based): Жёсткий pipeline encode → position → condition → backbone → guidance
-    2. Graph-based: Выполнение через ComputeGraph с произвольным порядком
-    
-    Работает с любой модальностью и любыми адаптерами.
+    """Modular diffusion model — graph-only (no slots).
+
+    The model is a ComputeGraph of blocks (codec, position, conditioners,
+    backbone, guidance, adapters). Built from config via build_model_graph();
+    execution is always through GraphExecutor.
     """
-    
+
     block_type = "model/modular"
     block_version = "2.0.0"
-    
+
     def __init__(self, config: DictConfig | dict):
-        AbstractBaseBlock.__init__(self, config)
+        nn.Module.__init__(self)
+        super(AbstractBaseBlock, self).__init__()
+        from omegaconf import OmegaConf
+        self.config = OmegaConf.create(config) if isinstance(config, dict) else config
+        self.block_id = self.config.get("id", f"{self.block_type}_{id(self)}")
+        self.pre_hooks: list = []
+        self.post_hooks: list = []
         self._cached_timestep_emb = None
         self.is_training = False
-        self._compute_graph = None  # Optional graph for graph-based execution
-    
+
+        # Build model as a graph (no slots)
+        self._graph: ComputeGraph = build_model_graph(self.config, name=f"model_{self.block_id}")
+        self._executor = GraphExecutor(no_grad=False)  # model may be trained
+
+        # Register graph nodes as submodules for .to(device) and state_dict
+        for name, block in self._graph.nodes.items():
+            if isinstance(block, nn.Module):
+                self.add_module(f"_graph_{name}", block)
+
     @classmethod
     def declare_io(cls) -> Dict[str, Port]:
         return {
@@ -43,108 +57,21 @@ class ModularDiffusionModel(AbstractBaseBlock, nn.Module):
             "velocity": OutputPort("velocity", description="Predicted velocity"),
             "latents": OutputPort("latents", spec=TensorSpec(space="latent"), description="Current latents"),
         }
-    
+
     def process(self, **port_inputs) -> Dict[str, Any]:
-        """Port-based execution for ComputeGraph."""
+        """Port-based execution via graph."""
         x = port_inputs.get("x")
         t = port_inputs.get("t")
         condition = port_inputs.get("condition")
         result = self._forward_impl(x, t, condition, return_dict=True)
         result["output"] = result.get("noise_pred")
         return result
-    
-    def _define_slots(self) -> Dict[str, Slot]:
-        """Определяем все Lego-слоты модели."""
-        from .guidance import AbstractGuidance
-        from .backbone import AbstractBackbone
-        from .codec import AbstractLatentCodec
-        from .conditioner import AbstractConditioner
-        from .position import AbstractPositionEmbedder
-        from yggdrasil.core.diffusion.process import AbstractDiffusionProcess
-        
-        return {
-            "backbone": Slot(name="backbone", accepts=AbstractBackbone, multiple=False, optional=False),
-            "codec": Slot(name="codec", accepts=AbstractLatentCodec, multiple=False, optional=True, default={"type": "codec/identity"}),
-            "conditioner": Slot(name="conditioner", accepts=AbstractConditioner, multiple=True, optional=True),
-            "guidance": Slot(name="guidance", accepts=AbstractGuidance, multiple=True, optional=True, default={"type": "guidance/cfg"}),
-            "position": Slot(name="position", accepts=AbstractPositionEmbedder, multiple=False, optional=True, default={"type": "position/rope_nd"}),
-            "adapters": Slot(name="adapters", accepts=AbstractBaseBlock, multiple=True, optional=True),
-            "diffusion_process": Slot(name="diffusion_process", accepts=AbstractDiffusionProcess, multiple=False, optional=True),
-        }
-    
-    # ==================== GRAPH-BASED EXECUTION ====================
-    
-    def as_graph(self) -> "ComputeGraph":
-        """Конвертировать slot-based модель в ComputeGraph.
-        
-        Позволяет перейти от legacy pipeline к graph-based execution.
-        Возвращает ComputeGraph с узлами для каждого компонента.
-        """
-        from yggdrasil.core.graph.graph import ComputeGraph
-        
-        graph = ComputeGraph(f"model_{self.block_id}")
-        
-        # Add nodes for each component
-        if "codec" in self._slot_children:
-            graph.add_node("codec", self._slot_children["codec"])
-        
-        if self._slot_children.get("position") is not None:
-            graph.add_node("position", self._slot_children["position"])
-        
-        for i, cond in enumerate(self._slot_children.get("conditioner", [])):
-            graph.add_node(f"conditioner_{i}", cond)
-        
-        graph.add_node("backbone", self._slot_children["backbone"])
-        
-        for i, g in enumerate(self._slot_children.get("guidance", [])):
-            # Set backbone reference for graph-mode CFG/SAG
-            if hasattr(g, '_backbone_ref'):
-                g._backbone_ref = self._slot_children["backbone"]
-            graph.add_node(f"guidance_{i}", g)
-        
-        for i, a in enumerate(self._slot_children.get("adapters", [])):
-            graph.add_node(f"adapter_{i}", a)
-        
-        # Wire connections
-        graph.expose_input("x", "backbone", "x")
-        graph.expose_input("timestep", "backbone", "timestep")
-        
-        if "position" in graph.nodes:
-            graph.expose_input("timestep_pos", "position", "timestep")
-            graph.connect("position", "embedding", "backbone", "position_embedding")
-        
-        for i in range(len(self._slot_children.get("conditioner", []))):
-            graph.expose_input(f"condition_{i}", f"conditioner_{i}", "raw_condition")
-            graph.connect(f"conditioner_{i}", "embedding", "backbone", "condition")
-        
-        # Guidance chain — also wire x, timestep, condition for CFG dual-pass
-        prev_node = "backbone"
-        prev_port = "output"
-        for i in range(len(self._slot_children.get("guidance", []))):
-            g_node = f"guidance_{i}"
-            graph.connect(prev_node, prev_port, g_node, "model_output")
-            # Fan-out x and timestep to guidance for internal dual-pass
-            graph.expose_input("x", g_node, "x")
-            graph.expose_input("timestep", g_node, "t")
-            prev_node = g_node
-            prev_port = "guided_output"
-        
-        graph.expose_output("noise_pred", prev_node, prev_port)
-        
-        self._compute_graph = graph
-        return graph
-    
-    # ==================== LEGACY FORWARD ====================
-    
-    def _forward_impl(
-        self,
-        x: torch.Tensor,
-        t: torch.Tensor,
-        condition: Dict[str, Any] | None = None,
-        return_dict: bool = True
-    ) -> Dict[str, torch.Tensor] | torch.Tensor:
-        """Основной forward — работает с ЛЮБОЙ модальностью."""
-        backbone_param = next(self._slot_children["backbone"].parameters(), None)
+
+    def _forward_impl(self, x: torch.Tensor, t: torch.Tensor, condition: Dict[str, Any] | None = None, return_dict: bool = True, **kwargs) -> Dict[str, torch.Tensor] | torch.Tensor:
+        """Forward: run the model graph."""
+        nodes = self._graph.nodes
+        backbone = nodes["backbone"]
+        backbone_param = next(backbone.parameters(), None)
         if backbone_param is not None:
             device, dtype = backbone_param.device, backbone_param.dtype
             x = x.to(device=device, dtype=dtype)
@@ -152,9 +79,9 @@ class ModularDiffusionModel(AbstractBaseBlock, nn.Module):
         else:
             x = x.to(dtype=torch.float32)
 
-        # 1. Encode to latent if needed
-        if self.has_slot("codec"):
-            codec = self._slot_children["codec"]
+        # Encode to latent if codec present
+        if "codec" in nodes:
+            codec = nodes["codec"]
             latent_ch = getattr(codec, "latent_channels", 4)
             if x.shape[1] == latent_ch:
                 latents = x
@@ -162,102 +89,83 @@ class ModularDiffusionModel(AbstractBaseBlock, nn.Module):
                 latents = self._encode(x)
         else:
             latents = x
-        
-        # 2. Position embeddings
-        pos_emb = None
-        if self._slot_children.get("position") is not None:
-            pos_emb = self._slot_children["position"](t, latents.shape)
-        
-        # 3. Process conditions
-        cond_emb = self._process_conditions(condition) if condition else None
-        
-        # 4. Backbone forward
-        backbone_output = self._slot_children["backbone"](
-            latents, timestep=t, condition=cond_emb, position_embedding=pos_emb
-        )
-        
-        # 5. Apply guidance
-        model_output = self._apply_guidance(backbone_output, condition, latents, t)
-        
+
+        inputs = {"x": latents, "timestep": t, "condition": condition or {}}
+        with torch.set_grad_enabled(self.is_training):
+            out = self._executor.execute_training(self._graph, **inputs)
+        noise_pred = out.get("noise_pred")
+        if noise_pred is None:
+            noise_pred = out.get("output")
+
+        x0_pred = self._predict_x0(noise_pred, latents, t)
+        velocity = self._predict_velocity(noise_pred, latents, t)
+
         if return_dict:
             return {
-                "noise_pred": model_output,
-                "x0_pred": self._predict_x0(model_output, latents, t),
-                "velocity": self._predict_velocity(model_output, latents, t),
-                "latents": latents
+                "noise_pred": noise_pred,
+                "x0_pred": x0_pred,
+                "velocity": velocity,
+                "latents": latents,
             }
-        return model_output
-    
-    # ==================== GUIDANCE ====================
-    
-    def _apply_guidance(self, output, condition, x, t):
-        result = output
-        for guidance in self._slot_children.get("guidance", []):
-            result = guidance(result, condition=condition, model=self, x=x, t=t)
-        return result
-    
-    # ==================== HELPERS ====================
-    
-    def _encode(self, x):
-        if "codec" in self._slot_children:
-            return self._slot_children["codec"].encode(x)
-        return x
-    
-    def _decode_output(self, output):
-        if "codec" in self._slot_children:
-            return self._slot_children["codec"].decode(output)
-        return output
-    
-    def _process_conditions(self, condition):
-        cond_emb = {}
-        for conditioner in self._slot_children.get("conditioner", []):
-            emb = conditioner(condition)
-            cond_emb.update(emb)
-        return cond_emb
-    
-    def _predict_x0(self, noise_pred, x, t):
-        if "diffusion_process" in self._slot_children:
-            return self._slot_children["diffusion_process"].predict_x0(noise_pred, x, t)
+        return noise_pred
+
+    def _predict_x0(self, noise_pred: torch.Tensor, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        if "diffusion_process" in self.config and self.config.diffusion_process:
+            from yggdrasil.core.block.builder import BlockBuilder
+            proc = BlockBuilder.build(self.config.diffusion_process)
+            return proc.predict_x0(noise_pred, x, t)
         alpha = torch.cos(t * 0.5 * torch.pi) ** 2
         return (x - (1 - alpha).sqrt() * noise_pred) / alpha.sqrt()
-    
-    def _predict_velocity(self, noise_pred, x, t):
-        if "diffusion_process" in self._slot_children:
-            return self._slot_children["diffusion_process"].predict_velocity(noise_pred, x, t)
+
+    def _predict_velocity(self, noise_pred: torch.Tensor, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        if "diffusion_process" in self.config and self.config.diffusion_process:
+            from yggdrasil.core.block.builder import BlockBuilder
+            proc = BlockBuilder.build(self.config.diffusion_process)
+            return proc.predict_velocity(noise_pred, x, t)
         return noise_pred
-    
-    # ==================== LEGO API ====================
-    
-    def has_slot(self, slot_name):
-        return slot_name in self.slots
-    
-    def attach_adapter(self, adapter):
-        self.attach_slot("adapters", adapter)
+
+    # ---------- Public API (no slots) ----------
+
+    def as_graph(self) -> ComputeGraph:
+        """Return the internal model graph (for pipeline integration)."""
+        return self._graph
+
+    def encode(self, data: torch.Tensor) -> torch.Tensor:
+        if "codec" in self._graph.nodes:
+            return self._graph.nodes["codec"].encode(data)
+        return data
+
+    def decode(self, latents: torch.Tensor) -> torch.Tensor:
+        if "codec" in self._graph.nodes:
+            return self._graph.nodes["codec"].decode(latents)
+        return latents
+
+    def attach_adapter(self, adapter: AbstractBaseBlock) -> None:
+        """Add an adapter to the model graph and wire it to the backbone."""
+        nodes = self._graph.nodes
+        n = sum(1 for k in nodes if k.startswith("adapter_"))
+        node_name = f"adapter_{n}"
+        self._graph.add_node(node_name, adapter)
+        self._graph.connect(node_name, "output", "backbone", "adapter_features")
+        if isinstance(adapter, nn.Module):
+            self.add_module(f"_graph_{node_name}", adapter)
         if hasattr(adapter, "inject_into"):
-            adapter.inject_into(self._slot_children["backbone"])
-    
-    def set_training_mode(self, mode=True):
+            adapter.inject_into(nodes["backbone"])
+
+    def set_training_mode(self, mode: bool = True) -> None:
         self.is_training = mode
         self.train(mode)
-    
-    def encode(self, data):
-        return self._encode(data)
-    
-    def decode(self, latents):
-        codec = self._slot_children.get("codec")
-        if codec is not None:
-            return codec.decode(latents)
-        return latents
-    
-    def forward_for_loss(self, x, t, condition=None):
+
+    def forward_for_loss(self, x: torch.Tensor, t: torch.Tensor, condition: Optional[Dict[str, Any]] = None) -> Dict[str, torch.Tensor]:
         self.set_training_mode(True)
-        return self._forward_impl(x, t, condition, return_dict=True)
-    
-    def generate(self, condition, **kwargs):
+        out = self._forward_impl(x, t, condition, return_dict=True)
+        return out if isinstance(out, dict) else {"noise_pred": out}
+
+    def generate(self, condition: Dict[str, Any], **kwargs) -> Any:
         from yggdrasil.core.engine.sampler import DiffusionSampler
         sampler = DiffusionSampler({"model": self, **kwargs})
         return sampler.sample(condition=condition, **kwargs)
-    
-    def __repr__(self):
-        slots = [f"{k}={len(v) if isinstance(v, list) else 1}" for k, v in self._slot_children.items()]
-        return f"<ModularDiffusionModel {self.block_id} | {' | '.join(slots)}>"
+
+    def __repr__(self) -> str:
+        node_summary = " | ".join(f"{k}=1" for k in self._graph.nodes)
+        return f"<ModularDiffusionModel {self.block_id} | {node_summary}>"

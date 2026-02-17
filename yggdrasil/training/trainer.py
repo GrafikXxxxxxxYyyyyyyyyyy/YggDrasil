@@ -199,31 +199,36 @@ class DiffusionTrainer:
         if self.config.train_mode == "full":
             self.model.train()
             # Замораживаем codec (VAE) если он есть — обычно не обучается
-            if "codec" in self.model._slot_children:
-                for p in self.model._slot_children["codec"].parameters():
+            nodes = getattr(self.model, "_graph", None)
+            nodes = nodes.nodes if nodes and getattr(nodes, "nodes", None) else getattr(self.model, "_slot_children", {})
+            if "codec" in nodes:
+                for p in nodes["codec"].parameters():
                     p.requires_grad = False
         
         elif self.config.train_mode == "adapter":
-            # Замораживаем всё, включаем только адаптеры
             for p in self.model.parameters():
                 p.requires_grad = False
-            for adapter in self.model._slot_children.get("adapters", []):
+            nodes = getattr(self.model, "_graph", None)
+            nodes = nodes.nodes if nodes and getattr(nodes, "nodes", None) else getattr(self.model, "_slot_children", {})
+            for adapter in (nodes.get("adapters") or []):
                 for p in adapter.parameters():
                     p.requires_grad = True
         
         elif self.config.train_mode == "finetune":
-            # Замораживаем всё, включаем только указанные блоки
             for p in self.model.parameters():
                 p.requires_grad = False
+            nodes = getattr(self.model, "_graph", None)
+            nodes = nodes.nodes if nodes and getattr(nodes, "nodes", None) else getattr(self.model, "_slot_children", {})
             for block_name in (self.config.trainable_blocks or []):
-                if block_name in self.model._slot_children:
-                    child = self.model._slot_children[block_name]
-                    if isinstance(child, list):
-                        for c in child:
-                            for p in c.parameters():
-                                p.requires_grad = True
-                    else:
-                        for p in child.parameters():
+                if block_name in nodes:
+                    child = nodes[block_name]
+                elif block_name == "adapters":
+                    child = [nodes[k] for k in nodes if isinstance(k, str) and k.startswith("adapter_")]
+                else:
+                    child = None
+                if child is not None:
+                    for c in (child if isinstance(child, list) else [child]):
+                        for p in c.parameters():
                             p.requires_grad = True
         
         total = sum(p.numel() for p in self.model.parameters())

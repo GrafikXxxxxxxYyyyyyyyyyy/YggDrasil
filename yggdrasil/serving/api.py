@@ -107,9 +107,10 @@ class ModelManager:
                 info.status = ModelStatus.READY
                 info.device = str(device)
                 info.num_parameters = sum(p.numel() for p in model.parameters())
+                nodes = getattr(model, "_graph", None) and getattr(model._graph, "nodes", None) or getattr(model, "_slot_children", {})
                 info.blocks = {
                     k: (v.block_type if hasattr(v, "block_type") else type(v).__name__)
-                    for k, v in model._slot_children.items()
+                    for k, v in (nodes.items() if hasattr(nodes, "items") else [])
                     if not isinstance(v, list)
                 }
                 self.model_info[model_id] = info

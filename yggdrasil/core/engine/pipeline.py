@@ -3,13 +3,13 @@ from __future__ import annotations
 import torch
 from abc import abstractmethod
 from typing import Dict, Any, Optional, Callable
+
 from omegaconf import DictConfig, OmegaConf
 from pathlib import Path
 
 from ...core.block.base import AbstractBaseBlock
 from ...core.block.registry import register_block
-from ...core.block.slot import Slot
-
+from ...core.block.builder import BlockBuilder
 from .sampler import DiffusionSampler
 from .state import DiffusionState
 from ...core.model.modular import ModularDiffusionModel
@@ -17,30 +17,25 @@ from ...core.model.modular import ModularDiffusionModel
 
 @register_block("engine/pipeline/abstract")
 class AbstractPipeline(AbstractBaseBlock):
-    """Базовый пайплайн (train / infer / distillation / multi-modal).
-    
-    Один класс — все режимы. Наследники реализуют конкретные сценарии.
-    """
-    
+    """Base pipeline (train / infer) — graph engine; model and sampler from config."""
+
     block_type = "engine/pipeline/abstract"
-    
-    def _define_slots(self) -> Dict[str, Slot]:
-        return {
-            "model": Slot(
-                name="model",
-                accepts=ModularDiffusionModel,
-                multiple=False,
-                optional=False
-            ),
-            "sampler": Slot(
-                name="sampler",
-                accepts=DiffusionSampler,
-                multiple=False,
-                optional=True,
-                default={"type": "engine/sampler"}
-            ),
-        }
-    
+
+    def __init__(self, config):
+        super().__init__(config)
+        model_cfg = self.config.get("model")
+        self._model: ModularDiffusionModel = (
+            model_cfg if isinstance(model_cfg, ModularDiffusionModel)
+            else BlockBuilder.build(model_cfg) if isinstance(model_cfg, dict) else None
+        )
+        sampler_cfg = self.config.get("sampler", {"type": "engine/sampler"})
+        self._sampler: Optional[DiffusionSampler] = (
+            sampler_cfg if isinstance(sampler_cfg, DiffusionSampler)
+            else BlockBuilder.build(sampler_cfg) if isinstance(sampler_cfg, dict) else None
+        )
+        if self._sampler is not None and self._model is not None:
+            self._sampler._model = self._model
+
     @abstractmethod
     def train_step(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """Один шаг обучения."""
@@ -52,18 +47,20 @@ class AbstractPipeline(AbstractBaseBlock):
         pass
     
     def save(self, path: Path | str):
-        """Сохранение всего пайплайна."""
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
         OmegaConf.save(self.config, path / "pipeline_config.yaml")
-        self._slot_children["model"].save(path / "model")
-        if "sampler" in self._slot_children:
-            self._slot_children["sampler"].save(path / "sampler")
-    
+        if self._model is not None:
+            self._model.save(path / "model")
+        if self._sampler is not None:
+            self._sampler.save(path / "sampler")
+
     @classmethod
     def load(cls, path: Path | str) -> AbstractPipeline:
         path = Path(path)
         config = OmegaConf.load(path / "pipeline_config.yaml")
         instance = cls(config)
-        instance._slot_children["model"] = ModularDiffusionModel.load(path / "model")
+        instance._model = ModularDiffusionModel.load(path / "model")
+        if instance._sampler is not None:
+            instance._sampler._model = instance._model
         return instance
