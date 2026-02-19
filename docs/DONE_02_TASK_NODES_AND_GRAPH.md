@@ -1,6 +1,6 @@
 # DONE 02: Task Nodes and Graph Level
 
-**Canon:** [WorldGenerator_2.0/TODO_02_TASK_NODES_AND_GRAPH.md](../WorldGenerator_2.0/TODO_02_TASK_NODES_AND_GRAPH.md), [Abstract_Task_Nodes.md](../WorldGenerator_2.0/Abstract_Task_Nodes.md), [Graph_Level.md](../WorldGenerator_2.0/Graph_Level.md).
+**Project canon:** [CANON.md](../WorldGenerator_2.0/CANON.md). **Canon:** [TODO_02_TASK_NODES_AND_GRAPH.md](../WorldGenerator_2.0/TODO_02_TASK_NODES_AND_GRAPH.md), [Abstract_Task_Nodes.md](../WorldGenerator_2.0/Abstract_Task_Nodes.md), [Graph_Level.md](../WorldGenerator_2.0/Graph_Level.md), [AGENT_SYSTEMS_SUPPORT.md](../WorldGenerator_2.0/AGENT_SYSTEMS_SUPPORT.md) (Agent, tools, flexibility).
 
 This document describes what was implemented for task nodes and graph-level behaviour: abstract task node types, role rules, auto-connect, add_node(block_or_type), from_template, trainable_parameters, validation, and how it connects to TODO_03 (executor).
 
@@ -126,6 +126,7 @@ All tests (foundation + task_nodes) pass, including save_config, save_checkpoint
 
 - **Узлы LLM через API:** типы вида `llm/api`, `llm/openai`, `llm/anthropic` и контракт «промпт/контекст → текст» без локальных весов не реализованы; регистрация и конфиг (provider, model_id) по [LLM_API_SUPPORT.md](../WorldGenerator_2.0/LLM_API_SUPPORT.md) отсутствуют.
 - **Повторное использование модели при сборке графа:** при add_node или from_config один и тот же checkpoint_ref (или model_id для API) может приводить к двум разным экземплярам блока; пул «один ref → один экземпляр» при создании узла не используется. См. [MODEL_REUSE.md](../WorldGenerator_2.0/MODEL_REUSE.md).
+- **Роль Agent и узлы-инструменты:** тип узла-задачи Agent (context, tool_results → response, tool_calls) и регистрация блоков как инструментов не реализованы. См. [AGENT_SYSTEMS_SUPPORT.md](../WorldGenerator_2.0/AGENT_SYSTEMS_SUPPORT.md).
 
 ---
 

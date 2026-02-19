@@ -2,6 +2,8 @@
 
 This document summarizes the **WorldGenerator_2.0** canon, what is **done** for TODO_02, what **remains** for TODO_02, and what **later stages (TODO_03–07)** require from the graph/task-nodes level so we don’t block them.
 
+**Project canon:** [CANON.md](../WorldGenerator_2.0/CANON.md) — all-encompassing architecture reference (WorldGenerator_2.0/).
+
 ---
 
 ## 1. Canon Overview (WorldGenerator_2.0)
@@ -98,7 +100,7 @@ These complete the “save/load graph to disk” contract expected by SERIALIZAT
 
 ## 7. File / Doc References
 
-- **Canon:** `WorldGenerator_2.0/` — all TODO_*.md, Abstract_Task_Nodes.md, Graph_Level.md, SERIALIZATION_AT_ALL_LEVELS.md, LLM_API_SUPPORT.md, MODEL_REUSE.md, TRAINING_REUSE_AND_API_SCENARIOS.md, etc.
-- **Code:** `yggdrasill/foundation/` (graph, block, node, port, registry), `yggdrasill/task_nodes/` (roles, role_rules, abstract, auto_connect, stubs, templates).
-- **Docs:** `docs/DONE_01_FOUNDATION.md`, `docs/DONE_02_TASK_NODES_AND_GRAPH.md`, `docs/OUTLINE_TODO_02_TO_07.md`.
-- **Канон расширяемости:** WorldGenerator_2.0/SCALABILITY_AND_EXTENSIBILITY.md, TRAINABILITY_AT_ALL_LEVELS.md, TODO_07_FUTURE_AND_IMPROVEMENTS.md.
+- **Canon:** [CANON.md](../WorldGenerator_2.0/CANON.md); [TODO_01](../WorldGenerator_2.0/TODO_01_FOUNDATION.md)…[TODO_07](../WorldGenerator_2.0/TODO_07_FUTURE_AND_IMPROVEMENTS.md), [Abstract_Task_Nodes.md](../WorldGenerator_2.0/Abstract_Task_Nodes.md), [Graph_Level.md](../WorldGenerator_2.0/Graph_Level.md), [AGENT_SYSTEMS_SUPPORT.md](../WorldGenerator_2.0/AGENT_SYSTEMS_SUPPORT.md), [EXPANSION_UNIVERSE_GRAPH_OF_WORLDS.md](../WorldGenerator_2.0/EXPANSION_UNIVERSE_GRAPH_OF_WORLDS.md), [Scheme.md](../WorldGenerator_2.0/Scheme.md).
+- **Code:** `yggdrasill/foundation/`, `yggdrasill/task_nodes/`.
+- **Docs:** [DONE_01_FOUNDATION.md](DONE_01_FOUNDATION.md), [DONE_02_TASK_NODES_AND_GRAPH.md](DONE_02_TASK_NODES_AND_GRAPH.md), [OUTLINE_TODO_02_TO_07.md](OUTLINE_TODO_02_TO_07.md).
+- **Канон расширяемости:** [SCALABILITY_AND_EXTENSIBILITY.md](../WorldGenerator_2.0/SCALABILITY_AND_EXTENSIBILITY.md), [TRAINABILITY_AT_ALL_LEVELS.md](../WorldGenerator_2.0/TRAINABILITY_AT_ALL_LEVELS.md), [TODO_07_FUTURE_AND_IMPROVEMENTS.md](../WorldGenerator_2.0/TODO_07_FUTURE_AND_IMPROVEMENTS.md).

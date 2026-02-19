@@ -1,6 +1,6 @@
 # DONE 01: Foundation (Fundamental Level)
 
-**Canon:** [WorldGenerator_2.0/TODO_01_FOUNDATION.md](../WorldGenerator_2.0/TODO_01_FOUNDATION.md), [Abstract_Block_And_Node.md](../WorldGenerator_2.0/Abstract_Block_And_Node.md).
+**Project canon:** [CANON.md](../WorldGenerator_2.0/CANON.md). **Canon:** [TODO_01_FOUNDATION.md](../WorldGenerator_2.0/TODO_01_FOUNDATION.md), [Abstract_Block_And_Node.md](../WorldGenerator_2.0/Abstract_Block_And_Node.md), [AGENT_SYSTEMS_SUPPORT.md](../WorldGenerator_2.0/AGENT_SYSTEMS_SUPPORT.md) (flexibility, agent block contract).
 
 This document describes what was implemented for the foundation level, how it works, where it lives in the codebase, and how it fits into the future architecture.
 
@@ -179,6 +179,7 @@ Foundation is ready for the next level (task nodes and graph engine).
 
 - **Режим «только API» для блока:** конфиг блока пока не предусматривает `backend: "api"`, `provider`, `model_id`; блоки с нулевыми локальными весами (LLM через API) не выделены в контракте. См. [LLM_API_SUPPORT.md](../WorldGenerator_2.0/LLM_API_SUPPORT.md).
 - **Повторное использование одной модели:** при сборке графа/пайплайна один и тот же checkpoint_ref (или model_id для API) может приводить к нескольким экземплярам блока; пула «ref → один экземпляр» на уровне фундамента/реестра нет. См. [MODEL_REUSE.md](../WorldGenerator_2.0/MODEL_REUSE.md).
+- **Агентный контракт блока:** расширение контракта для агента (состояние между вызовами, tool_calls/tool_results) и сохранение состояния агента в state_dict не реализованы. См. [AGENT_SYSTEMS_SUPPORT.md](../WorldGenerator_2.0/AGENT_SYSTEMS_SUPPORT.md).
 
 ---
 

@@ -1,6 +1,6 @@
 # DONE 06: Мир (World) — не реализован
 
-**Канон:** [WorldGenerator_2.0/TODO_06_WORLD.md](../WorldGenerator_2.0/TODO_06_WORLD.md), [World_Level.md](../WorldGenerator_2.0/World_Level.md), [Scheme.md](../WorldGenerator_2.0/Scheme.md), [World_Serialization.md](../WorldGenerator_2.0/World_Serialization.md).
+**Канон проекта:** [CANON.md](../WorldGenerator_2.0/CANON.md). **Канон:** [TODO_06_WORLD.md](../WorldGenerator_2.0/TODO_06_WORLD.md), [World_Level.md](../WorldGenerator_2.0/World_Level.md), [Scheme.md](../WorldGenerator_2.0/Scheme.md) (§1.1 роли этапов), [World_Serialization.md](../WorldGenerator_2.0/World_Serialization.md).
 
 **Статус: уровень мира (World) не реализован.** Ниже — что требуется по канону и что нужно реализовать.
 
@@ -13,7 +13,7 @@
 - **Условия выполнения:** по [Scheme.md](../WorldGenerator_2.0/Scheme.md) §4, §4.8 — для каждого этапа условие по заполненности блоков state; при пустом state первая итерация начинается с Development of the world.
 - **API:** AddStage, SetCycle/set_canonical_cycle, set_state_schema, set_storage, set_initial_world; validate; run(world, state, action, num_steps); сохранение state при World update.
 - **Сериализация:** to_config/from_config, save/load, checkpoints по этапам; from_template; trainable этапы, LoRA-world.
-- **Учёт канона:** [LLM_API_SUPPORT.md](../WorldGenerator_2.0/LLM_API_SUPPORT.md) — мир может использовать модели в этапах через API (любой блок); [MODEL_REUSE.md](../WorldGenerator_2.0/MODEL_REUSE.md) — один checkpoint_ref в разных этапах/пайплайнах/графах → один экземпляр модели в памяти; [TRAINING_REUSE_AND_API_SCENARIOS.md](../WorldGenerator_2.0/TRAINING_REUSE_AND_API_SCENARIOS.md) — обучение мира и LoRA при API-узлах (промпт-адаптеры и т.д.).
+- **Учёт канона:** [LLM_API_SUPPORT.md](../WorldGenerator_2.0/LLM_API_SUPPORT.md) — мир может использовать модели в этапах через API (любой блок); [MODEL_REUSE.md](../WorldGenerator_2.0/MODEL_REUSE.md) — один checkpoint_ref в разных этапах/пайплайнах/графах → один экземпляр модели в памяти; [TRAINING_REUSE_AND_API_SCENARIOS.md](../WorldGenerator_2.0/TRAINING_REUSE_AND_API_SCENARIOS.md) — обучение мира и LoRA при API-узлах (промпт-адаптеры и т.д.); [AGENT_SYSTEMS_SUPPORT.md](../WorldGenerator_2.0/AGENT_SYSTEMS_SUPPORT.md) — мир может состоять из агентных этапов (action и контекст мира передаются в этапы, напр. Development of the world как агент).
 
 ---
 

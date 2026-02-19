@@ -1,6 +1,6 @@
 # Уровень над фундаментом: абстрактные узлы-задачи (Abstract Task Nodes)
 
-Полное техническое описание **уровня над фундаментальным**: абстрактные специализированные сущности — Backbone, Solver, Codec, Adapter, Conditioner, Tokenizer, Guidance и др. Каждая из них одновременно **наследник Abstract Base Block и Abstract Graph Node** и задаёт **спецификацию задачи** (роль узла в графе). Из конкретных реализаций этих абстракций **собирается граф**.
+**Единый канон проекта:** [CANON.md](CANON.md). Полное техническое описание **уровня над фундаментальным**: абстрактные специализированные сущности — Backbone, Solver, Codec, Adapter, Conditioner, Tokenizer, Guidance и др.; роль Agent и узлы-инструменты — [AGENT_SYSTEMS_SUPPORT.md](AGENT_SYSTEMS_SUPPORT.md). Каждая из них одновременно **наследник Abstract Base Block и Abstract Graph Node** и задаёт **спецификацию задачи** (роль узла в графе). Из конкретных реализаций этих абстракций **собирается граф**.
 
 Фундаментальный уровень: [Abstract_Block_And_Node.md](Abstract_Block_And_Node.md). Система целиком: [System.md](System.md). Граф как первый исполняемый уровень: [Graph_Level.md](Graph_Level.md).
 

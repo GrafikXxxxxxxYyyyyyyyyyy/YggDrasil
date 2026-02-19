@@ -1,6 +1,8 @@
 # Расширение DONE — Что есть, чего нет, как делать больше меньшим кодом
 
-Документ обобщает **техническую документацию** (DONE_01–04 и канон), оценивает **что сделано и что нет** и предлагает **как расширять дальше**, чтобы писать меньше кода и реализовывать только нужное.
+**Канон проекта:** [CANON.md](../WorldGenerator_2.0/CANON.md) — единый всеобъемлющий канон (WorldGenerator_2.0/); архитектура и операции должны ему соответствовать.
+
+Документ обобщает **техническую документацию** (DONE_01–04 и канон), оценивает **что сделано и что нет** и предлагает **как расширять дальше**. **Канон:** [AGENT_SYSTEMS_SUPPORT.md](../WorldGenerator_2.0/AGENT_SYSTEMS_SUPPORT.md); [EXPANSION_UNIVERSE_GRAPH_OF_WORLDS.md](../WorldGenerator_2.0/EXPANSION_UNIVERSE_GRAPH_OF_WORLDS.md) (вселенная, End Worlds); [HYPERGRAPH_AND_HYPERLINKS.md](../WorldGenerator_2.0/HYPERGRAPH_AND_HYPERLINKS.md) (гиперграф как движок, гиперссылки); [END_WORLDS.md](../WorldGenerator_2.0/END_WORLDS.md) (фиксированные миры); [Scheme.md](../WorldGenerator_2.0/Scheme.md) §1.1.
 
 **Для кого:** для вас при изучении документации и планировании следующих шагов.
 
@@ -64,6 +66,7 @@
 - **Модели через API (обязательно):** поддержка облачных и API-провайдеров на уровне **любого блока**, для которого у провайдера есть API — LLM, VLM, эмбеддинги, генерация изображений по API и т.д., без скачивания и загрузки весов. Канон: [WorldGenerator_2.0/LLM_API_SUPPORT.md](../WorldGenerator_2.0/LLM_API_SUPPORT.md).
 - **Повторное использование модели:** один чекпоинт → один экземпляр; канон: [WorldGenerator_2.0/MODEL_REUSE.md](../WorldGenerator_2.0/MODEL_REUSE.md).
 - **Обучение при повторном использовании и при API:** коллизии, LoRA при общем блоке, обучение мира с API-узлами (промпт-адаптеры), сценарии и обходы — канон: [WorldGenerator_2.0/TRAINING_REUSE_AND_API_SCENARIOS.md](../WorldGenerator_2.0/TRAINING_REUSE_AND_API_SCENARIOS.md).
+- **Поддержка агентных систем (обязательно):** полная и глубоко встроенная — агент как блок/узел (state, tool_calls/tool_results), роль Agent и узлы-инструменты, режим agent_loop в графе, граф-агент как узел пайплайна/этапа, мир с агентными этапами. Канон: [WorldGenerator_2.0/AGENT_SYSTEMS_SUPPORT.md](../WorldGenerator_2.0/AGENT_SYSTEMS_SUPPORT.md).
 - Модальности (VLM, видео, аудио), бэкенды (ONNX, vLLM), бэкенды checkpoint (torch, safetensors), async run, батчинг, наблюдаемость, JSON Schema для конфигов. Всё — «по мере необходимости».
 
 ---
@@ -95,9 +98,10 @@
 | 3 | **Реализовать TODO_06 (World)** | Цикл + state + storage; завершает иерархию. |
 | 4 | (Опционально) **Вынести общую логику run «граф исполняемых»** | Меньше дублирования между Pipeline и Stage. |
 | 5 | (Позже) **Pipeline: ref, from_template, dry_run, multi-endpoint** | Когда понадобятся шаблоны, проверка без выполнения или удалённые узлы. |
-| 6 | **Модели через API (без локальных весов)** | **Обязательно.** Любой блок, для которого у провайдера есть API. Канон: WorldGenerator_2.0/LLM_API_SUPPORT.md. |
-| 7 | **Повторное использование модели (без дублирования в памяти)** | Один чекпоинт → один экземпляр; для всех типов моделей и всех уровней иерархии. Канон: WorldGenerator_2.0/MODEL_REUSE.md. |
-| 8 | **Обучение при повторном использовании и при API** | Коллизии, LoRA при общем блоке, обучение мира с API-узлами. Канон: WorldGenerator_2.0/TRAINING_REUSE_AND_API_SCENARIOS.md. |
+| 6 | **Модели через API (без локальных весов)** | **Обязательно.** Любой блок, для которого у провайдера есть API. Канон: [LLM_API_SUPPORT.md](../WorldGenerator_2.0/LLM_API_SUPPORT.md). |
+| 7 | **Повторное использование модели (без дублирования в памяти)** | Один чекпоинт → один экземпляр; для всех типов моделей и всех уровней иерархии. Канон: [MODEL_REUSE.md](../WorldGenerator_2.0/MODEL_REUSE.md). |
+| 8 | **Обучение при повторном использовании и при API** | Коллизии, LoRA при общем блоке, обучение мира с API-узлами. Канон: [TRAINING_REUSE_AND_API_SCENARIOS.md](../WorldGenerator_2.0/TRAINING_REUSE_AND_API_SCENARIOS.md). |
+| 9 | **Поддержка агентных систем** | Агент как блок/узел, инструменты, agent_loop, этапы и мир с агентами; гибкость и классические сценарии. Канон: [AGENT_SYSTEMS_SUPPORT.md](../WorldGenerator_2.0/AGENT_SYSTEMS_SUPPORT.md). |
 
 ---
 
@@ -105,7 +109,7 @@
 
 - **Сделано:** docs/DONE_01_FOUNDATION.md, DONE_02_TASK_NODES_AND_GRAPH.md, DONE_03_GRAPH_ENGINE.md, DONE_04_PIPELINE.md.
 - **Планы:** docs/PLAN_TODO_02_AND_FORWARD.md, PLAN_TODO_03_VERIFIED_AND_FORWARD.md, OUTLINE_TODO_02_TO_07.md.
-- **Канон:** WorldGenerator_2.0/TODO_04_PIPELINE.md, TODO_05_STAGE.md, TODO_06_WORLD.md, **LLM_API_SUPPORT.md**, **MODEL_REUSE.md**, **TRAINING_REUSE_AND_API_SCENARIOS.md**, Pipeline_Level.md, Stage_Level.md, World_Level.md, Scheme.md.
+- **Канон:** [CANON.md](../WorldGenerator_2.0/CANON.md); [TODO_04](../WorldGenerator_2.0/TODO_04_PIPELINE.md), [TODO_05](../WorldGenerator_2.0/TODO_05_STAGE.md), [TODO_06](../WorldGenerator_2.0/TODO_06_WORLD.md); [LLM_API_SUPPORT.md](../WorldGenerator_2.0/LLM_API_SUPPORT.md), [MODEL_REUSE.md](../WorldGenerator_2.0/MODEL_REUSE.md), [TRAINING_REUSE_AND_API_SCENARIOS.md](../WorldGenerator_2.0/TRAINING_REUSE_AND_API_SCENARIOS.md), [AGENT_SYSTEMS_SUPPORT.md](../WorldGenerator_2.0/AGENT_SYSTEMS_SUPPORT.md); [Scheme.md](../WorldGenerator_2.0/Scheme.md), [World_Level.md](../WorldGenerator_2.0/World_Level.md), [Stage_Level.md](../WorldGenerator_2.0/Stage_Level.md), [Pipeline_Level.md](../WorldGenerator_2.0/Pipeline_Level.md).
 - **Визия и дорожная карта документации:** [docs/VISION_AND_DOCUMENTATION_ROADMAP.md](VISION_AND_DOCUMENTATION_ROADMAP.md) — что добавить, чтобы фреймворк стал золотым стандартом для диффузии и генерации миров и самым удобным в использовании.
 
 ---
@@ -113,5 +117,5 @@
 ## 6. Краткая сводка
 
 - **Сделано:** Foundation → Task nodes → Graph engine → Pipeline. Контракт (get_input_spec, get_output_spec, run) единый; Graph и Pipeline готовы к Stage и World.
-- **Не сделано:** доработки Pipeline (ref, archive, from_template, dry_run, multi-endpoint); **Stage (TODO_05)**; **World (TODO_06)**; **модели через API** (любой блок, когда у провайдера есть API); **повторное использование модели** (один чекпоинт → один экземпляр); **обучение при reuse и API** (см. TRAINING_REUSE_AND_API_SCENARIOS); TODO_07 по мере надобности.
+- **Не сделано:** доработки Pipeline (ref, archive, from_template, dry_run, multi-endpoint); **Stage (TODO_05)**; **World (TODO_06)**; **модели через API** (любой блок, когда у провайдера есть API); **повторное использование модели** (один чекпоинт → один экземпляр); **обучение при reuse и API** (см. TRAINING_REUSE_AND_API_SCENARIOS); **поддержка агентных систем** (см. AGENT_SYSTEMS_SUPPORT); TODO_07 по мере надобности.
 - **Чтобы расширять меньшим кодом:** (1) Pipeline.from_yaml уже добавлен. (2) Реализовать Stage, переиспользуя паттерн «граф исполняемых». (3) Реализовать World как цикл + state + storage. (4) Отложить опциональные фичи Pipeline и TODO_07 до появления потребности.

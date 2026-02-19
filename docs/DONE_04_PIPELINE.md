@@ -1,6 +1,6 @@
 # DONE 04: Pipeline (Graph of Graphs) — CLOSED
 
-**Canon:** [WorldGenerator_2.0/TODO_04_PIPELINE.md](../WorldGenerator_2.0/TODO_04_PIPELINE.md), [Pipeline_Level.md](../WorldGenerator_2.0/Pipeline_Level.md).
+**Project canon:** [CANON.md](../WorldGenerator_2.0/CANON.md). **Canon:** [TODO_04_PIPELINE.md](../WorldGenerator_2.0/TODO_04_PIPELINE.md), [Pipeline_Level.md](../WorldGenerator_2.0/Pipeline_Level.md), [AGENT_SYSTEMS_SUPPORT.md](../WorldGenerator_2.0/AGENT_SYSTEMS_SUPPORT.md) (graph-agent as node).
 
 **Status: TODO_04 is closed.** Pipeline layer is implemented: structure (Pipeline, PipelineEdge), builder API (add_graph, add_edge, expose_input/expose_output), validation (DAG, reachability), executor (run_pipeline), serialization (to_config/from_config, save/load, checkpoints), trainable nodes, infer_exposed_ports. Ready for Stage (TODO_05) and multi-endpoint.
 
@@ -128,6 +128,7 @@ TODO_04 is **closed**: Pipeline as graph of graphs, PipelineEdge, add_graph (Gra
 ## 6. Что ещё не сделано на этом этапе
 
 - **Повторное использование модели в пайплайне:** если два графа-узла пайплайна используют один и тот же checkpoint_ref (или одну и ту же модель по model_id), в памяти создаются два набора весов; пула «один ref → один экземпляр» на уровне пайплайна (или при загрузке из конфига/чекпоинта) нет. См. [MODEL_REUSE.md](../WorldGenerator_2.0/MODEL_REUSE.md).
+- **Граф-агент как узел пайплайна:** выполнение узла пайплайна как графа с режимом agent_loop не выделено в контракте. См. [AGENT_SYSTEMS_SUPPORT.md](../WorldGenerator_2.0/AGENT_SYSTEMS_SUPPORT.md).
 
 ---
 

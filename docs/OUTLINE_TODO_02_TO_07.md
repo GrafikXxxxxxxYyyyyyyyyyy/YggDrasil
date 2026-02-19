@@ -1,6 +1,10 @@
 # Outline: TODO_02 – TODO_07 (WorldGenerator_2.0)
 
-Краткий конспект по канону WorldGenerator_2.0 для дальнейшей разработки движка. Источники: папка `WorldGenerator_2.0/` (все TODO, Abstract_Task_Nodes, Graph_Level, SERIALIZATION, TRAINABILITY, Scheme, LLM_API_SUPPORT, MODEL_REUSE, TRAINING_REUSE_AND_API_SCENARIOS).
+**Канон проекта:** [CANON.md](../WorldGenerator_2.0/CANON.md) — единый всеобъемлющий канон (WorldGenerator_2.0/).
+
+Краткий конспект по канону WorldGenerator_2.0 для дальнейшей разработки движка. Источники: папка [WorldGenerator_2.0](../WorldGenerator_2.0/) — все [TODO_01](../WorldGenerator_2.0/TODO_01_FOUNDATION.md)…[TODO_07](../WorldGenerator_2.0/TODO_07_FUTURE_AND_IMPROVEMENTS.md), [Abstract_Task_Nodes](../WorldGenerator_2.0/Abstract_Task_Nodes.md), [Graph_Level](../WorldGenerator_2.0/Graph_Level.md), [Scheme](../WorldGenerator_2.0/Scheme.md), [AGENT_SYSTEMS_SUPPORT](../WorldGenerator_2.0/AGENT_SYSTEMS_SUPPORT.md), [EXPANSION_UNIVERSE_GRAPH_OF_WORLDS](../WorldGenerator_2.0/EXPANSION_UNIVERSE_GRAPH_OF_WORLDS.md) и др.
+
+**Расширенный канон:** агентные системы; полная гибкость. **Гиперграф:** вся архитектура — гиперграф; крупномасштабные гиперссылки для контекстов и взаимодействия ([HYPERGRAPH_AND_HYPERLINKS.md](../WorldGenerator_2.0/HYPERGRAPH_AND_HYPERLINKS.md)). **End Worlds:** фиксированные миры, к которым можно привязываться без их изменения ([END_WORLDS.md](../WorldGenerator_2.0/END_WORLDS.md)). Уровень Вселенной: гиперграф миров, этап для сообщества, кросс-мировое влияние, End Worlds ([EXPANSION_UNIVERSE_GRAPH_OF_WORLDS.md](../WorldGenerator_2.0/EXPANSION_UNIVERSE_GRAPH_OF_WORLDS.md)). Роли переходов (идеальные задачи): [Scheme.md](../WorldGenerator_2.0/Scheme.md) §1.1 (переход = метаморфоза, §1.0).
 
 ---
 

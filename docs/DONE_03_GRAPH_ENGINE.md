@@ -1,6 +1,6 @@
 # DONE 03: Graph Engine (Executor, Validation, Save/Load) — CLOSED
 
-**Canon:** [WorldGenerator_2.0/TODO_03_GRAPH_ENGINE.md](../WorldGenerator_2.0/TODO_03_GRAPH_ENGINE.md), [Graph_Level.md](../WorldGenerator_2.0/Graph_Level.md).
+**Project canon:** [CANON.md](../WorldGenerator_2.0/CANON.md). **Canon:** [TODO_03_GRAPH_ENGINE.md](../WorldGenerator_2.0/TODO_03_GRAPH_ENGINE.md), [Graph_Level.md](../WorldGenerator_2.0/Graph_Level.md), [AGENT_SYSTEMS_SUPPORT.md](../WorldGenerator_2.0/AGENT_SYSTEMS_SUPPORT.md) (agent_loop).
 
 **Status: TODO_03 is closed.** All required and desirable items are implemented. The graph layer is ready for the next stage (TODO_04 Pipeline).
 
@@ -146,6 +146,7 @@ TODO_03 is **closed**: executor (topological order, SCC cycles, buffer, optional
 ## 6. Что ещё не сделано на этом этапе
 
 - **Пул повторного использования при сборке графа:** при add_node и from_config несколько узлов с одним и тем же checkpoint_ref (или model_id для API) создают несколько экземпляров блока; движок графа не использует общий пул «ref → блок». См. [MODEL_REUSE.md](../WorldGenerator_2.0/MODEL_REUSE.md).
+- **Режим agent_loop:** цикл «агент → tool_calls → выполнение инструментов → агент» в исполнителе графа не реализован. См. [AGENT_SYSTEMS_SUPPORT.md](../WorldGenerator_2.0/AGENT_SYSTEMS_SUPPORT.md).
 
 ---
 

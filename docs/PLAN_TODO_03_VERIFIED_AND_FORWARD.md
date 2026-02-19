@@ -1,10 +1,10 @@
 # TODO_03: сверка с каноном и план дальнейшей разработки
 
-**TODO_03 закрыт.** Графовый движок реализован полностью; готов к переходу на следующий этап (TODO_04 Pipeline). Ожидаем ваших указаний для старта TODO_04.
+**Канон проекта:** [CANON.md](../WorldGenerator_2.0/CANON.md) — единый всеобъемлющий канон (WorldGenerator_2.0/).
 
-Документ: (1) проверка полноты реализации TODO_03 по канону, (2) что добавлено в ядре для будущих этапов, (3) план разработки фреймворка (TODO_04 → TODO_07).
+**TODO_03 закрыт.** Графовый движок реализован полностью; готов к переходу на следующий этап (TODO_04 Pipeline). Документ: (1) проверка полноты реализации TODO_03 по канону, (2) что добавлено в ядре для будущих этапов, (3) план разработки фреймворка (TODO_04 → TODO_07).
 
-**Канон:** WorldGenerator_2.0/TODO_03_GRAPH_ENGINE.md, Graph_Level.md, Pipeline_Level.md, MULTI_ENDPOINT_DEPLOYMENT.md, SERIALIZATION_AT_ALL_LEVELS.md, OUTLINE_TODO_02_TO_07.md.
+**Канон:** [TODO_03_GRAPH_ENGINE.md](../WorldGenerator_2.0/TODO_03_GRAPH_ENGINE.md), [Graph_Level.md](../WorldGenerator_2.0/Graph_Level.md), [Pipeline_Level.md](../WorldGenerator_2.0/Pipeline_Level.md), [AGENT_SYSTEMS_SUPPORT.md](../WorldGenerator_2.0/AGENT_SYSTEMS_SUPPORT.md), [OUTLINE_TODO_02_TO_07.md](OUTLINE_TODO_02_TO_07.md).
 
 ---
 
@@ -177,6 +177,6 @@ TODO_01 (Foundation) → TODO_02 (Task nodes) → TODO_03 (Graph engine) ✅
 
 ## 4. Файлы и ссылки
 
-- **Канон:** WorldGenerator_2.0/TODO_03_GRAPH_ENGINE.md, TODO_04_PIPELINE.md, TODO_05_STAGE.md, TODO_06_WORLD.md, MULTI_ENDPOINT_DEPLOYMENT.md, SERIALIZATION_AT_ALL_LEVELS.md, LLM_API_SUPPORT.md, MODEL_REUSE.md, TRAINING_REUSE_AND_API_SCENARIOS.md.
+- **Канон:** [CANON.md](../WorldGenerator_2.0/CANON.md); [TODO_03](../WorldGenerator_2.0/TODO_03_GRAPH_ENGINE.md)…[TODO_06](../WorldGenerator_2.0/TODO_06_WORLD.md), [LLM_API_SUPPORT.md](../WorldGenerator_2.0/LLM_API_SUPPORT.md), [MODEL_REUSE.md](../WorldGenerator_2.0/MODEL_REUSE.md), [TRAINING_REUSE_AND_API_SCENARIOS.md](../WorldGenerator_2.0/TRAINING_REUSE_AND_API_SCENARIOS.md), [AGENT_SYSTEMS_SUPPORT.md](../WorldGenerator_2.0/AGENT_SYSTEMS_SUPPORT.md), [EXPANSION_UNIVERSE_GRAPH_OF_WORLDS.md](../WorldGenerator_2.0/EXPANSION_UNIVERSE_GRAPH_OF_WORLDS.md).
 - **Код:** yggdrasill/foundation/graph.py, yggdrasill/executor/run.py, yggdrasill/foundation/block.py, port.py.
 - **Документация:** docs/DONE_03_GRAPH_ENGINE.md, docs/PLAN_TODO_02_AND_FORWARD.md, docs/OUTLINE_TODO_02_TO_07.md.
