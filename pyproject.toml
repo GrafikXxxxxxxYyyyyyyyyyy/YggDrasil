@@ -92,14 +92,14 @@ dev = [
 ]
 
 [project.scripts]
-yggdrasil = "yggdrasil.cli:main"
+yggdrasill = "yggdrasill.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["yggdrasil", "yggdrasil*"]
+include = ["yggdrasill", "yggdrasill*"]
 
 [tool.setuptools.package-data]
-"yggdrasil" = ["configs/presets/*.yaml", "plugins/custom/*.yaml"]
+"yggdrasill" = ["configs/presets/*.yaml", "plugins/custom/*.yaml"]
 
 [tool.ruff]
 line-length = 120
