@@ -18,6 +18,9 @@
 | **[04_STAGE_LEVEL.md](04_STAGE_LEVEL.md)** | **Уровень перехода (Stage)** — третий исполняемый уровень: Stage = гиперграф пайплайнов, state (пять блоков), маппинг state↔пайплайн, условия выполнения, пять переходов мира. |
 | **[05_WORLD_LEVEL.md](05_WORLD_LEVEL.md)** | **Уровень мира** — четвёртый исполняемый уровень: мир = гиперграф переходов, цикл (Философ→Автор→Среда→Архитектор→Творец), state, Среда, первая итерация, Action. |
 | **[06_UNIVERSE_LEVEL.md](06_UNIVERSE_LEVEL.md)** | **Уровень вселенной** — высший уровень: вселенная = гиперграф миров, payload_spec, эфир, End Worlds, сообщество. |
+| [EXAMPLE_ARITHMETIC_AT_GRAPH_LEVEL.md](EXAMPLE_ARITHMETIC_AT_GRAPH_LEVEL.md) | Пример: арифметика на уровне графа (Add, Mul, один проход). |
+| [EXAMPLE_ODES_AND_RECURSIVE_TASKS.md](EXAMPLE_ODES_AND_RECURSIVE_TASKS.md) | Примеры: ОДУ (численные методы, цикл по времени) и рекуррентные задачи (Фибоначчи) через цикл в графе. |
+| [RECURSION_AND_HYPERGRAPH.md](RECURSION_AND_HYPERGRAPH.md) | Рекурсия и гиперграф: структурная, по уровням, итерация до сходимости. |
 
 
 **По мере разработки** (согласно плану) в docs/ добавляются:

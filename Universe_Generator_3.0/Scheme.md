@@ -191,6 +191,9 @@
 | [docs/05_WORLD_LEVEL.md](docs/05_WORLD_LEVEL.md) | Уровень мира: мир = гиперграф переходов, цикл (Философ→Автор→Среда→Архитектор→Творец), state, Среда (World update + Development), первая итерация, Action. |
 | [docs/06_UNIVERSE_LEVEL.md](docs/06_UNIVERSE_LEVEL.md) | Уровень вселенной: вселенная = гиперграф миров, payload_spec, эфир, выполнение, End Worlds, сообщество. |
 | [docs/PLAN_DEVELOPMENT_CANON.md](docs/PLAN_DEVELOPMENT_CANON.md) | План разработки нового канона (фазы 0–7). |
+| [docs/EXAMPLE_ARITHMETIC_AT_GRAPH_LEVEL.md](docs/EXAMPLE_ARITHMETIC_AT_GRAPH_LEVEL.md) | Пример: арифметика на уровне графа (узлы Add/Mul, один проход). |
+| [docs/EXAMPLE_ODES_AND_RECURSIVE_TASKS.md](docs/EXAMPLE_ODES_AND_RECURSIVE_TASKS.md) | Примеры: ОДУ (численные методы, цикл по времени) и рекуррентные задачи (Фибоначчи) через цикл в графе. |
+| [docs/RECURSION_AND_HYPERGRAPH.md](docs/RECURSION_AND_HYPERGRAPH.md) | Рекурсия и гиперграф: структурная, по уровням, итерация до сходимости (run_until). |
 
 По мере появления новых файлов в docs/ сюда добавляются ссылки; Scheme задаёт **граф гиперссылок** документации, соответствующий философии и канону.
 
