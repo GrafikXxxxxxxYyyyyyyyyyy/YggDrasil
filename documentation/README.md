@@ -15,7 +15,7 @@
 | **[README.md](README.md)** (этот файл) | Точка входа: назначение папки, навигация по канону. |
 | **[CANON.md](CANON.md)** | Состав канона, ключевые принципы, список всех документов. |
 | **[Scheme.md](Scheme.md)** | Полная схема архитектуры — от фундамента до вселенной; уровни, контракты, цикл мира (три стадии). |
-| **[docs/](docs/)** | Детальные документы по уровням: [01_FOUNDATION.md](docs/01_FOUNDATION.md) (фундамент), [02_ABSTRACT_TASK_NODES.md](docs/02_ABSTRACT_TASK_NODES.md) (абстрактные узлы-задачи), [03_TASK_HYPERGRAPH.md](docs/03_TASK_HYPERGRAPH.md) (гиперграф задачи), [04_WORKFLOW.md](docs/04_WORKFLOW.md) (воркфлоу), [05_STAGE.md](docs/05_STAGE.md) (стадия), [06_WORLD.md](docs/06_WORLD.md) (мир), [07_UNIVERSE.md](docs/07_UNIVERSE.md) (вселенная — последний уровень). |
+| **[docs/](docs/)** | Детальные документы по уровням: [01_FOUNDATION.md](docs/01_FOUNDATION.md) (фундамент), [02_ABSTRACT_TASK_NODES.md](docs/02_ABSTRACT_TASK_NODES.md) (абстрактные узлы-задачи), [03_TASK_HYPERGRAPH.md](docs/03_TASK_HYPERGRAPH.md) (гиперграф задачи), [04_WORKFLOW.md](docs/04_WORKFLOW.md) (воркфлоу), [05_STAGE.md](docs/05_STAGE.md) (стадия), [06_WORLD.md](docs/06_WORLD.md) (мир), [07_UNIVERSE.md](docs/07_UNIVERSE.md) (вселенная — последний уровень). Тематические: [SERIALIZATION.md](docs/SERIALIZATION.md) (сериализация), [GLOSSARY.md](docs/GLOSSARY.md) (глоссарий), [HYPERGRAPH_ENGINE.md](docs/HYPERGRAPH_ENGINE.md) (гиперграфовый движок), [DOMAINS_DEPLOYMENT_TRAINING.md](docs/DOMAINS_DEPLOYMENT_TRAINING.md) (домены, развёртывание, обучение), [WIKI_AND_CONTENT_SOURCES.md](docs/WIKI_AND_CONTENT_SOURCES.md) (вики и внешние источники контента). |
 
 ---
 
@@ -30,7 +30,7 @@
 ## С чего начать
 
 - **Понять замысел** — [../philosophy/Philosophy-Part1.md](../philosophy/Philosophy-Part1.md), [Philosophy-Part2.md](../philosophy/Philosophy-Part2.md), [Philosophy-Part3.md](../philosophy/Philosophy-Part3.md).
-- **Увидеть схему целиком** — [Scheme.md](Scheme.md).
+- **Увидеть схему целиком** — [Scheme.md](Scheme.md) (иерархия уровней, контракты run, цикл мира, сводка).
 - **Найти нужный документ** — [CANON.md](CANON.md).
 
 Референс старой кодовой базы и прошлых канонов: [../reference/](../reference/). Новый канон опирается на него как на источник идей и технических решений, но выстроен заново в соответствии с текущей философией (в т.ч. **три стадии** мира: автор, среда, творец).
