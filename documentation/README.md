@@ -15,7 +15,7 @@
 | **[README.md](README.md)** (этот файл) | Точка входа: назначение папки, навигация по канону. |
 | **[CANON.md](CANON.md)** | Состав канона, ключевые принципы, список всех документов. |
 | **[Scheme.md](Scheme.md)** | Полная схема архитектуры — от фундамента до вселенной; уровни, контракты, цикл мира (три стадии). |
-| **[docs/](docs/)** | Детальные документы по уровням: [01_FOUNDATION.md](docs/01_FOUNDATION.md) (фундамент), [02_ABSTRACT_TASK_NODES.md](docs/02_ABSTRACT_TASK_NODES.md) (абстрактные узлы-задачи), [03_TASK_HYPERGRAPH.md](docs/03_TASK_HYPERGRAPH.md) (гиперграф задачи), [04_WORKFLOW.md](docs/04_WORKFLOW.md) (воркфлоу), [05_STAGE.md](docs/05_STAGE.md) (стадия), [06_WORLD.md](docs/06_WORLD.md) (мир) и далее по мере заполнения. |
+| **[docs/](docs/)** | Детальные документы по уровням: [01_FOUNDATION.md](docs/01_FOUNDATION.md) (фундамент), [02_ABSTRACT_TASK_NODES.md](docs/02_ABSTRACT_TASK_NODES.md) (абстрактные узлы-задачи), [03_TASK_HYPERGRAPH.md](docs/03_TASK_HYPERGRAPH.md) (гиперграф задачи), [04_WORKFLOW.md](docs/04_WORKFLOW.md) (воркфлоу), [05_STAGE.md](docs/05_STAGE.md) (стадия), [06_WORLD.md](docs/06_WORLD.md) (мир), [07_UNIVERSE.md](docs/07_UNIVERSE.md) (вселенная — последний уровень). |
 
 ---
 
