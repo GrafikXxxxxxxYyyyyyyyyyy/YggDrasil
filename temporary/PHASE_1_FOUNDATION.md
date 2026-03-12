@@ -15,11 +15,11 @@
 Реализовать **минимальный фундамент**, на котором строятся все остальные уровни:
 
 - **Port** — описание одного входа или выхода блока (имя, тип, опциональность, политика агрегации).
-- **Abstract Base Block** — абстрактный блок: идентичность (block_type, block_id), объявление портов, выполнение run(inputs)→outputs, сериализация state_dict/load_state_dict.
-- **Abstract Graph Node** — узел гиперграфа: имя узла (node_id), ссылка на один блок; интерфейс run(inputs)→outputs для движка (делегирование в блок).
+- **Abstract Base Block** — абстрактный блок: **материальная** сущность — идентичность (block_type, block_id), хранение данных, выполнение forward(inputs)→outputs, сериализация state_dict/load_state_dict. Не объявляет порты (порты у узла). Отвечает только за данные и вычисления; не знает о графе и положении в нём.
+- **Abstract Graph Node** — узел гиперграфа: **идеальное** начало — положение и связи (node_id, объявление портов declare_ports, get_input_ports, get_output_ports, run). Не хранит блок. Используется только в двойном наследовании с Block (узлы-задачи); run делегирует в self.forward того же объекта.
 - **Registry** — реестр типов блоков: регистрация block_type → класс/фабрика, создание экземпляра по конфигу (build(config)).
 
-**Результат фазы 1:** можно создавать блоки по типу из реестра, объявлять порты, вызывать block.run(inputs) и run(inputs) у узла (AbstractGraphNode); узлы готовы к вставке в гиперграф (структура графа и движок — фаза 2–3). Все тесты в `tests/foundation/` проходят.
+**Результат фазы 1:** можно создавать блоки по типу из реестра, вызывать block.forward(inputs); определены два равноправных начала — Block (данные, вычисление, без портов) и Node (положение, связи, объявление портов); узлы-задачи (наследующие оба) будут встраиваться в гиперграф на фазах 2–4. Все тесты в `tests/foundation/` проходят.
 
 ---
 
@@ -141,7 +141,7 @@ class Port:
 
 ### 4.1 Назначение по канону
 
-Блок — **минимальная единица**: хранит (параметры, конфиг, веса, состояние) и вычисляет (входы → выходы). Контракт: объявление портов, выполнение run(inputs)→outputs, идентичность (block_type, block_id). Сериализация: конфиг + state_dict/load_state_dict. Канон: 01 §2.
+Блок — **минимальная единица**: хранит (параметры, конфиг, веса, состояние) и вычисляет forward(inputs)→outputs. Контракт: идентичность (block_type, block_id), forward, сериализация (state_dict/load_state_dict). Порты не объявляет — это ответственность узла. Канон: 01 §2.
 
 ### 4.2 Идентичность
 
@@ -155,17 +155,13 @@ class Port:
 
 ### 4.3 Порты
 
-- Блок **объявляет** порты через метод **declare_ports()** → список (или итератор) Port. Не принимает аргументов; набор портов фиксирован для данного класса/экземпляра.
-- Удобные методы (реализуются в базовом классе): **get_input_ports()**, **get_output_ports()** — фильтрация declare_ports() по direction. **get_port(name)** — поиск порта по имени; возвращает Port или None.
-
-Требование: имена портов в declare_ports() уникальны; все имена не пустые.
+- Блок **не объявляет порты**: порты относятся к **узлу** (идеальное начало, связи в графе). Блок только выполняет **forward(inputs: Dict) -> Dict** по контракту имён ключей; объявление портов (declare_ports, get_input_ports, get_output_ports) — ответственность AbstractGraphNode. В узле-задаче класс реализует и forward (Block), и declare_ports (Node).
 
 ### 4.4 Выполнение (run / forward)
 
-- **forward(inputs: Dict[str, Any]) -> Dict[str, Any]** — абстрактный метод: по словарю входов (имя порта → значение) возвращает словарь выходов (имя порта → значение). Ключи должны соответствовать объявленным входным и выходным портам.
-- **run(inputs)** — алиас для forward (канон допускает оба имени). Вызов run(inputs) эквивалентен forward(inputs).
+- **forward(inputs: Dict[str, Any]) -> Dict[str, Any]** — абстрактный метод: по словарю входов возвращает словарь выходов. Имена ключей задаются контрактом реализации (в узле-задаче тот же класс реализует declare_ports на стороне Node — порты и имена ключей forward согласованы).
 
-Поведение: если на входной порт не подано значение и порт optional=True, блок может использовать значение по умолчанию; иначе реализация может требовать наличие ключа или бросать ошибку. Выходной словарь должен содержать все объявленные выходные порты (или подмножество по контракту подкласса).
+Блок не имеет метода run: вызов run(inputs) у графа выполняет узел (Node.run → self.forward того же объекта).
 
 ### 4.5 Сериализация состояния
 
@@ -183,8 +179,8 @@ class Port:
 ### 4.7 Жизненный цикл (канон §2.5)
 
 1. Создание: конструктор принимает block_id (опционально), config (опционально). Внутри присваиваются block_id (или сгенерированный), config (копия).
-2. Размещение в узле: блок передаётся в AbstractGraphNode(node_id, block). Блок не меняется.
-3. Выполнение: вызывается block.run(inputs) исполнителем или напрямую.
+2. Размещение в графе: блок участвует в графе **только как часть узла-задачи** (двойное наследование Block+Node). В гиперграф добавляется объект узла-задачи (один объект = Block+Node), а не отдельный блок и не обёртка «узел с блоком».
+3. Выполнение: движок вызывает node.run(inputs) у узла-задачи; run делегирует в forward того же объекта (Block-часть).
 4. Сохранение/загрузка: state_dict() сохраняется; load_state_dict() восстанавливает состояние.
 
 ### 4.8 Сигнатуры (псевдокод)
@@ -203,16 +199,7 @@ class AbstractBaseBlock(ABC):
     def config(self) -> Dict[str, Any]: ...  # копия
 
     @abstractmethod
-    def declare_ports(self) -> List[Port]: ...
-
-    def get_input_ports(self) -> List[Port]: ...
-    def get_output_ports(self) -> List[Port]: ...
-    def get_port(self, name: str) -> Optional[Port]: ...
-
-    @abstractmethod
     def forward(self, inputs: Dict[str, Any]) -> Dict[str, Any]: ...
-
-    def run(self, inputs: Dict[str, Any]) -> Dict[str, Any]: ...  # return self.forward(inputs)
 
     def state_dict(self) -> Dict[str, Any]: ...
     def load_state_dict(self, state: Dict[str, Any], strict: bool = True) -> None: ...
@@ -229,25 +216,24 @@ class AbstractBaseBlock(ABC):
     def freeze(self) -> "AbstractBaseBlock": ...
     def unfreeze(self) -> "AbstractBaseBlock": ...
 ```
+Порты (declare_ports, get_input_ports, get_output_ports) в Block **нет** — они у Node.
 
 ### 4.9 Тесты для Block
 
-Расположение: `tests/foundation/test_block.py`. Нужны **конкретные блоки-заглушки** в `tests/foundation/helpers.py` (или в том же файле тестов): например AddBlock (входы a, b; выход out; out = a + b [+ offset из config]), IdentityBlock (вход x, выход y; y = x).
+Расположение: `tests/foundation/test_block.py`. Нужны **конкретные блоки-заглушки** в `tests/foundation/helpers.py`: AddBlock (forward: входы "a", "b" → выход "out"; offset из config), IdentityBlock (forward: "x" → "y"). У блоков **нет** declare_ports — порты у узла.
 
 | Тест | Что проверяет |
 |------|-------------------------------|
 | Создание блока с block_id и config | block_id, config, block_type доступны. |
-| declare_ports / get_input_ports / get_output_ports | Количество и имена портов соответствуют объявлению. |
-| forward с полным словарём входов | Выход совпадает с ожидаемым (например a+b для AddBlock). |
-| forward с опциональным портом отсутствует | Либо значение по умолчанию, либо ошибка — по контракту заглушки. |
-| run как алиас forward | run(inputs) == forward(inputs). |
+| forward с полным словарём входов | Выход совпадает с ожидаемым (например a+b для AddBlock, x→y для IdentityBlock). |
+| forward с отсутствующим ключом | По контракту реализации — KeyError или значение по умолчанию. |
 | state_dict возвращает словарь | Для блока с состоянием (например offset) ключи и значения корректны. |
 | load_state_dict затем forward | Поведение после загрузки воспроизводит сохранённое состояние. |
 | load_state_dict strict=True с лишним ключом | Исключение. |
 | train/eval, freeze/unfreeze | Флаги меняются; вызов eval() переводит training в False. |
 | Блок с get_sub_blocks: state_dict содержит префиксы | Ключи вида "child.offset"; после load_state_dict подблок восстановлен. |
 
-**Критерий прохождения:** все тесты в test_block.py зелёные; заглушки AddBlock и IdentityBlock используются и в test_registry, и при необходимости в test_node.
+**Критерий прохождения:** все тесты в test_block.py зелёные; заглушки AddBlock и IdentityBlock используются и в test_registry. Порты и run тестируются на узле-задаче (test_node).
 
 ---
 
@@ -255,7 +241,7 @@ class AbstractBaseBlock(ABC):
 
 ### 5.1 Назначение по канону
 
-**Abstract Graph Node** (в коде — класс **AbstractGraphNode**) задаёт **только положение и связи** в гиперграфе: node_id, участие в гиперрёбрах. Не хранит блок и не оборачивает блок. Предназначен **только для наследования** вместе с AbstractBaseBlock в классах узлов-задач (двойное наследование): в одном объекте Block даёт данные и вычисления (порты, forward), Node даёт node_id и интерфейс для движка (get_input_ports, get_output_ports, run → self.forward). Канон: 01 §3, 02 §3.1.
+**Abstract Graph Node** (в коде — класс **AbstractGraphNode**) отвечает **только за положение и связи** в гиперграфе: node_id, **объявление портов** (declare_ports) и интерфейс для движка (get_input_ports, get_output_ports, run). Это **идеальное** начало (структура, связи, точки подключения в графе). **Материальное** начало — Block (данные, вычисление forward). Порты принадлежат узлу, не блоку. AbstractGraphNode не хранит блок; при двойном наследовании Node даёт node_id и declare_ports, Block даёт forward; run(inputs) делегирует в self.forward(inputs). Канон: 01 §3, 02 §3.1.
 
 ### 5.2 Атрибуты и контракт
 
@@ -267,10 +253,11 @@ class AbstractBaseBlock(ABC):
 
 ### 5.3 Методы для движка
 
+- **declare_ports()** — абстрактный метод узла: возвращает список Port (входы/выходы этой вершины в графе). Реализуется в классе узла-задачи; контракт имён согласован с forward (Block-часть того же класса).
+- **get_input_ports()**, **get_output_ports()** — строятся из self.declare_ports() (фильтрация по direction IN/OUT). Нужны для построения графа и валидации рёбер.
 - **run(inputs: Dict[str, Any]) -> Dict[str, Any]** — return self.forward(inputs) (forward из Block-части того же объекта).
-- **get_input_ports()**, **get_output_ports()** — строятся из self.declare_ports() (порты с direction IN / OUT). Нужны для построения графа и валидации рёбер.
 
-Валидация при создании: node_id не пустой (иначе ValueError). AbstractGraphNode **не хранит блок** и **не оборачивает** блок: он предназначен **только для наследования** вместе с AbstractBaseBlock в классах узлов-задач (двойное наследование, фаза 4). Конструктор принимает только node_id. Методы get_input_ports, get_output_ports, run обращаются к self (self.declare_ports(), self.forward()) — к Block-части того же объекта. См. [PHASE_4_ABSTRACT_TASK_NODES.md](PHASE_4_ABSTRACT_TASK_NODES.md) §4.
+Валидация при создании: node_id не пустой (иначе ValueError). AbstractGraphNode **не хранит блок**; порты объявляет узел (declare_ports), вычисление — блок (forward). См. [PHASE_4_ABSTRACT_TASK_NODES.md](PHASE_4_ABSTRACT_TASK_NODES.md) §4.
 
 ### 5.4 Сигнатуры (псевдокод)
 
@@ -281,9 +268,12 @@ class AbstractGraphNode:
     @property
     def node_id(self) -> str: ...
 
-    def run(self, inputs: Dict[str, Any]) -> Dict[str, Any]: ...
+    @abstractmethod
+    def declare_ports(self) -> List[Port]: ...  # объявление портов — ответственность узла
+
     def get_input_ports(self) -> List[Port]: ...
     def get_output_ports(self) -> List[Port]: ...
+    def run(self, inputs: Dict[str, Any]) -> Dict[str, Any]: ...  # → self.forward(inputs)
 ```
 
 ### 5.5 Тесты для AbstractGraphNode
@@ -376,8 +366,9 @@ def register_block(block_type: str, registry: Optional[BlockRegistry] = None) ->
 
 Рекомендуемые классы:
 
-1. **IdentityBlock** — один вход "x", один выход "y"; forward: y = x. Без состояния (state_dict пустой или минимальный). Для проверки run узла (AbstractGraphNode) и простых сценариев.
+1. **IdentityBlock** — один вход "x", один выход "y"; forward: y = x. Без состояния (state_dict пустой или минимальный). Для проверки блока и реестра.
 2. **AddBlock** — входы "a", "b"; выход "out"; forward: out = a + b + offset. offset из config (по умолчанию 0); state_dict() возвращает {"offset": self.offset}; load_state_dict восстанавливает offset. Для проверки конфига, state_dict/load_state_dict и реестра.
+3. **Минимальный узёл-задача для тестов** (например IdentityTaskNode): класс, наследующий **и** AbstractBaseBlock, **и** AbstractGraphNode (двойное наследование), с node_id в конструкторе и forward(inputs)=passthrough. Используется в test_node.py для проверки интерфейса Node (get_input_ports, get_output_ports, run); не подменять обёрткой «Node(block)».
 
 Опционально: блок с опциональным портом; блок с get_sub_blocks (вложенный AddBlock) для теста агрегации state_dict.
 
@@ -387,7 +378,7 @@ def register_block(block_type: str, registry: Optional[BlockRegistry] = None) ->
 
 1. **Port** — port.py, тесты test_port.py. Без зависимостей от Block.
 2. **AbstractBaseBlock** — block.py; зависит от Port. Тесты test_block.py + helpers (AddBlock, IdentityBlock).
-3. **AbstractGraphNode** — node.py; зависит от Block. Тесты test_node.py (используют IdentityBlock из helpers).
+3. **AbstractGraphNode** — node.py; при двойном наследовании использует Block-интерфейс того же объекта. Тесты test_node.py используют минимальный узёл-задачу из helpers (класс Block+Node).
 4. **BlockRegistry** — registry.py; зависит от Block. Тесты test_registry.py (регистрируют AddBlock, IdentityBlock).
 5. **Экспорты** — в foundation/__init__.py экспортировать Port, PortDirection, PortType, PortAggregation, AbstractBaseBlock, AbstractGraphNode, BlockRegistry, register_block.
 
@@ -399,10 +390,9 @@ def register_block(block_type: str, registry: Optional[BlockRegistry] = None) ->
 
 ### 9.1 Минимальный сценарий «здравствуй, мир»
 
-- Создать блок (например IdentityBlock) напрямую или через реестр.
-- Создать узел: AbstractGraphNode("n1", block).
-- Вызвать node.run({"x": 42}).
-- Ожидание: {"y": 42}. Убедиться, что block.run и node.run совпадают.
+- Создать **узёл-задачу** для теста: минимальный класс, наследующий **и** AbstractBaseBlock, **и** AbstractGraphNode (двойное наследование), с node_id и реализацией forward (например passthrough). Либо использовать заглушку из фазы 4 (например IdentityBackbone).
+- Вызвать node.run({"x": 42}) у этого объекта.
+- Ожидание: {"y": 42}. Убедиться, что run делегирует в forward того же объекта (Block-часть). Отдельной обёртки «узел с блоком» не создаём — в граф кладутся только такие объекты (узлы-задачи).
 
 ### 9.2 Сценарий с реестром и состоянием
 
@@ -414,8 +404,8 @@ def register_block(block_type: str, registry: Optional[BlockRegistry] = None) ->
 ### 9.3 Чек-лист фазы 1
 
 - [ ] Port: создание, валидация name/direction/aggregation, compatible_with, тесты проходят.
-- [ ] AbstractBaseBlock: block_type, block_id, config, declare_ports, forward, run, state_dict, load_state_dict; тесты с AddBlock и IdentityBlock проходят.
-- [ ] AbstractGraphNode: node_id, block, run делегирует в block; тесты проходят.
+- [ ] AbstractBaseBlock: block_type, block_id, config, forward, state_dict, load_state_dict (без портов и без run); тесты с AddBlock и IdentityBlock проходят.
+- [ ] AbstractGraphNode: node_id, declare_ports (абстрактный), get_input_ports, get_output_ports, run (→ self.forward); тесты используют узёл-задачу (класс Block+Node); тесты проходят.
 - [ ] BlockRegistry: register, build по config с block_type/type, get, __contains__, декоратор register_block; тесты проходят.
 - [ ] foundation/__init__.py экспортирует все публичные классы и функции.
 - [ ] `pytest tests/foundation/` — все тесты зелёные.
@@ -435,7 +425,7 @@ def register_block(block_type: str, registry: Optional[BlockRegistry] = None) ->
 | Registry.build с config без block_type и type | KeyError. |
 | Registry.build с неизвестным block_type | KeyError с понятным сообщением. |
 | AbstractGraphNode с node_id "" или "   " | ValueError. |
-| Два порта с одним именем в declare_ports() | Невалидно; тест может проверять уникальность или документировать как «поведение не определено». |
+| Два порта с одним именем в declare_ports() (у узла) | Невалидно; тест может проверять уникальность или документировать как «поведение не определено». |
 
 ---
 
@@ -455,7 +445,7 @@ def register_block(block_type: str, registry: Optional[BlockRegistry] = None) ->
 
 - **Port** — описание входа/выхода; совместимость типов.
 - **AbstractBaseBlock** — хранилище + выполнение + идентичность + сериализация.
-- **AbstractGraphNode** — узел гиперграфа: только положение и связи (node_id); используется в двойном наследовании с Block (узлы-задачи); интерфейс run/get_input_ports/get_output_ports делегирует в self (Block-часть того же объекта).
+- **AbstractGraphNode** — узел гиперграфа: положение и связи (node_id, declare_ports, get_input_ports, get_output_ports, run); порты объявляет узел; run делегирует в self.forward (Block-часть того же объекта).
 - **BlockRegistry** — регистрация типов и создание блоков по конфигу.
 
 После выполнения фазы 1 можно переходить к фазе 2 (гиперграфовый движок) и фазе 3 (гиперграф задачи), опираясь на готовые Port, Block, AbstractGraphNode и Registry.

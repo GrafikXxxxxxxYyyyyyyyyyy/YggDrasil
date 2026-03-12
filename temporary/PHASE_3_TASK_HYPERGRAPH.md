@@ -120,13 +120,12 @@ def add_node(
 ### 5.2 Алгоритм
 
 1. Нормализовать node_id (strip); проверить непустоту. Проверить, что node_id не занят (иначе ValueError).
-2. Собрать build_config: {"block_type": block_type, "block_id": block_id, **(config or {})}. Убрать из config ключи, не относящиеся к блоку, если нужно (реестр в Phase 1 ожидает block_type и остальное).
-3. registry = registry or BlockRegistry.global_registry(); block = registry.build(build_config).
-4. Создать node = AbstractGraphNode(node_id=node_id, block=block).
-5. Вызвать существующий add_node(node_id, node) (низкоуровневый метод фазы 2).
-6. Записать trainable в внутренний словарь _node_trainable[node_id] = trainable (если такой словарь ведётся; иначе атрибут на узле или общая политика).
-7. Если pretrained задан: если dict — block.load_state_dict(pretrained, strict=False); если str — по соглашению загрузить из файла (фаза 5 или простой json.load).
-8. Вернуть node_id.
+2. Собрать build_config: {"block_type": block_type, "node_id": node_id, "block_id": block_id, **(config or {})}. Убрать из config ключи, не относящиеся к узлу-задаче, если нужно.
+3. registry = registry or BlockRegistry.global_registry(); **node = registry.build(build_config)**. Реестр для типов узлов-задач (фаза 4) возвращает один объект Block+Node; фабрика принимает node_id, block_id, config и создаёт экземпляр узла-задачи. Отдельной обёртки AbstractGraphNode(block=...) не используется.
+4. При необходимости установить node_id на объекте (если не передан в конструктор). Вызвать существующий add_node(node_id, node) (низкоуровневый метод фазы 2).
+5. Записать trainable в внутренний словарь _node_trainable[node_id] = trainable (если такой словарь ведётся; иначе атрибут на узле или общая политика).
+6. Если pretrained задан: если dict — node.load_state_dict(pretrained, strict=False); если str — по соглашению загрузить из файла (фаза 5 или простой json.load).
+7. Вернуть node_id.
 
 ### 5.3 Ошибки
 
@@ -136,7 +135,7 @@ def add_node(
 
 ### 5.4 Тесты
 
-- Успешное добавление: add_node("A", "test/identity", config={}) с зарегистрированным типом test/identity; get_node("A") возвращает узел с нужным блоком.
+- Успешное добавление: add_node("A", "test/identity", config={}) с зарегистрированным типом test/identity (узлы-задачи, фаза 4); get_node("A") возвращает узёл-задачу (объект Block+Node).
 - С pretrained (dict): после add_node с pretrained=state_dict блок возвращает ожидаемые выходы.
 - Дубликат node_id — ValueError.
 - Неизвестный block_type — ожидаемое исключение от реестра.
@@ -182,7 +181,7 @@ def from_config(
 1. registry = registry or BlockRegistry.global_registry().
 2. Создать экземпляр: g = cls(graph_id=config.get("graph_id", "graph")).
 3. Установить graph_kind и metadata: g.graph_kind = config.get("graph_kind"); g.metadata = dict(config.get("metadata", {})).
-4. **Узлы:** для каждой записи nc в config.get("nodes", []): node_id = nc["node_id"]; block_type = nc["block_type"]; node_cfg = nc.get("config") или {}; если node_cfg — dict с единственным ключом "ref", подставить содержимое файла (_resolve_config_ref); build_config = {"block_type": block_type, "block_id": nc.get("block_id"), **node_cfg}; block = registry.build(build_config); node = AbstractGraphNode(node_id=node_id, block=block); g.add_node(node_id, node); g._node_trainable[node_id] = nc.get("trainable", True).
+4. **Узлы:** для каждой записи nc в config.get("nodes", []): node_id = nc["node_id"]; block_type = nc["block_type"]; node_cfg = nc.get("config") или {}; если node_cfg — dict с единственным ключом "ref", подставить содержимое файла (_resolve_config_ref); build_config = {"block_type": block_type, "node_id": node_id, "block_id": nc.get("block_id"), **node_cfg}; **node = registry.build(build_config)** (реестр возвращает узёл-задачу — объект Block+Node; фаза 4 регистрирует типы backbone/identity и т.д.); g.add_node(node_id, node); g._node_trainable[node_id] = nc.get("trainable", True).
 5. **Рёбра:** для каждой записи ec в config.get("edges", []): g.add_edge(Edge(source_node=ec["source_node"], source_port=ec["source_port"], target_node=ec["target_node"], target_port=ec["target_port"])).
 6. **Exposed:** для каждой записи в config.get("exposed_inputs", []): g.expose_input(entry["node_id"], entry["port_name"], entry.get("name")). Аналогично exposed_outputs.
 7. Если validate: result = validate(g); если result.errors — выбросить исключение (например ValueError с текстом ошибок) или вернуть результат по политике.

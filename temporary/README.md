@@ -19,6 +19,8 @@
 | **PHASE_2_ENGINE.md** | Полный технический план фазы 2: гиперграфовый движок — Edge, Hypergraph, Validator, Planner, Executor, run(hypergraph, inputs)→outputs, тесты, приёмочные критерии. |
 | **PHASE_3_TASK_HYPERGRAPH.md** | Полный технический план фазы 3: гиперграф задачи — add_node(block_type, config), from_config, to_config, run, get_input_spec/get_output_spec, infer_exposed_ports, state_dict/load_state_dict, тесты, приёмочные критерии. |
 | **PHASE_4_ABSTRACT_TASK_NODES.md** | Полный технический план фазы 4: семь ролей узлов-задач (Backbone, Injector, Conjector, Inner Module, Outer Module, Helper, Converter), абстракции, заглушки role/identity, регистрация, role_from_block_type, опционально автосвязывание, тесты. |
+| **PHASE_5_SERIALIZATION.md** | Полный технический план фазы 5: сериализация блока и гиперграфа задачи — конфиг + чекпоинт, save_block/load_block, save/save_config/save_checkpoint, load/load_config/load_from_checkpoint, дедупликация по block_id, форматы файлов, версионирование, воспроизводимость, тесты. |
+| **PSEUDOCODE_ARCHITECTURE.md** | Псевдокод архитектуры: как два начала (Block, Node), узлы-задачи (двойное наследование) и гиперграф без обёртки выглядят в коде; примеры AbstractBaseBlock, AbstractGraphNode, AbstractBackbone, IdentityBackbone, add_node, run. |
 
 ---
 
