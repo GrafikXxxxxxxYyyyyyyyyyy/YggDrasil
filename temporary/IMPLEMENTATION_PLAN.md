@@ -28,17 +28,20 @@
 
 ## Фаза 0. Структура репозитория
 
-**Цель:** определить, где будет жить код фреймворка и тесты; минимальная структура каталогов.
+**Цель:** определить, где будет жить код фреймворка и тесты; минимальная структура каталогов; pyproject.toml, setup, requirements, запуск тестов.
 
 **Канон:** общее (Scheme, философия).
 
-**Шаги:**
+**Детальная спецификация:** [PHASE_0_STRUCTURE.md](PHASE_0_STRUCTURE.md) — полный документ по фазе 0: дерево каталогов, содержимое файлов, чек-лист, примеры pyproject.toml и requirements-dev.txt.
 
-1. Выбрать корневую директорию для кода: например `src/yggdrasill/` или `yggdrasill/` в корне.
-2. Выделить директорию для тестов: `tests/` с подпапками по уровням (foundation, task_nodes, hypergraph, workflow, …).
-3. Добавить при необходимости `pyproject.toml` / `setup.cfg` / `requirements.txt` для зависимостей и установки пакета.
+**Кратко:**
 
-**Результат:** явная структура каталогов; возможность импортировать будущие модули и запускать тесты.
+1. **Код:** пакет **yggdrasill/** в корне проекта (подпакеты: foundation, task_nodes, engine, hypergraph, workflow, stage, world, universe).
+2. **Тесты:** отдельная папка **tests/** в корне; подпапки по уровням (foundation, task_nodes, engine, …); запуск: `pytest tests/`.
+3. **Конфигурация:** pyproject.toml (метаданные, зависимости, optional-dependencies dev, setuptools, pytest, ruff), при необходимости setup.py, requirements-dev.txt / requirements.txt.
+4. **Проверка:** `pip install -e .`, `pip install -e ".[dev]"`, `pytest tests/` выполняются без ошибок.
+
+**Результат:** явная структура каталогов; возможность импортировать пакет и запускать тесты.
 
 ---
 
@@ -47,6 +50,8 @@
 **Цель:** реализовать минимальные сущности фундаментального уровня — блок, узел, порты, реестр типов блоков.
 
 **Канон:** [documentation/docs/01_FOUNDATION.md](../documentation/docs/01_FOUNDATION.md).
+
+**Детальный технический план:** [PHASE_1_FOUNDATION.md](PHASE_1_FOUNDATION.md) — контракты Port, Block, Node, Registry; API и сигнатуры; тесты по компонентам; порядок реализации; приёмочные критерии и граничные случаи.
 
 **Шаги:**
 
@@ -72,11 +77,13 @@
    - `register(block_type, factory)`, `create(block_type, config) -> Block`.  
    - Референс: 01 §7 (2.8).
 
-**Результат:** можно инстанцировать блоки по типу из реестра, объявлять порты, вызывать `block.run(inputs)`; узлы-обёртки над блоком готовы для вставки в граф.
+**Результат:** можно инстанцировать блоки по типу из реестра, объявлять порты, вызывать `block.run(inputs)`; абстрактный узел гиперграфа (AbstractGraphNode) задаёт положение и связи; узлы-задачи (Block+Node в одном объекте, фаза 4) готовы для вставки в граф.
 
 ---
 
 ## Фаза 2. Гиперграфовый движок
+
+**Детальный технический план:** [PHASE_2_ENGINE.md](PHASE_2_ENGINE.md).
 
 **Цель:** реализовать пять компонентов движка (хранилище структуры, валидатор, планировщик, буферы, исполнитель), чтобы по графу узлов и гиперрёбер выполнять обход и вызов run.
 
@@ -117,19 +124,21 @@
 
 ## Фаза 3. Гиперграф задачи
 
-**Цель:** класс «гиперграф задачи» (узлы = экземпляры узлов-задач), построение (add_node, add_edge, expose_input/output), вызов run через движок.
+**Детальный технический план:** [PHASE_3_TASK_HYPERGRAPH.md](PHASE_3_TASK_HYPERGRAPH.md).
+
+**Цель:** класс «гиперграф задачи» (узлы = экземпляры узлов-задач), построение (add_node по block_type/config, add_edge, expose_input/output), from_config, to_config, вызов run через движок.
 
 **Канон:** [documentation/docs/03_TASK_HYPERGRAPH.md](../documentation/docs/03_TASK_HYPERGRAPH.md).
 
 **Шаги:**
 
-1. **TaskHypergraph (или аналог)**  
+1. **Hypergraph (или аналог)**  
    - Хранит узлы (node_id → Node с блоком), гиперрёбра, exposed_inputs, exposed_outputs.  
    - Методы: `add_node(node_id, block_type, config, …)`, `add_edge(source_node, source_port, target_node, target_port)`, `add_hyperedge(ends)` при арности > 2, `expose_input(...)`, `expose_output(...)`, `remove_node`, `remove_edge` при необходимости.  
    - При любом изменении структуры — инкремент execution_version (или инвалидация кэша плана движка).
 
 2. **Интеграция с движком**  
-   - TaskHypergraph передаёт в Executor свою структуру (узлы, рёбра, exposed_inputs/outputs).  
+   - Hypergraph передаёт в Executor свою структуру (узлы, рёбра, exposed_inputs/outputs).  
    - Контракт: `run(hypergraph, inputs, **options) -> outputs`.  
    - Опции: `num_loop_steps` (для циклической фазы), `validate=True`, и т.д.
 
@@ -146,6 +155,8 @@
 ---
 
 ## Фаза 4. Абстрактные узлы-задачи (семь ролей)
+
+**Детальный технический план:** [PHASE_4_ABSTRACT_TASK_NODES.md](PHASE_4_ABSTRACT_TASK_NODES.md).
 
 **Цель:** ввести семь ролей узлов-задач (Backbone, Injector, Conjector, Inner Module, Outer Module, Helper, Converter) как классы/интерфейсы и зарегистрировать их в реестре; минимальные заглушки для проверки графа.
 
@@ -204,7 +215,7 @@
 **Шаги:**
 
 1. **Workflow**  
-   - Узлы: graph_id → TaskHypergraph (или ссылка на конфиг + ленивая загрузка).  
+   - Узлы: graph_id → Hypergraph (или ссылка на конфиг + ленивая загрузка).  
    - Гиперрёбра: связь внешних выходов одного гиперграфа с внешними входами другого (пары (graph_id, port_name) или аналог).  
    - Exposed inputs/outputs на уровне воркфлоу.
 
@@ -328,7 +339,7 @@
 | 0 | Структура каталогов кода и тестов |
 | 1 | Block, Node, Port, Registry |
 | 2 | Движок: Storage, Validator, Planner, Buffers, Executor |
-| 3 | TaskHypergraph, run(hypergraph, inputs), циклы |
+| 3 | Hypergraph, run(hypergraph, inputs), циклы |
 | 4 | Семь ролей узлов-задач, заглушки, реестр |
 | 5 | Сериализация блока и гиперграфа задачи |
 | 6 | Workflow, run(workflow, inputs), сериализация воркфлоу |
