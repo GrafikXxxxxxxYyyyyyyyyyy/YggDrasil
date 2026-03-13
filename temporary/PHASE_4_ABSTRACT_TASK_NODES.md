@@ -1,12 +1,10 @@
 # Фаза 4. Абстрактные узлы-задачи (семь ролей) — полный технический план
 
-Детальный технический план по **четвёртой фазе**: введение семи ролей узлов-задач (Backbone, Injector, Conjector, Inner Module, Outer Module, Helper, Converter) как абстрактных классов и их минимальных заглушек (stubs), регистрация в реестре типов блоков, опционально — автосвязывание по ролям и подготовка к agent_loop. Цель — чтобы гиперграф задачи можно было собирать из узлов по **block_type** (например `backbone/identity`, `conjector/identity`, `inner_module/identity`), валидировать и выполнять run; семь ролей задают контракты портов и типичные связи по канону. Документ опирается на канон (01, 02), план реализации, фазы 1–3 и референс (outdated_1/task_nodes).
+Детальный технический план по **четвёртой фазе**: введение семи ролей узлов-задач (Backbone, Injector, Conjector, Inner Module, Outer Module, Helper, Converter) как абстрактных классов и их минимальных заглушек (stubs), регистрация в реестре типов блоков, опционально — автосвязывание по ролям и подготовка к agent_loop. Цель — чтобы гиперграф задачи можно было собирать из узлов по **block_type** (например `backbone/identity`, `conjector/identity`, `inner_module/identity`), валидировать и выполнять run; семь ролей задают контракты портов и типичные связи по канону. Документ опирается на канон (01, 02), план реализации и фазы 1–3.
 
 **Связь с планом:** [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) — Фаза 4.
 
 **Канон:** [documentation/docs/02_ABSTRACT_TASK_NODES.md](../documentation/docs/02_ABSTRACT_TASK_NODES.md), [documentation/docs/01_FOUNDATION.md](../documentation/docs/01_FOUNDATION.md).
-
-**Референс:** reference/outdated_1/task_nodes/ (abstract.py, stubs.py, roles.py, role_rules.py, auto_connect.py).
 
 **Язык:** русский.
 
@@ -327,18 +325,6 @@ KNOWN_ROLES: Set[str] = {
 
 ---
 
-## 14. Референс: outdated_1 (task_nodes)
-
-- **abstract.py** — абстрактные классы по ролям (в референсе: Backbone, Solver, Codec, Conditioner, Tokenizer, Adapter, Guidance). У нас семь ролей по 02: Backbone, Injector, Conjector, Inner Module, Outer Module, Helper, Converter. Соответствие: Solver → Inner Module, Conditioner → Conjector, Codec/Tokenizer → Converter, Adapter → Injector; Guidance в референсе — отдельная роль (CFG), у нас может быть часть Conjector или Helper; Outer Module и Helper в референсе явно не выделены. Порты и имена брать из 02.
-- **stubs.py** — Identity-реализации для каждой роли, @register_block("role/identity"), register_task_node_stubs(registry). Использовать как образец регистрации и минимального forward.
-- **roles.py** — константы ролей, role_from_block_type(block_type). Адаптировать под наши семь ролей.
-- **role_rules.py** — таблица (source_role, target_role) → [(src_port, tgt_port)], suggest_edges_for_new_node. Адаптировать правила под порты из 02 (типичные связи §§4.5–10.5).
-- **auto_connect.py** — apply_auto_connect(graph, new_node_id, new_block), use_task_node_auto_connect(graph). Граф вызывает callback после add_node при auto_connect=True. Гиперграф в нашем движке — Hypergraph из engine; при необходимости добавить атрибут auto_connect_fn и вызов в add_node (Phase 3).
-
-Отличия от референса: семь ролей по канону 02; имена портов и типы строго по 02; блоки не наследуют Node — узел гиперграфа остаётся AbstractGraphNode с полем block.
-
----
-
 ## Итог
 
-Фаза 4 задаёт **полный технический план уровня абстрактных узлов-задач**: **двойное наследование** (канон 02 §3.1) — Block только за данные и вычисления, Node только за положение и связи; граф собирается **только из узлов-задач** (один объект = Block+Node), без обёртки блока в узел. Семь ролей как абстрактные классы с контрактами портов по канону 02, заглушки role/identity и их регистрация в реестре, роль из block_type (role_from_block_type), опционально правила связей и автосвязывание, опционально agent_loop. Документ опирается на канон 01–02 и референс outdated_1/task_nodes.
+Фаза 4 задаёт **полный технический план уровня абстрактных узлов-задач**: **двойное наследование** (канон 02 §3.1) — Block только за данные и вычисления, Node только за положение и связи; граф собирается **только из узлов-задач** (один объект = Block+Node), без обёртки блока в узел. Семь ролей как абстрактные классы с контрактами портов по канону 02, заглушки role/identity и их регистрация в реестре, роль из block_type (role_from_block_type), опционально правила связей и автосвязывание, опционально agent_loop.

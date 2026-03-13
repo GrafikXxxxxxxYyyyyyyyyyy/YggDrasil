@@ -1,12 +1,10 @@
 # Фаза 3. Гиперграф задачи — полный технический план
 
-Детальный технический план по **третьей фазе**: гиперграф задачи как полноценная собираемая и исполняемая единица. Цель — расширить движок (фаза 2) **API уровня задачи**: добавление узлов по **block_type** и **config** через реестр, построение из конфига (**from_config**), экспорт структуры (**to_config**), идентификаторы и метаданные (graph_id, graph_kind, metadata), контракт **run(hypergraph, inputs, **options) → outputs** через движок, подготовка к сериализации (state_dict/load_state_dict). Документ опирается на канон (01, 02, 03, HYPERGRAPH_ENGINE, SERIALIZATION), план реализации и референс (outdated_1).
+Детальный технический план по **третьей фазе**: гиперграф задачи как полноценная собираемая и исполняемая единица. Цель — расширить движок (фаза 2) **API уровня задачи**: добавление узлов по **block_type** и **config** через реестр, построение из конфига (**from_config**), экспорт структуры (**to_config**), идентификаторы и метаданные (graph_id, graph_kind, metadata), контракт **run(hypergraph, inputs, **options) → outputs** через движок, подготовка к сериализации (state_dict/load_state_dict). Документ опирается на канон (01, 02, 03, HYPERGRAPH_ENGINE, SERIALIZATION) и план реализации.
 
 **Связь с планом:** [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) — Фаза 3.
 
 **Канон:** [documentation/docs/03_TASK_HYPERGRAPH.md](../documentation/docs/03_TASK_HYPERGRAPH.md), [documentation/docs/01_FOUNDATION.md](../documentation/docs/01_FOUNDATION.md), [documentation/docs/02_ABSTRACT_TASK_NODES.md](../documentation/docs/02_ABSTRACT_TASK_NODES.md), [documentation/docs/HYPERGRAPH_ENGINE.md](../documentation/docs/HYPERGRAPH_ENGINE.md), [documentation/docs/SERIALIZATION.md](../documentation/docs/SERIALIZATION.md).
-
-**Референс:** reference/outdated_1/foundation/graph.py (Graph, from_config, to_config, add_node(block_type, config), state_dict, load_state_dict).
 
 **Язык:** русский.
 
@@ -157,7 +155,7 @@ def add_node(
 - **metadata** — словарь (опционально): num_loop_steps, описание и т.д.
 - **schema_version** — строка (опционально): для миграций и проверки совместимости.
 
-Конфиг узла в **nodes[].config** может быть подставлен из файла: если config = {"ref": "path/to/file.yaml"} (или .json), загрузить содержимое файла и использовать как config узла (референс: _resolve_config_ref). Иначе config передаётся в registry.build как есть.
+Конфиг узла в **nodes[].config** может быть подставлен из файла: если config = {"ref": "path/to/file.yaml"} (или .json), загрузить содержимое файла и использовать как config узла (например, _resolve_config_ref). Иначе config передаётся в registry.build как есть.
 
 ### 6.2 Сигнатура
 
@@ -189,7 +187,7 @@ def from_config(
 
 ### 6.4 Разрешение ссылок в конфиге узла (_resolve_config_ref)
 
-Если config узла — словарь вида {"ref": "path/to/file.yaml"} (единственный ключ "ref"), загрузить файл и вернуть его содержимое (YAML или JSON). Иначе вернуть config как есть. Это позволяет выносить большие конфиги блоков в отдельные файлы (канон 03 §4.4, референс graph._resolve_config_ref).
+Если config узла — словарь вида {"ref": "path/to/file.yaml"} (единственный ключ "ref"), загрузить файл и вернуть его содержимое (YAML или JSON). Иначе вернуть config как есть. Это позволяет выносить большие конфиги блоков в отдельные файлы (канон 03 §4.4).
 
 ### 6.5 Тесты
 
@@ -297,7 +295,7 @@ def run(
 
 Аналогично для внешних выходов: список dict с node_id, port_name, name?, при include_dtype — dtype из выходного порта.
 
-Сигнатуры (референс graph.py):
+Сигнатуры:
 
 ```python
 def get_input_spec(self, include_dtype: bool = False) -> List[Dict[str, Any]]: ...
@@ -310,7 +308,7 @@ def get_output_spec(self, include_dtype: bool = False) -> List[Dict[str, Any]]: 
 
 ## 11. Вывод внешних портов (infer_exposed_ports)
 
-**infer_exposed_ports()** — установить _exposed_inputs и _exposed_outputs по правилу: внешний вход = входной порт узла, на который **нет входящего ребра** от другого узла; внешний выход = выходной порт, от которого **нет исходящего ребра** к другому узлу (канон 03 §4.3, референс graph.infer_exposed_ports). Вызов перезаписывает текущие списки exposed. Используется, когда граф собран по рёбрам и не заданы явные expose_input/expose_output.
+**infer_exposed_ports()** — установить _exposed_inputs и _exposed_outputs по правилу: внешний вход = входной порт узла, на который **нет входящего ребра** от другого узла; внешний выход = выходной порт, от которого **нет исходящего ребра** к другому узлу (канон 03 §4.3). Вызов перезаписывает текущие списки exposed. Используется, когда граф собран по рёбрам и не заданы явные expose_input/expose_output.
 
 Алгоритм:
 
@@ -367,7 +365,7 @@ def to(self, device: Any) -> "Hypergraph":
 
 По канону 03 §4.1 при добавлении узла может использоваться **автосвязывание**: по типу узла-задачи (backbone, inner_module, conjector, ...) система выводит типичные связи с уже существующими узлами и создаёт гиперрёбра. Это требует знаний о ролях (02_ABSTRACT_TASK_NODES); фаза 4 вводит семь ролей. В фазе 3 можно:
 
-- Добавить параметр **auto_connect: bool = False** в add_node(node_id, block_type, config, ...); при True вызывать хук или заглушку (например пустая функция или попытка импорта из yggdrasill.task_nodes с use_task_node_auto_connect, как в референсе). Без фазы 4 автосвязывание не создаёт рёбер; с фазой 4 — подключается реальная логика.
+- Добавить параметр **auto_connect: bool = False** в add_node(node_id, block_type, config, ...); при True вызывать хук или заглушку (например пустая функция или попытка импорта из yggdrasill.task_nodes с use_task_node_auto_connect, по соглашению). Без фазы 4 автосвязывание не создаёт рёбер; с фазой 4 — подключается реальная логика.
 - Либо не добавлять auto_connect в фазу 3 и ввести в фазе 4.
 
 Тесты: при auto_connect=True и отсутствии модуля task_nodes — add_node не падает; рёбра создаются только явно или через from_config.
@@ -431,23 +429,6 @@ def to(self, device: Any) -> "Hypergraph":
 
 ---
 
-## 17. Референс: outdated_1 (graph.py)
-
-- **add_node(node_id, block_type, config, pretrained, registry, auto_connect, **kwargs)** — два аргумента (node_id, block_type) или один (Node/block/block_type). Build через registry; add_node(Node(...)); _node_trainable; pretrained загрузка; auto_connect через _ensure_auto_connect (task_nodes). Использовать как образец сигнатуры и порядка шагов.
-- **from_config(config, registry, validate)** — создание Graph, установка graph_kind и metadata; цикл по nodes (node_cfg с _resolve_config_ref), registry.build, add_node(Node); цикл по edges add_edge(Edge); восстановление _exposed_inputs/_exposed_outputs; при validate — g.validate(strict=True).
-- **to_config()** — schema_version, graph_id, nodes (node_id, block_type, block_id, config, trainable), edges, exposed_inputs, exposed_outputs, graph_kind, metadata.
-- **_resolve_config_ref(config)** — если config == {"ref": path}, загрузить YAML/JSON из path и вернуть содержимое.
-- **get_input_spec(include_dtype)**, **get_output_spec(include_dtype)** — при include_dtype добавить dtype из port в каждую запись.
-- **infer_exposed_ports()** — обнулить _exposed_inputs/_exposed_outputs; для каждого узла входные порты без входящего ребра → exposed_inputs; выходные без исходящего → exposed_outputs.
-- **run(inputs, ...)** — делегирование в executor.run(self, inputs, ...).
-- **to(device)**, **trainable_parameters()**, **set_trainable(node_id, trainable)**.
-- **state_dict()**, **load_state_dict(state)** — агрегат по node_id.
-- **load_from_checkpoint**, **save_config**, **save_checkpoint**, **save**, **load** — фаза 5; в фазе 3 достаточно state_dict/load_state_dict и to_config/from_config.
-
-Отличия от референса в нашей фазе 3: класс Hypergraph (не Graph); узел — AbstractGraphNode (Phase 1); реестр — BlockRegistry; движок в engine.run. Имена методов и контракт to_config/from_config сохраняем совместимыми с каноном и референсом.
-
----
-
 ## Итог
 
-Фаза 3 задаёт **полный технический план гиперграфа задачи**: расширение Hypergraph методами уровня задачи (add_node по block_type и config, from_config, to_config), идентификаторы и метаданные (graph_id, graph_kind, metadata), контракт run через движок, get_input_spec/get_output_spec с опцией dtype, infer_exposed_ports, to(device), trainable_parameters, set_trainable, state_dict/load_state_dict. Реализация в указанном порядке с тестами (from_config, to_config roundtrip, run после сборки из конфига) обеспечивает собираемый и исполняемый гиперграф задачи; сериализация в файлы (save/load) — фаза 5. Документ опирается на канон (01, 02, 03, HYPERGRAPH_ENGINE, SERIALIZATION) и референс outdated_1 (graph.py).
+Фаза 3 задаёт **полный технический план гиперграфа задачи**: расширение Hypergraph методами уровня задачи (add_node по block_type и config, from_config, to_config), идентификаторы и метаданные (graph_id, graph_kind, metadata), контракт run через движок, get_input_spec/get_output_spec с опцией dtype, infer_exposed_ports, to(device), trainable_parameters, set_trainable, state_dict/load_state_dict. Реализация в указанном порядке с тестами (from_config, to_config roundtrip, run после сборки из конфига) обеспечивает собираемый и исполняемый гиперграф задачи; сериализация в файлы (save/load) — фаза 5.

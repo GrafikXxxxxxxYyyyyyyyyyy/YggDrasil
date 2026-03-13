@@ -6,8 +6,6 @@
 
 **Философский якорь:** [../../philosophy/Philosophy-Part2.md](../../philosophy/Philosophy-Part2.md) §4 — уровень воркфлоу как гиперграф гиперграфов; комбинированные сценарии; данные между задачами; второй исполняемый уровень.
 
-**Референс:** [../../reference/Universe_Generator_3.0/docs/03_PIPELINE_LEVEL.md](../../reference/Universe_Generator_3.0/docs/03_PIPELINE_LEVEL.md), [../../reference/WorldGenerator_2.0/Pipeline_Level.md](../../reference/WorldGenerator_2.0/Pipeline_Level.md).
-
 **Язык:** русский.
 
 ---

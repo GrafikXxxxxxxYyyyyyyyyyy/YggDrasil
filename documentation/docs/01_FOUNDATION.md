@@ -2,8 +2,6 @@
 
 **Назначение:** полная **техническая** документация фундаментального уровня системы Иггдрасиль. Документ задаёт сущности, контракты, правила соединения и преобразования: Block, Node, правило «блок → узел», структуру гиперграфа, порядок обхода, исполнитель, реестр типов, сериализацию. Канонический источник технических решений фундамента.
 
-**Референс:** [../../reference/WorldGenerator_2.0/Abstract_Block_And_Node.md](../../reference/WorldGenerator_2.0/Abstract_Block_And_Node.md), [../../reference/WorldGenerator_2.0/HYPERGRAPH_AND_HYPERLINKS.md](../../reference/WorldGenerator_2.0/HYPERGRAPH_AND_HYPERLINKS.md), [../../reference/Universe_Generator_3.0/docs/00_FOUNDATION.md](../../reference/Universe_Generator_3.0/docs/00_FOUNDATION.md).
-
 **Язык:** русский.
 
 ---

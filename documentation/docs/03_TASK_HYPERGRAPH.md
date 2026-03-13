@@ -6,8 +6,6 @@
 
 **Философский якорь:** [../../philosophy/Philosophy-Part2.md](../../philosophy/Philosophy-Part2.md) §3 — уровень гиперграфа как первая единая исполняемая конструкция; один гиперграф = одна задача.
 
-**Референс:** [../../reference/Universe_Generator_3.0/docs/02_HYPERGRAPH_LEVEL.md](../../reference/Universe_Generator_3.0/docs/02_HYPERGRAPH_LEVEL.md), [../../reference/WorldGenerator_2.0/HYPERGRAPH_AND_HYPERLINKS.md](../../reference/WorldGenerator_2.0/HYPERGRAPH_AND_HYPERLINKS.md).
-
 **Язык:** русский.
 
 ---

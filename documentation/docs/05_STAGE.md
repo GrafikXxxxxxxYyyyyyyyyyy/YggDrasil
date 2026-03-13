@@ -6,8 +6,6 @@
 
 **Философский якорь:** [../../philosophy/Philosophy-Part2.md](../../philosophy/Philosophy-Part2.md) §5 — уровень стадии как метаморфоза; три стадии (автор, среда, творец); state между стадиями; §6 — мир как гиперграф стадий, state по рёбрам.
 
-**Референс:** [../../reference/Universe_Generator_3.0/docs/04_STAGE_LEVEL.md](../../reference/Universe_Generator_3.0/docs/04_STAGE_LEVEL.md), [../../reference/WorldGenerator_2.0/Stage_Level.md](../../reference/WorldGenerator_2.0/Stage_Level.md).
-
 **Язык:** русский.
 
 ---

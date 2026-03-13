@@ -4,8 +4,6 @@
 
 **Связь с уровнями:** [01_FOUNDATION.md](01_FOUNDATION.md), [02_ABSTRACT_TASK_NODES.md](02_ABSTRACT_TASK_NODES.md), [03_TASK_HYPERGRAPH.md](03_TASK_HYPERGRAPH.md), [04_WORKFLOW.md](04_WORKFLOW.md), [05_STAGE.md](05_STAGE.md), [06_WORLD.md](06_WORLD.md), [07_UNIVERSE.md](07_UNIVERSE.md), [HYPERGRAPH_ENGINE.md](HYPERGRAPH_ENGINE.md).
 
-**Референс:** [../../reference/WorldGenerator_2.0/AGENT_SYSTEMS_SUPPORT.md](../../reference/WorldGenerator_2.0/AGENT_SYSTEMS_SUPPORT.md), [../../reference/WorldGenerator_2.0/MULTI_ENDPOINT_DEPLOYMENT.md](../../reference/WorldGenerator_2.0/MULTI_ENDPOINT_DEPLOYMENT.md), [../../reference/WorldGenerator_2.0/TRAINABILITY_AT_ALL_LEVELS.md](../../reference/WorldGenerator_2.0/TRAINABILITY_AT_ALL_LEVELS.md), [../../reference/WorldGenerator_2.0/LLM_API_SUPPORT.md](../../reference/WorldGenerator_2.0/LLM_API_SUPPORT.md), [../../reference/WorldGenerator_2.0/TRAINING_REUSE_AND_API_SCENARIOS.md](../../reference/WorldGenerator_2.0/TRAINING_REUSE_AND_API_SCENARIOS.md).
-
 **Язык:** русский.
 
 ---
@@ -105,7 +103,7 @@ LLM поддерживаются на **всех уровнях**, где уме
 | **Воркфлоу: один узел по API** | Один из гиперграфов-узлов воркфлоу развёрнут как сервис по URL (или внутри него блок по API); оркестратор вызывает run(hypergraph, …) локально или по сети; контракт входа/выхода единый. |
 | **Мир с API-стадиями** | Стадии мира (автор, среда, творец) могут использовать блоки (LLM, генерация) по API; state и цикл мира не зависят от того, локальные это блоки или API. |
 
-Обучение при использовании API: блоки только по API обычно не обучают локально (нет весов); обучаемые части мира/воркфлоу — те узлы, у которых есть локальные веса (LoRA, адаптеры, свои модели). Сценарии обучения с повторным использованием и API (один блок в нескольких узлах, LoRA при API) задаются реализацией и конфигом; референс: [../../reference/WorldGenerator_2.0/TRAINING_REUSE_AND_API_SCENARIOS.md](../../reference/WorldGenerator_2.0/TRAINING_REUSE_AND_API_SCENARIOS.md).
+Обучение при использовании API: блоки только по API обычно не обучают локально (нет весов); обучаемые части мира/воркфлоу — те узлы, у которых есть локальные веса (LoRA, адаптеры, свои модели). Сценарии обучения с повторным использованием и API (один блок в нескольких узлах, LoRA при API) задаются реализацией и конфигом.
 
 ---
 
@@ -146,7 +144,7 @@ LLM поддерживаются на **всех уровнях**, где уме
 | **Мир** | Подмножество стадий или блоков внутри стадий | При run(world, …, training=True) опция пробрасывается в стадии и вложенные воркфлоу/гиперграфы. Чекпоинт мира включает веса всех trainable сущностей. [06_WORLD.md](06_WORLD.md). |
 | **Вселенная** | Развивающиеся миры | Отдельные миры (и вложенные стадии/воркфлоу) могут быть помечены trainable; при run(universe, …, training=True) опция пробрасывается в соответствующие миры. Чекпоинт вселенной — агрегат чекпоинтов развивающихся миров. [07_UNIVERSE.md](07_UNIVERSE.md) §14.1. |
 
-На каждом уровне: **выбор trainable сущностей**, **конфиг обучения** (lr, schedule, заморозка), **loss** (по портам/выходам), **чекпоинты** (сериализуемое состояние). Дедупликация: если один и тот же блок используется в нескольких узлах (общий checkpoint_ref), параметры в оптимизатор передаются **один раз**; градиенты по всем использованиям суммируются (или по соглашению — обучение только по одному месту). Подробнее: референс [TRAINING_REUSE_AND_API_SCENARIOS.md](../../reference/WorldGenerator_2.0/TRAINING_REUSE_AND_API_SCENARIOS.md).
+На каждом уровне: **выбор trainable сущностей**, **конфиг обучения** (lr, schedule, заморозка), **loss** (по портам/выходам), **чекпоинты** (сериализуемое состояние). Дедупликация: если один и тот же блок используется в нескольких узлах (общий checkpoint_ref), параметры в оптимизатор передаются **один раз**; градиенты по всем использованиям суммируются (или по соглашению — обучение только по одному месту). Подробнее — в конфиге обучения и соглашениях реализации.
 
 ### 7.3 Примеры: LoRA, ControlNet, полное дообучение
 

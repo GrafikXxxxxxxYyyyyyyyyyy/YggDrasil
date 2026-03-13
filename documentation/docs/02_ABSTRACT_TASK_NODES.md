@@ -4,8 +4,6 @@
 
 **Предыдущий уровень:** [01_FOUNDATION.md](01_FOUNDATION.md) — Block, Node, правило «блок → узел», гиперграф, реестр типов блоков.
 
-**Референс:** [../../reference/WorldGenerator_2.0/Abstract_Task_Nodes.md](../../reference/WorldGenerator_2.0/Abstract_Task_Nodes.md), [../../reference/Universe_Generator_3.0/docs/01_ABSTRACT_TASK_BLOCKS.md](../../reference/Universe_Generator_3.0/docs/01_ABSTRACT_TASK_BLOCKS.md).
-
 **Язык:** русский.
 
 ---

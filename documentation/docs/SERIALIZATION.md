@@ -4,8 +4,6 @@
 
 **Связь с уровнями:** [01_FOUNDATION.md](01_FOUNDATION.md) §9 (блок, узел, реестр), [03_TASK_HYPERGRAPH.md](03_TASK_HYPERGRAPH.md) §9, [04_WORKFLOW.md](04_WORKFLOW.md) §8, [05_STAGE.md](05_STAGE.md), [06_WORLD.md](06_WORLD.md) §9, [07_UNIVERSE.md](07_UNIVERSE.md) §11.
 
-**Референс:** [../../reference/WorldGenerator_2.0/SERIALIZATION_AT_ALL_LEVELS.md](../../reference/WorldGenerator_2.0/SERIALIZATION_AT_ALL_LEVELS.md).
-
 **Язык:** русский.
 
 ---

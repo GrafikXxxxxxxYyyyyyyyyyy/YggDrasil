@@ -4,8 +4,6 @@
 
 **Связь с уровнями:** [06_WORLD.md](06_WORLD.md) (контент мира, начальное наполнение, World update), [07_UNIVERSE.md](07_UNIVERSE.md) (контент миров во вселенной), [SERIALIZATION.md](SERIALIZATION.md) (сериализация контента).
 
-**Референс:** [../../reference/WorldGenerator_2.0/FANDOM_COM_SUPPORT.md](../../reference/WorldGenerator_2.0/FANDOM_COM_SUPPORT.md).
-
 **Философский якорь:** [../../philosophy/Philosophy-Part3.md](../../philosophy/Philosophy-Part3.md) §3.10 — поддержка вики-ресурсов; любой источник, из которого можно извлечь структурированный или текстовый лор, должен поддерживаться.
 
 **Язык:** русский.

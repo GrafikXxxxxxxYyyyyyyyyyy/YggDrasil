@@ -1,12 +1,10 @@
 # Фаза 2. Гиперграфовый движок — полный технический план
 
-Детальный технический план по **второй фазе**: гиперграфовый движок и минимальная исполняемая структура (рёбра, контейнер узлов и рёбер, валидатор, планировщик, буферы, исполнитель). Цель — чтобы после реализации **с первого раза** можно было собрать граф из узлов (AbstractGraphNode), соединить их рёбрами, объявить внешние входы/выходы и выполнить **run(hypergraph, inputs) → outputs**. Документ опирается на канон (01, 03, HYPERGRAPH_ENGINE), план реализации и референс (outdated_1).
+Детальный технический план по **второй фазе**: гиперграфовый движок и минимальная исполняемая структура (рёбра, контейнер узлов и рёбер, валидатор, планировщик, буферы, исполнитель). Цель — чтобы после реализации **с первого раза** можно было собрать граф из узлов (AbstractGraphNode), соединить их рёбрами, объявить внешние входы/выходы и выполнить **run(hypergraph, inputs) → outputs**. Документ опирается на канон (01, 03, HYPERGRAPH_ENGINE) и план реализации.
 
 **Связь с планом:** [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) — Фаза 2.
 
 **Канон:** [documentation/docs/HYPERGRAPH_ENGINE.md](../documentation/docs/HYPERGRAPH_ENGINE.md), [documentation/docs/01_FOUNDATION.md](../documentation/docs/01_FOUNDATION.md) §5–6, [documentation/docs/03_TASK_HYPERGRAPH.md](../documentation/docs/03_TASK_HYPERGRAPH.md) §5–7.
-
-**Референс:** reference/outdated_1/foundation/graph.py, reference/outdated_1/executor/run.py.
 
 **Язык:** русский.
 
@@ -146,7 +144,7 @@ class Edge:
 **Методы добавления/удаления:**
 
 - `add_node(node_id: str, node: AbstractGraphNode) -> None`  
-  Добавить узел. Если node_id уже есть — заменить или выбросить (по контракту: в референсе — замена). Инкрементировать _execution_version. Проверять, что node_id и имена портов узла не пустые.
+  Добавить узел. Если node_id уже есть — заменить или выбросить (по контракту: замена). Инкрементировать _execution_version. Проверять, что node_id и имена портов узла не пустые.
 - `remove_node(node_id: str) -> None`  
   Удалить узел и все рёбра, где он источник или приёмник; удалить записи в _exposed_inputs/_exposed_outputs для этого node_id; инкрементировать _execution_version.
 - `add_edge(edge: Edge) -> None`  
@@ -172,7 +170,7 @@ class Edge:
 **Ключи для inputs/outputs (соглашение):**
 
 - Если в записи exposed задан `name` — ключ в словаре inputs/outputs = `name`.
-- Иначе — ключ = `"node_id:port_name"` (устойчивый канонический вид). Реализация: вспомогательная функция `_input_key(entry)` / `_output_key(entry)` как в reference/outdated_1/executor/run.py.
+- Иначе — ключ = `"node_id:port_name"` (устойчивый канонический вид). Реализация: вспомогательная функция `_input_key(entry)` / `_output_key(entry)`.
 
 **Тесты (test_structure.py):**
 
@@ -243,7 +241,7 @@ def validate(structure: Any) -> ValidationResult: ...
 
 **Файл:** `yggdrasill/engine/planner.py`.
 
-**Алгоритм (по канону и reference run.py):**
+**Алгоритм (по канону):**
 
 1. Построить ориентированный граф по рёбрам: вершины = node_ids, дуга (source_node → target_node) для каждого Edge.
 2. **Tarjan** — разбить на сильно связные компоненты (SCC). Порядок SCC — обратный топологический (стоки первыми).
@@ -329,7 +327,7 @@ def run(
 
 - Для каждого входящего ребра (source_node, source_port) → (node_id, target_port): взять buffer[(source_node, source_port)] и положить в inputs[target_port].
 - Для портов узла, которые в exposed_inputs и (node_id, port_name) есть в buffer (заполнены при инициализации) — добавить в inputs[port_name].
-- Опциональные порты без значения: не передавать или передать default из config блока (как в reference).
+- Опциональные порты без значения: не передавать или передать default из config блока.
 
 **Запись выходов (apply_outputs):**
 
@@ -407,25 +405,10 @@ def run(
 | Непереданный обязательный внешний вход | Валидатор: порт в exposed_inputs — считаем, что вызывающий обязан передать. При run отсутствующий ключ в inputs — ошибка (или явно задокументировать: «все ключи из get_input_spec() должны быть в inputs для обязательных портов»). |
 | Опциональный порт без входящего ребра | Допустимо; при gather_inputs не передавать ключ или передать default из блока. |
 | num_loop_steps=0 для цикла | Циклическая фаза не выполняется (0 итераций); буферы для узлов внутри цикла не обновляются от этих узлов. |
-| Callback бросает исключение | Не прерывать run (проглатывать, как в reference). |
-
----
-
-## 16. Референс: outdated_1
-
-- **reference/outdated_1/foundation/graph.py** — Graph с _nodes, _edges, _in_edges_by_node, _out_edges_by_node, _exposed_inputs, _exposed_outputs, _execution_version; add_node(node_id, block, ...), add_edge(Edge), expose_input, expose_output, get_input_spec, get_output_spec, _validate_edge при add_edge. Использовать как образец структуры и сигнатур; в фазе 2 узел — AbstractGraphNode (не block напрямую), add_node(node_id, node).
-- **reference/outdated_1/executor/run.py** — _input_key, _output_key (name или "node_id:port_name"); _scc_tarjan, _topological_order_sccs, _build_execution_plan (план ["node"|"cycle"]); _gather_inputs_for_node (по get_edges_in и buffer, опциональные порты с defaults); _apply_outputs_to_buffer; run(graph, inputs, training, num_loop_steps, device, callbacks, dry_run). Логику перенести в executor и planner; граф заменить на Hypergraph с get_node, get_edges_in, get_input_spec, get_output_spec, metadata.
-
-Отличия от референса в фазе 2:
-
-- Класс структуры — Hypergraph (не Graph); узлы — AbstractGraphNode.
-- Вызов узла: node.run(inputs) (контракт фазы 1); у узла-задачи run делегирует в forward того же объекта (Block-часть). Обёртки «узел с блоком» нет — в графе только объекты Block+Node.
-- Edge — отдельный тип в engine/edge.py; в Graph референса Edge импортируется из foundation.
-
-После выполнения фазы 2 фреймворк способен выполнять гиперграф задачи (цепочки и один цикл) без сериализации и без agent_loop; фаза 3 добавит from_config, реестр, сериализацию и при необходимости agent_loop.
+| Callback бросает исключение | Не прерывать run (проглатывать). |
 
 ---
 
 ## Итог
 
-Фаза 2 задаёт **полную спецификацию гиперграфового движка**: Edge, Hypergraph (хранилище структуры с add_node, add_edge, expose, get_*), Validator, Planner (Tarjan SCC + топологический порядок, кэш), буферы (внутри executor), Executor и контракт **run(hypergraph, inputs, **options) → outputs**. Реализация в указанном порядке с тестами по каждому компоненту и интеграционным сценарием (цепочка из трёх узлов и цикл из двух) обеспечивает запуск фреймворка «с первого раза»: сборка графа и вызов run дают воспроизводимый результат. Документ опирается на канон (01, 03, HYPERGRAPH_ENGINE), план реализации и референс outdated_1 (graph.py, run.py).
+Фаза 2 задаёт **полную спецификацию гиперграфового движка**: Edge, Hypergraph (хранилище структуры с add_node, add_edge, expose, get_*), Validator, Planner (Tarjan SCC + топологический порядок, кэш), буферы (внутри executor), Executor и контракт **run(hypergraph, inputs, **options) → outputs**. Реализация в указанном порядке с тестами по каждому компоненту и интеграционным сценарием (цепочка из трёх узлов и цикл из двух) обеспечивает запуск фреймворка «с первого раза»: сборка графа и вызов run дают воспроизводимый результат. После выполнения фазы 2 фреймворк способен выполнять гиперграф задачи (цепочки и один цикл) без сериализации и без agent_loop; фаза 3 добавит from_config, реестр, сериализацию и при необходимости agent_loop.
