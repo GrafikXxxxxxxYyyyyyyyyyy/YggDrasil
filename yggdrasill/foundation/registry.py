@@ -49,17 +49,18 @@ class BlockRegistry:
         rest = {k: v for k, v in config.items() if k not in _meta_keys}
         node_id = rest.pop("node_id", None)
         block_id = rest.pop("block_id", None)
+        # Flatten nested "config" key from get_config() round-trip
+        if "config" in rest and isinstance(rest["config"], dict):
+            inner = rest.pop("config")
+            rest.update(inner)
+        # Pop trainable -- it's graph-level metadata, not a constructor arg
+        rest.pop("trainable", None)
 
         kwargs: Dict[str, Any] = {}
         if block_id is not None:
             kwargs["block_id"] = block_id
         if node_id is not None:
             kwargs["node_id"] = node_id
-
-        # get_config() wraps params under "config"; flatten if that's the only key
-        if "config" in rest and isinstance(rest["config"], dict):
-            inner = rest.pop("config")
-            rest.update(inner)
         if rest:
             kwargs["config"] = rest
 

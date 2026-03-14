@@ -36,11 +36,11 @@ class _TaskNodeBase(AbstractBaseBlock, AbstractGraphNode):
 
 
 # ---------------------------------------------------------------------------
-# 1. Backbone
+# 1. Backbone -- core prediction step (canon 02 §4)
 # ---------------------------------------------------------------------------
 
 class AbstractBackbone(_TaskNodeBase):
-    """Primary transformation (e.g., UNet, Transformer decoder)."""
+    """Primary transformation: one prediction step (e.g., UNet, Transformer)."""
 
     _role = Role.BACKBONE
 
@@ -50,8 +50,10 @@ class AbstractBackbone(_TaskNodeBase):
 
     def declare_ports(self) -> List[Port]:
         return [
-            Port("in", PortDirection.IN, PortType.ANY),
-            Port("out", PortDirection.OUT, PortType.ANY),
+            Port("latent", PortDirection.IN, PortType.TENSOR),
+            Port("timestep", PortDirection.IN, PortType.TENSOR),
+            Port("condition", PortDirection.IN, PortType.ANY, optional=True),
+            Port("pred", PortDirection.OUT, PortType.TENSOR),
         ]
 
     @abstractmethod
@@ -59,11 +61,11 @@ class AbstractBackbone(_TaskNodeBase):
 
 
 # ---------------------------------------------------------------------------
-# 2. Injector
+# 2. Injector -- injects conditioning into the backbone (canon 02 §5)
 # ---------------------------------------------------------------------------
 
 class AbstractInjector(_TaskNodeBase):
-    """Injects conditioning signal into the backbone stream."""
+    """Injects conditioning signal into the backbone stream (e.g., LoRA)."""
 
     _role = Role.INJECTOR
 
@@ -74,7 +76,8 @@ class AbstractInjector(_TaskNodeBase):
     def declare_ports(self) -> List[Port]:
         return [
             Port("condition", PortDirection.IN, PortType.ANY),
-            Port("out", PortDirection.OUT, PortType.ANY),
+            Port("hidden", PortDirection.IN, PortType.TENSOR, optional=True),
+            Port("adapted", PortDirection.OUT, PortType.TENSOR),
         ]
 
     @abstractmethod
@@ -82,11 +85,11 @@ class AbstractInjector(_TaskNodeBase):
 
 
 # ---------------------------------------------------------------------------
-# 3. Conjector
+# 3. Conjector -- stands beside the backbone, supplies condition (canon 02 §6)
 # ---------------------------------------------------------------------------
 
 class AbstractConjector(_TaskNodeBase):
-    """Merges/predicts outputs back into the stream."""
+    """Supplies condition to the backbone (e.g., CLIP encoder)."""
 
     _role = Role.CONJECTOR
 
@@ -96,8 +99,8 @@ class AbstractConjector(_TaskNodeBase):
 
     def declare_ports(self) -> List[Port]:
         return [
-            Port("in", PortDirection.IN, PortType.ANY),
-            Port("out", PortDirection.OUT, PortType.ANY),
+            Port("input", PortDirection.IN, PortType.ANY),
+            Port("condition", PortDirection.OUT, PortType.ANY),
         ]
 
     @abstractmethod
@@ -105,11 +108,11 @@ class AbstractConjector(_TaskNodeBase):
 
 
 # ---------------------------------------------------------------------------
-# 4. Inner Module
+# 4. Inner Module -- inside the loop, one transition step (canon 02 §7)
 # ---------------------------------------------------------------------------
 
 class AbstractInnerModule(_TaskNodeBase):
-    """Internal processing module (lives inside the task hypergraph)."""
+    """Internal processing module (e.g., DDIM solver step)."""
 
     _role = Role.INNER_MODULE
 
@@ -119,8 +122,12 @@ class AbstractInnerModule(_TaskNodeBase):
 
     def declare_ports(self) -> List[Port]:
         return [
-            Port("in", PortDirection.IN, PortType.ANY),
-            Port("out", PortDirection.OUT, PortType.ANY),
+            Port("latent", PortDirection.IN, PortType.TENSOR),
+            Port("timestep", PortDirection.IN, PortType.TENSOR),
+            Port("pred", PortDirection.IN, PortType.TENSOR),
+            Port("control", PortDirection.IN, PortType.ANY, optional=True),
+            Port("next_latent", PortDirection.OUT, PortType.TENSOR),
+            Port("next_timestep", PortDirection.OUT, PortType.TENSOR, optional=True),
         ]
 
     @abstractmethod
@@ -128,11 +135,11 @@ class AbstractInnerModule(_TaskNodeBase):
 
 
 # ---------------------------------------------------------------------------
-# 5. Outer Module
+# 5. Outer Module -- before/after the loop (canon 02 §8)
 # ---------------------------------------------------------------------------
 
 class AbstractOuterModule(_TaskNodeBase):
-    """External processing module (interface between hypergraphs)."""
+    """External module: before entry to loop or after exit (e.g., scheduler)."""
 
     _role = Role.OUTER_MODULE
 
@@ -142,8 +149,8 @@ class AbstractOuterModule(_TaskNodeBase):
 
     def declare_ports(self) -> List[Port]:
         return [
-            Port("in", PortDirection.IN, PortType.ANY),
-            Port("out", PortDirection.OUT, PortType.ANY),
+            Port("input", PortDirection.IN, PortType.ANY, optional=True),
+            Port("output", PortDirection.OUT, PortType.ANY),
         ]
 
     @abstractmethod
@@ -151,11 +158,11 @@ class AbstractOuterModule(_TaskNodeBase):
 
 
 # ---------------------------------------------------------------------------
-# 6. Helper
+# 6. Helper -- auxiliary utility (canon 02 §10)
 # ---------------------------------------------------------------------------
 
 class AbstractHelper(_TaskNodeBase):
-    """Utility node (logging, formatting, scheduling, etc.)."""
+    """Utility node (RAG, file I/O, API calls, etc.)."""
 
     _role = Role.HELPER
 
@@ -165,8 +172,8 @@ class AbstractHelper(_TaskNodeBase):
 
     def declare_ports(self) -> List[Port]:
         return [
-            Port("in", PortDirection.IN, PortType.ANY, optional=True),
-            Port("out", PortDirection.OUT, PortType.ANY),
+            Port("query", PortDirection.IN, PortType.ANY),
+            Port("result", PortDirection.OUT, PortType.ANY),
         ]
 
     @abstractmethod
@@ -174,11 +181,11 @@ class AbstractHelper(_TaskNodeBase):
 
 
 # ---------------------------------------------------------------------------
-# 7. Converter
+# 7. Converter -- data format conversion (canon 02 §9)
 # ---------------------------------------------------------------------------
 
 class AbstractConverter(_TaskNodeBase):
-    """Converts data between representations (e.g., VAE encode/decode)."""
+    """Converts between representations (e.g., VAE encode/decode)."""
 
     _role = Role.CONVERTER
 
@@ -188,8 +195,8 @@ class AbstractConverter(_TaskNodeBase):
 
     def declare_ports(self) -> List[Port]:
         return [
-            Port("in", PortDirection.IN, PortType.ANY),
-            Port("out", PortDirection.OUT, PortType.ANY),
+            Port("input", PortDirection.IN, PortType.ANY),
+            Port("output", PortDirection.OUT, PortType.ANY),
         ]
 
     @abstractmethod

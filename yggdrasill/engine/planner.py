@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from typing import Any, Dict, List, Set, Tuple
 
-_plan_cache: Dict[Tuple[int, int], List[Tuple[str, Any]]] = {}
+_MAX_CACHE_SIZE = 256
+_plan_cache: OrderedDict[Tuple[int, int], List[Tuple[str, Any]]] = OrderedDict()
 
 
 def build_plan(structure: Any) -> List[Tuple[str, Any]]:
@@ -45,6 +47,8 @@ def build_plan(structure: Any) -> List[Tuple[str, Any]]:
             rep = sorted(comp)[0]
             plan.append(("cycle", (rep, frozenset(comp))))
 
+    if len(_plan_cache) >= _MAX_CACHE_SIZE:
+        _plan_cache.popitem(last=False)
     _plan_cache[cache_key] = plan
     return plan
 

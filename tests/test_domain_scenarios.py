@@ -1,16 +1,10 @@
-"""Domain scenario integration tests.
-
-These verify that the YggDrasill architecture can express three canonical
-patterns -- diffusion pipeline, LLM chain, and agent loop -- using stubs
-(no real models, only identity-like transformations).
-"""
+"""Domain scenario integration tests."""
 from __future__ import annotations
 
 from typing import Any, Dict, List
 
 import pytest
 
-from yggdrasill.engine.edge import Edge
 from yggdrasill.engine.planner import clear_plan_cache
 from yggdrasill.engine.structure import Hypergraph
 from yggdrasill.foundation.port import Port, PortDirection, PortType
@@ -21,15 +15,10 @@ from yggdrasill.task_nodes.abstract import (
     AbstractConjector,
     AbstractConverter,
     AbstractHelper,
-    AbstractInjector,
     AbstractInnerModule,
 )
 from yggdrasill.workflow.workflow import Workflow
 
-
-# ====================================================================
-# Stub blocks for domain scenarios (registered into a local registry)
-# ====================================================================
 
 class FakeVAEEncoder(AbstractConverter):
     @property
@@ -37,7 +26,7 @@ class FakeVAEEncoder(AbstractConverter):
         return "diffusion/vae_encoder"
 
     def forward(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        return {"out": f"latent({inputs.get('in')})"}
+        return {"output": f"latent({inputs.get('input')})"}
 
 
 class FakeVAEDecoder(AbstractConverter):
@@ -46,17 +35,16 @@ class FakeVAEDecoder(AbstractConverter):
         return "diffusion/vae_decoder"
 
     def forward(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        raw = inputs.get("in", "")
-        return {"out": f"decoded({raw})"}
+        return {"output": f"decoded({inputs.get('input', '')})"}
 
 
-class FakeCLIPEncoder(AbstractInjector):
+class FakeCLIPEncoder(AbstractConjector):
     @property
     def block_type(self) -> str:
         return "diffusion/clip_encoder"
 
     def forward(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        return {"out": f"clip({inputs.get('condition')})"}
+        return {"condition": f"clip({inputs.get('input')})"}
 
 
 class FakeUNet(AbstractBackbone):
@@ -68,11 +56,11 @@ class FakeUNet(AbstractBackbone):
         return [
             Port("latent", PortDirection.IN, PortType.ANY),
             Port("conditioning", PortDirection.IN, PortType.ANY),
-            Port("out", PortDirection.OUT, PortType.ANY),
+            Port("pred", PortDirection.OUT, PortType.ANY),
         ]
 
     def forward(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        return {"out": f"unet({inputs.get('latent')},{inputs.get('conditioning')})"}
+        return {"pred": f"unet({inputs.get('latent')},{inputs.get('conditioning')})"}
 
 
 class FakeScheduler(AbstractHelper):
@@ -81,7 +69,7 @@ class FakeScheduler(AbstractHelper):
         return "diffusion/scheduler"
 
     def forward(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        return {"out": f"scheduled({inputs.get('in', '')})"}
+        return {"result": f"scheduled({inputs.get('query', '')})"}
 
 
 class FakeLLM(AbstractBackbone):
@@ -89,8 +77,14 @@ class FakeLLM(AbstractBackbone):
     def block_type(self) -> str:
         return "llm/backbone"
 
+    def declare_ports(self) -> List[Port]:
+        return [
+            Port("input", PortDirection.IN, PortType.ANY),
+            Port("output", PortDirection.OUT, PortType.ANY),
+        ]
+
     def forward(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        return {"out": f"llm({inputs.get('in')})"}
+        return {"output": f"llm({inputs.get('input')})"}
 
 
 class FakeTokenizer(AbstractConverter):
@@ -99,7 +93,7 @@ class FakeTokenizer(AbstractConverter):
         return "llm/tokenizer"
 
     def forward(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        return {"out": f"tokens({inputs.get('in')})"}
+        return {"output": f"tokens({inputs.get('input')})"}
 
 
 class FakeDetokenizer(AbstractConverter):
@@ -108,29 +102,31 @@ class FakeDetokenizer(AbstractConverter):
         return "llm/detokenizer"
 
     def forward(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        return {"out": f"text({inputs.get('in')})"}
+        return {"output": f"text({inputs.get('input')})"}
 
 
 class FakeRouter(AbstractInnerModule):
-    """Agent router: decides next action based on input."""
-
     @property
     def block_type(self) -> str:
         return "agent/router"
 
+    def declare_ports(self) -> List[Port]:
+        return [
+            Port("input", PortDirection.IN, PortType.ANY),
+            Port("output", PortDirection.OUT, PortType.ANY),
+        ]
+
     def forward(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        return {"out": f"route({inputs.get('in')})"}
+        return {"output": f"route({inputs.get('input')})"}
 
 
 class FakeToolExecutor(AbstractConjector):
-    """Agent tool execution stub."""
-
     @property
     def block_type(self) -> str:
         return "agent/tool_exec"
 
     def forward(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        return {"out": f"tool_result({inputs.get('in')})"}
+        return {"condition": f"tool_result({inputs.get('input')})"}
 
 
 class FakeMemory(AbstractHelper):
@@ -139,7 +135,7 @@ class FakeMemory(AbstractHelper):
         return "agent/memory"
 
     def forward(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        return {"out": f"mem({inputs.get('in', '')})"}
+        return {"result": f"mem({inputs.get('query', '')})"}
 
 
 @pytest.fixture()
@@ -159,11 +155,6 @@ def domain_registry():
     return r
 
 
-# ====================================================================
-# Scenario 1: Diffusion Pipeline
-#   CLIP -> UNet (with latent from VAE encoder) -> Scheduler -> VAE Decoder
-# ====================================================================
-
 class TestDiffusionPipeline:
     def test_diffusion_hypergraph(self, domain_registry):
         clear_plan_cache()
@@ -178,17 +169,17 @@ class TestDiffusionPipeline:
                 {"node_id": "vae_dec", "block_type": "diffusion/vae_decoder"},
             ],
             "edges": [
-                {"source_node": "vae_enc", "source_port": "out", "target_node": "unet", "target_port": "latent"},
-                {"source_node": "clip", "source_port": "out", "target_node": "unet", "target_port": "conditioning"},
-                {"source_node": "unet", "source_port": "out", "target_node": "sched", "target_port": "in"},
-                {"source_node": "sched", "source_port": "out", "target_node": "vae_dec", "target_port": "in"},
+                {"source_node": "vae_enc", "source_port": "output", "target_node": "unet", "target_port": "latent"},
+                {"source_node": "clip", "source_port": "condition", "target_node": "unet", "target_port": "conditioning"},
+                {"source_node": "unet", "source_port": "pred", "target_node": "sched", "target_port": "query"},
+                {"source_node": "sched", "source_port": "result", "target_node": "vae_dec", "target_port": "input"},
             ],
             "exposed_inputs": [
-                {"node_id": "vae_enc", "port_name": "in", "name": "image"},
-                {"node_id": "clip", "port_name": "condition", "name": "prompt"},
+                {"node_id": "vae_enc", "port_name": "input", "name": "image"},
+                {"node_id": "clip", "port_name": "input", "name": "prompt"},
             ],
             "exposed_outputs": [
-                {"node_id": "vae_dec", "port_name": "out", "name": "output"},
+                {"node_id": "vae_dec", "port_name": "output", "name": "output"},
             ],
         }
         h = Hypergraph.from_config(cfg, registry=domain_registry)
@@ -207,10 +198,10 @@ class TestDiffusionPipeline:
                 {"node_id": "dec", "block_type": "diffusion/vae_decoder"},
             ],
             "edges": [
-                {"source_node": "enc", "source_port": "out", "target_node": "dec", "target_port": "in"},
+                {"source_node": "enc", "source_port": "output", "target_node": "dec", "target_port": "input"},
             ],
-            "exposed_inputs": [{"node_id": "enc", "port_name": "in", "name": "x"}],
-            "exposed_outputs": [{"node_id": "dec", "port_name": "out", "name": "y"}],
+            "exposed_inputs": [{"node_id": "enc", "port_name": "input", "name": "x"}],
+            "exposed_outputs": [{"node_id": "dec", "port_name": "output", "name": "y"}],
         }
         h1 = Hypergraph.from_config(cfg, registry=domain_registry)
         out1 = h1.run({"x": "pixel"})
@@ -219,11 +210,6 @@ class TestDiffusionPipeline:
         out2 = h2.run({"x": "pixel"})
         assert out1 == out2
 
-
-# ====================================================================
-# Scenario 2: LLM Chain
-#   Tokenizer -> LLM -> Detokenizer   (two-step workflow: summarize then refine)
-# ====================================================================
 
 class TestLLMChain:
     def test_llm_hypergraph(self, domain_registry):
@@ -236,11 +222,11 @@ class TestLLMChain:
                 {"node_id": "detok", "block_type": "llm/detokenizer"},
             ],
             "edges": [
-                {"source_node": "tok", "source_port": "out", "target_node": "llm", "target_port": "in"},
-                {"source_node": "llm", "source_port": "out", "target_node": "detok", "target_port": "in"},
+                {"source_node": "tok", "source_port": "output", "target_node": "llm", "target_port": "input"},
+                {"source_node": "llm", "source_port": "output", "target_node": "detok", "target_port": "input"},
             ],
-            "exposed_inputs": [{"node_id": "tok", "port_name": "in", "name": "text"}],
-            "exposed_outputs": [{"node_id": "detok", "port_name": "out", "name": "response"}],
+            "exposed_inputs": [{"node_id": "tok", "port_name": "input", "name": "text"}],
+            "exposed_outputs": [{"node_id": "detok", "port_name": "output", "name": "response"}],
         }
         h = Hypergraph.from_config(cfg, registry=domain_registry)
         out = h.run({"text": "hello world"})
@@ -249,7 +235,6 @@ class TestLLMChain:
         assert "tokens" in out["response"]
 
     def test_llm_workflow_two_steps(self, domain_registry):
-        """Workflow: summarize_step -> refine_step, both are LLM hypergraphs."""
         clear_plan_cache()
         llm_cfg = {
             "graph_id": "llm_step",
@@ -259,11 +244,11 @@ class TestLLMChain:
                 {"node_id": "detok", "block_type": "llm/detokenizer"},
             ],
             "edges": [
-                {"source_node": "tok", "source_port": "out", "target_node": "llm", "target_port": "in"},
-                {"source_node": "llm", "source_port": "out", "target_node": "detok", "target_port": "in"},
+                {"source_node": "tok", "source_port": "output", "target_node": "llm", "target_port": "input"},
+                {"source_node": "llm", "source_port": "output", "target_node": "detok", "target_port": "input"},
             ],
-            "exposed_inputs": [{"node_id": "tok", "port_name": "in", "name": "in"}],
-            "exposed_outputs": [{"node_id": "detok", "port_name": "out", "name": "out"}],
+            "exposed_inputs": [{"node_id": "tok", "port_name": "input", "name": "input"}],
+            "exposed_outputs": [{"node_id": "detok", "port_name": "output", "name": "output"}],
         }
         step1 = Hypergraph.from_config(llm_cfg, registry=domain_registry)
         step2 = Hypergraph.from_config(llm_cfg, registry=domain_registry)
@@ -271,19 +256,14 @@ class TestLLMChain:
         w = Workflow(workflow_id="llm_chain")
         w.add_node("summarize", step1)
         w.add_node("refine", step2)
-        w.add_edge(Edge("summarize", "out", "refine", "in"))
-        w.expose_input("summarize", "in", "input")
-        w.expose_output("refine", "out", "output")
+        w.add_edge("summarize", "output", "refine", "input")
+        w.expose_input("summarize", "input", "input")
+        w.expose_output("refine", "output", "output")
 
         out = w.run({"input": "long document"}, validate_before=False)
         assert "output" in out
         assert "llm" in out["output"]
 
-
-# ====================================================================
-# Scenario 3: Agent Loop
-#   Router -> ToolExec -> Memory -> Router (cycle with num_loop_steps)
-# ====================================================================
 
 class TestAgentLoop:
     def test_agent_hypergraph_with_cycle(self, domain_registry):
@@ -297,12 +277,12 @@ class TestAgentLoop:
                 {"node_id": "mem", "block_type": "agent/memory"},
             ],
             "edges": [
-                {"source_node": "router", "source_port": "out", "target_node": "tool", "target_port": "in"},
-                {"source_node": "tool", "source_port": "out", "target_node": "mem", "target_port": "in"},
-                {"source_node": "mem", "source_port": "out", "target_node": "router", "target_port": "in"},
+                {"source_node": "router", "source_port": "output", "target_node": "tool", "target_port": "input"},
+                {"source_node": "tool", "source_port": "condition", "target_node": "mem", "target_port": "query"},
+                {"source_node": "mem", "source_port": "result", "target_node": "router", "target_port": "input"},
             ],
-            "exposed_inputs": [{"node_id": "router", "port_name": "in", "name": "query"}],
-            "exposed_outputs": [{"node_id": "mem", "port_name": "out", "name": "answer"}],
+            "exposed_inputs": [{"node_id": "router", "port_name": "input", "name": "query"}],
+            "exposed_outputs": [{"node_id": "mem", "port_name": "result", "name": "answer"}],
         }
         h = Hypergraph.from_config(cfg, registry=domain_registry)
         out = h.run({"query": "what is 2+2?"}, num_loop_steps=3, validate_before=False)
@@ -312,7 +292,6 @@ class TestAgentLoop:
         assert "mem" in out["answer"]
 
     def test_agent_workflow_with_cycle(self, domain_registry):
-        """Two agent stages in a workflow, one with an internal cycle."""
         clear_plan_cache()
         agent_cfg = {
             "graph_id": "agent_step",
@@ -322,11 +301,11 @@ class TestAgentLoop:
                 {"node_id": "tool", "block_type": "agent/tool_exec"},
             ],
             "edges": [
-                {"source_node": "router", "source_port": "out", "target_node": "tool", "target_port": "in"},
-                {"source_node": "tool", "source_port": "out", "target_node": "router", "target_port": "in"},
+                {"source_node": "router", "source_port": "output", "target_node": "tool", "target_port": "input"},
+                {"source_node": "tool", "source_port": "condition", "target_node": "router", "target_port": "input"},
             ],
-            "exposed_inputs": [{"node_id": "router", "port_name": "in", "name": "in"}],
-            "exposed_outputs": [{"node_id": "tool", "port_name": "out", "name": "out"}],
+            "exposed_inputs": [{"node_id": "router", "port_name": "input", "name": "input"}],
+            "exposed_outputs": [{"node_id": "tool", "port_name": "condition", "name": "condition"}],
         }
         step1 = Hypergraph.from_config(agent_cfg, registry=domain_registry)
         step2 = Hypergraph.from_config(agent_cfg, registry=domain_registry)
@@ -334,9 +313,9 @@ class TestAgentLoop:
         w = Workflow(workflow_id="agent_wf")
         w.add_node("think", step1)
         w.add_node("act", step2)
-        w.add_edge(Edge("think", "out", "act", "in"))
-        w.expose_input("think", "in", "q")
-        w.expose_output("act", "out", "a")
+        w.add_edge("think", "condition", "act", "input")
+        w.expose_input("think", "input", "q")
+        w.expose_output("act", "condition", "a")
 
         result = w.run({"q": "plan"}, validate_before=False)
         assert "a" in result

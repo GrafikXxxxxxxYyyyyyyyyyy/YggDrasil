@@ -1,4 +1,16 @@
-from yggdrasill.task_nodes.roles import Role, role_from_block_type, ALL_ROLES
+from yggdrasill.task_nodes.roles import (
+    Role,
+    role_from_block_type,
+    ALL_ROLES,
+    KNOWN_ROLES,
+    BACKBONE,
+    INJECTOR,
+    CONJECTOR,
+    INNER_MODULE,
+    OUTER_MODULE,
+    HELPER,
+    CONVERTER,
+)
 from yggdrasill.task_nodes.abstract import (
     AbstractBackbone,
     AbstractConjector,
@@ -8,11 +20,20 @@ from yggdrasill.task_nodes.abstract import (
     AbstractInnerModule,
     AbstractOuterModule,
 )
+from yggdrasill.task_nodes.stubs import register_all_stubs
 
 __all__ = [
     "Role",
     "role_from_block_type",
     "ALL_ROLES",
+    "KNOWN_ROLES",
+    "BACKBONE",
+    "INJECTOR",
+    "CONJECTOR",
+    "INNER_MODULE",
+    "OUTER_MODULE",
+    "HELPER",
+    "CONVERTER",
     "AbstractBackbone",
     "AbstractConjector",
     "AbstractConverter",
@@ -20,4 +41,5 @@ __all__ = [
     "AbstractInjector",
     "AbstractInnerModule",
     "AbstractOuterModule",
+    "register_all_stubs",
 ]

@@ -17,3 +17,6 @@ class Edge:
             val = getattr(self, field)
             if not val or not val.strip():
                 raise ValueError(f"Edge.{field} must be a non-empty string")
+            stripped = val.strip()
+            if stripped != val:
+                object.__setattr__(self, field, stripped)

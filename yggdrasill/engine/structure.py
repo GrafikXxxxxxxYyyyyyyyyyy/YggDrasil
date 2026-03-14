@@ -115,6 +115,9 @@ class Hypergraph:
         src_node = self._nodes[edge.source_node]
         dst_node = self._nodes[edge.target_node]
 
+        src_port = None
+        dst_port = None
+
         if isinstance(src_node, AbstractGraphNode):
             src_port = src_node.get_port(edge.source_port)
             if src_port is None:
@@ -137,6 +140,15 @@ class Hypergraph:
                     f"Port '{edge.target_port}' on '{edge.target_node}' is not an input"
                 )
 
+        if isinstance(src_node, AbstractGraphNode) and isinstance(dst_node, AbstractGraphNode):
+            if src_port is not None and dst_port is not None:
+                if not src_port.compatible_with(dst_port):
+                    raise ValueError(
+                        f"Incompatible port types: {edge.source_node}.{edge.source_port} "
+                        f"({src_port.dtype}) -> {edge.target_node}.{edge.target_port} "
+                        f"({dst_port.dtype})"
+                    )
+
         if edge in self._edges:
             return  # idempotent
 
@@ -146,11 +158,16 @@ class Hypergraph:
         self._execution_version += 1
 
     def remove_edge(self, edge: Edge) -> None:
-        if edge in self._edges:
-            self._edges.remove(edge)
-            self._in_edges.get(edge.target_node, []).remove(edge) if edge in self._in_edges.get(edge.target_node, []) else None
-            self._out_edges.get(edge.source_node, []).remove(edge) if edge in self._out_edges.get(edge.source_node, []) else None
-            self._execution_version += 1
+        if edge not in self._edges:
+            return
+        self._edges.remove(edge)
+        in_list = self._in_edges.get(edge.target_node, [])
+        if edge in in_list:
+            in_list.remove(edge)
+        out_list = self._out_edges.get(edge.source_node, [])
+        if edge in out_list:
+            out_list.remove(edge)
+        self._execution_version += 1
 
     def get_edges(self) -> List[Edge]:
         return list(self._edges)
@@ -168,6 +185,13 @@ class Hypergraph:
     ) -> None:
         if node_id not in self._nodes:
             raise ValueError(f"Node '{node_id}' not in graph")
+        node = self._nodes[node_id]
+        if isinstance(node, AbstractGraphNode):
+            port = node.get_port(port_name)
+            if port is None:
+                raise ValueError(f"Port '{port_name}' not found on node '{node_id}'")
+            if port.direction != PortDirection.IN:
+                raise ValueError(f"Port '{port_name}' on node '{node_id}' is not an input")
         entry: Dict[str, Any] = {"node_id": node_id, "port_name": port_name}
         if name is not None:
             entry["name"] = name
@@ -182,6 +206,13 @@ class Hypergraph:
     ) -> None:
         if node_id not in self._nodes:
             raise ValueError(f"Node '{node_id}' not in graph")
+        node = self._nodes[node_id]
+        if isinstance(node, AbstractGraphNode):
+            port = node.get_port(port_name)
+            if port is None:
+                raise ValueError(f"Port '{port_name}' not found on node '{node_id}'")
+            if port.direction != PortDirection.OUT:
+                raise ValueError(f"Port '{port_name}' on node '{node_id}' is not an output")
         entry: Dict[str, Any] = {"node_id": node_id, "port_name": port_name}
         if name is not None:
             entry["name"] = name
@@ -401,13 +432,13 @@ class Hypergraph:
         return result
 
     def load_state_dict(self, state: Dict[str, Any], strict: bool = True) -> None:
-        for nid, node in self._nodes.items():
-            if nid in state and hasattr(node, "load_state_dict"):
-                node.load_state_dict(state[nid], strict=strict)
         if strict:
             extra = set(state.keys()) - set(self._nodes.keys())
             if extra:
                 raise KeyError(f"state_dict has keys not in graph: {extra}")
+        for nid, node in self._nodes.items():
+            if nid in state and hasattr(node, "load_state_dict"):
+                node.load_state_dict(state[nid], strict=strict)
 
     # --- device / trainable ----------------------------------------------
 

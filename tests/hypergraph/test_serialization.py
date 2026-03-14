@@ -165,16 +165,19 @@ class TestRoundtripFullPipeline:
                 {"node_id": "dec", "block_type": "converter/identity"},
             ],
             "edges": [
-                {"source_node": "enc", "source_port": "out", "target_node": "bb", "target_port": "in"},
-                {"source_node": "bb", "source_port": "out", "target_node": "dec", "target_port": "in"},
+                {"source_node": "enc", "source_port": "output", "target_node": "bb", "target_port": "latent"},
+                {"source_node": "bb", "source_port": "pred", "target_node": "dec", "target_port": "input"},
             ],
-            "exposed_inputs": [{"node_id": "enc", "port_name": "in", "name": "x"}],
-            "exposed_outputs": [{"node_id": "dec", "port_name": "out", "name": "y"}],
+            "exposed_inputs": [
+                {"node_id": "enc", "port_name": "input", "name": "x"},
+                {"node_id": "bb", "port_name": "timestep", "name": "timestep"},
+            ],
+            "exposed_outputs": [{"node_id": "dec", "port_name": "output", "name": "y"}],
         }
         h1 = Hypergraph.from_config(cfg, registry=reg)
-        out1 = h1.run({"x": "data"})
+        out1 = h1.run({"x": "data", "timestep": 0})
 
         save_hypergraph(h1, tmp_path / "pipe")
         h2 = load_hypergraph(tmp_path / "pipe", registry=reg)
-        out2 = h2.run({"x": "data"})
+        out2 = h2.run({"x": "data", "timestep": 0})
         assert out1 == out2

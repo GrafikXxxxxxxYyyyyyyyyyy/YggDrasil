@@ -8,10 +8,6 @@ from yggdrasill.foundation.block import AbstractBaseBlock
 from yggdrasill.foundation.node import AbstractGraphNode
 
 
-# ---------------------------------------------------------------------------
-# Pure Block stubs (no ports -- those belong to the Node side)
-# ---------------------------------------------------------------------------
-
 class IdentityBlock(AbstractBaseBlock):
     """forward: y = x."""
 
@@ -42,9 +38,11 @@ class AddBlock(AbstractBaseBlock):
 
     def load_state_dict(self, state: Dict[str, Any], strict: bool = True) -> None:
         if strict:
-            extra = set(state.keys()) - {"offset"}
-            if extra:
-                raise KeyError(f"Unexpected keys: {extra}")
+            expected = {"offset"}
+            extra = set(state.keys()) - expected
+            missing = expected - set(state.keys())
+            if extra or missing:
+                raise KeyError(f"state_dict mismatch: extra={extra}, missing={missing}")
         self.offset = state.get("offset", self.offset)
 
 
@@ -79,10 +77,6 @@ class BlockWithSub(AbstractBaseBlock):
         self.child.load_state_dict(child_state, strict=strict)
 
 
-# ---------------------------------------------------------------------------
-# Minimal task-node stub (dual inheritance: Block + Node in one object)
-# ---------------------------------------------------------------------------
-
 class IdentityTaskNode(AbstractBaseBlock, AbstractGraphNode):
     """One object, two origins.  For testing the Node interface."""
 
@@ -107,7 +101,7 @@ class IdentityTaskNode(AbstractBaseBlock, AbstractGraphNode):
         ]
 
     def forward(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        return {"out": inputs.get("in")}
+        return {"out": inputs["in"]}
 
 
 class AddTaskNode(AbstractBaseBlock, AbstractGraphNode):
@@ -142,6 +136,10 @@ class AddTaskNode(AbstractBaseBlock, AbstractGraphNode):
         return {"offset": self.offset}
 
     def load_state_dict(self, state: Dict[str, Any], strict: bool = True) -> None:
-        if strict and set(state.keys()) != {"offset"}:
-            raise KeyError(f"Expected keys {{'offset'}}, got {set(state.keys())}")
+        if strict:
+            expected = {"offset"}
+            extra = set(state.keys()) - expected
+            missing = expected - set(state.keys())
+            if extra or missing:
+                raise KeyError(f"state_dict mismatch: extra={extra}, missing={missing}")
         self.offset = state.get("offset", self.offset)

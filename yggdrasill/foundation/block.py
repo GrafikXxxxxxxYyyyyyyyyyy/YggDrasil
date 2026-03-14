@@ -44,7 +44,7 @@ class AbstractBaseBlock(ABC):
         return {}
 
     def load_state_dict(self, state: Dict[str, Any], strict: bool = True) -> None:
-        if strict and state:
+        if strict:
             own_keys = set(self.state_dict().keys())
             extra = set(state.keys()) - own_keys
             missing = own_keys - set(state.keys())
@@ -90,12 +90,15 @@ class AbstractBaseBlock(ABC):
         return self
 
     def get_config(self) -> Dict[str, Any]:
-        """Return a JSON-serialisable config sufficient to recreate this block via the registry."""
+        """Return a JSON-serialisable config sufficient to recreate this block via the registry.
+
+        For task-nodes (Block+Node), node_id is included automatically.
+        """
         cfg: Dict[str, Any] = {
             "block_type": self.block_type,
             "block_id": self.block_id,
             "config": self.config,
         }
-        if hasattr(self, "node_id"):
-            cfg["node_id"] = self.node_id
+        if hasattr(self, "_node_id"):
+            cfg["node_id"] = self._node_id
         return cfg

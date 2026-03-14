@@ -76,6 +76,32 @@ def validate(structure: Any) -> ValidationResult:
                     f"has no incoming edge and is not an exposed input"
                 )
 
+    for entry in structure.get_input_spec():
+        nid = entry.get("node_id")
+        pname = entry.get("port_name")
+        if nid not in node_ids:
+            result.errors.append(f"Exposed input references unknown node '{nid}'")
+            continue
+        node = structure.get_node(nid)
+        port = _find_port(node, pname, PortDirection.IN)
+        if port is None:
+            result.errors.append(
+                f"Exposed input port '{pname}' not found as input on node '{nid}'"
+            )
+
+    for entry in structure.get_output_spec():
+        nid = entry.get("node_id")
+        pname = entry.get("port_name")
+        if nid not in node_ids:
+            result.errors.append(f"Exposed output references unknown node '{nid}'")
+            continue
+        node = structure.get_node(nid)
+        port = _find_port(node, pname, PortDirection.OUT)
+        if port is None:
+            result.errors.append(
+                f"Exposed output port '{pname}' not found as output on node '{nid}'"
+            )
+
     return result
 
 
@@ -89,12 +115,12 @@ def _find_port(node: Any, port_name: str, direction: PortDirection):
 
     # For workflow-level nodes (Hypergraph objects), check spec
     if direction == PortDirection.OUT:
-        spec = getattr(node, "get_output_spec", lambda: [])()
+        spec = getattr(node, "get_output_spec", lambda **kw: [])(include_dtype=True)
     else:
-        spec = getattr(node, "get_input_spec", lambda: [])()
+        spec = getattr(node, "get_input_spec", lambda **kw: [])(include_dtype=True)
 
     for entry in spec:
-        key = entry.get("name") or entry.get("port_name", "")
+        key = entry.get("port_name") or entry.get("name", "")
         if key == port_name:
             from yggdrasill.foundation.port import Port, PortType
             dtype_str = entry.get("dtype", "any")

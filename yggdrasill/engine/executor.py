@@ -46,6 +46,8 @@ def run(
         elif (nid, pname) in inputs:
             buffer[(nid, pname)] = inputs[(nid, pname)]
 
+    _prepare_nodes(structure, training, device)
+
     plan = build_plan(structure)
 
     cbs = callbacks or []
@@ -53,7 +55,7 @@ def run(
     for step_type, step_data in plan:
         if step_type == "node":
             _execute_node(
-                structure, step_data, buffer, input_spec, dry_run, cbs, training, device,
+                structure, step_data, buffer, input_spec, dry_run, cbs,
             )
         elif step_type == "cycle":
             rep, comp = step_data
@@ -62,7 +64,7 @@ def run(
             for _iteration in range(K):
                 for nid in node_order:
                     _execute_node(
-                        structure, nid, buffer, input_spec, dry_run, cbs, training, device,
+                        structure, nid, buffer, input_spec, dry_run, cbs,
                     )
             _fire_callbacks(cbs, "loop_end", {"nodes": node_order, "steps": K})
 
@@ -75,6 +77,17 @@ def run(
     return outputs
 
 
+def _prepare_nodes(structure: Any, training: bool, device: Any) -> None:
+    for nid in structure.node_ids:
+        node = structure.get_node(nid)
+        if node is None:
+            continue
+        if hasattr(node, "train") and callable(node.train):
+            node.train(training)
+        if device is not None and hasattr(node, "to") and callable(node.to):
+            node.to(device)
+
+
 def _execute_node(
     structure: Any,
     node_id: str,
@@ -82,35 +95,27 @@ def _execute_node(
     input_spec: List[Dict[str, Any]],
     dry_run: bool,
     callbacks: List[Callable[..., None]],
-    training: bool,
-    device: Any,
 ) -> None:
     node = structure.get_node(node_id)
     if node is None:
         return
 
-    if hasattr(node, "train") and callable(node.train):
-        node.train(training)
-    if device is not None and hasattr(node, "to") and callable(node.to):
-        node.to(device)
-
-    # Gather inputs for this node
     node_inputs: Dict[str, Any] = {}
 
     in_edges = structure.get_edges_in(node_id)
     for edge in in_edges:
-        val = buffer.get((edge.source_node, edge.source_port))
-        if val is not None:
-            node_inputs[edge.target_port] = val
+        key = (edge.source_node, edge.source_port)
+        if key in buffer:
+            node_inputs[edge.target_port] = buffer[key]
 
     for entry in input_spec:
         nid = entry.get("node_id") or entry.get("graph_id")
         if nid == node_id:
             pname = entry["port_name"]
             if pname not in node_inputs:
-                buf_val = buffer.get((nid, pname))
-                if buf_val is not None:
-                    node_inputs[pname] = buf_val
+                buf_key = (nid, pname)
+                if buf_key in buffer:
+                    node_inputs[pname] = buffer[buf_key]
 
     _fire_callbacks(callbacks, "before", {"node_id": node_id})
 

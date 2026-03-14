@@ -25,46 +25,70 @@ SCHEMA_VERSION = "1.0"
 # Low-level helpers
 # ---------------------------------------------------------------------------
 
-def save_config(config: Dict[str, Any], path: str | Path) -> None:
-    path = Path(path)
+def _write_json(data: Dict[str, Any], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
 
-def load_config(path: str | Path) -> Dict[str, Any]:
+def _read_json(path: Path) -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
-def save_checkpoint(state: Dict[str, Any], path: str | Path) -> None:
-    path = Path(path)
+def _write_checkpoint(state: Dict[str, Any], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as f:
         pickle.dump(state, f, protocol=pickle.HIGHEST_PROTOCOL)
 
 
-def load_checkpoint(path: str | Path) -> Dict[str, Any]:
+def _read_checkpoint(path: Path) -> Dict[str, Any]:
     with open(path, "rb") as f:
         return pickle.load(f)
+
+
+# ---------------------------------------------------------------------------
+# Public config / checkpoint helpers (used by both block and hypergraph)
+# ---------------------------------------------------------------------------
+
+def save_config(config: Dict[str, Any], path: str | Path) -> None:
+    _write_json(config, Path(path))
+
+
+def load_config(path: str | Path) -> Dict[str, Any]:
+    return _read_json(Path(path))
+
+
+def save_checkpoint(state: Dict[str, Any], path: str | Path) -> None:
+    _write_checkpoint(state, Path(path))
+
+
+def load_checkpoint(path: str | Path) -> Dict[str, Any]:
+    return _read_checkpoint(Path(path))
 
 
 # ---------------------------------------------------------------------------
 # Block-level save / load
 # ---------------------------------------------------------------------------
 
-def save_block(block: AbstractBaseBlock, directory: str | Path) -> Path:
+def save_block(
+    block: AbstractBaseBlock,
+    directory: str | Path,
+    *,
+    config_filename: str = "config.json",
+    checkpoint_filename: str = "checkpoint.pkl",
+) -> Path:
     """Save a block to <directory>/config.json + checkpoint.pkl."""
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
 
     config = block.get_config()
     config["schema_version"] = SCHEMA_VERSION
-    save_config(config, directory / "config.json")
+    _write_json(config, directory / config_filename)
 
     state = block.state_dict()
     if state:
-        save_checkpoint(state, directory / "checkpoint.pkl")
+        _write_checkpoint(state, directory / checkpoint_filename)
 
     return directory
 
@@ -73,19 +97,27 @@ def load_block(
     directory: str | Path,
     *,
     registry: Optional[Any] = None,
+    config_filename: str = "config.json",
+    checkpoint_filename: str = "checkpoint.pkl",
 ) -> AbstractBaseBlock:
     """Load a block from <directory>/config.json + checkpoint.pkl."""
     from yggdrasill.foundation.registry import BlockRegistry
 
     directory = Path(directory)
-    config = load_config(directory / "config.json")
+    config = _read_json(directory / config_filename)
+
+    sv = config.get("schema_version")
+    if sv is not None and sv != SCHEMA_VERSION:
+        raise ValueError(
+            f"Unsupported schema_version '{sv}' (expected '{SCHEMA_VERSION}')"
+        )
 
     reg = registry or BlockRegistry.global_registry()
     block = reg.build(config)
 
-    ckpt_path = directory / "checkpoint.pkl"
+    ckpt_path = directory / checkpoint_filename
     if ckpt_path.exists():
-        state = load_checkpoint(ckpt_path)
+        state = _read_checkpoint(ckpt_path)
         block.load_state_dict(state, strict=False)
 
     return block
@@ -95,19 +127,24 @@ def load_block(
 # Hypergraph-level save / load
 # ---------------------------------------------------------------------------
 
-def save_hypergraph(hypergraph: Hypergraph, directory: str | Path) -> Path:
+def save_hypergraph(
+    hypergraph: Hypergraph,
+    directory: str | Path,
+    *,
+    config_filename: str = "config.json",
+    checkpoint_filename: str = "checkpoint.pkl",
+) -> Path:
     """Save <directory>/config.json + checkpoint.pkl (with block_id dedup)."""
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
 
     cfg = hypergraph.to_config()
     cfg["schema_version"] = SCHEMA_VERSION
-    save_config(cfg, directory / "config.json")
+    _write_json(cfg, directory / config_filename)
 
     full_state = hypergraph.state_dict()
-    if full_state:
-        deduped = _deduplicate_state(hypergraph, full_state)
-        save_checkpoint(deduped, directory / "checkpoint.pkl")
+    deduped = _deduplicate_state(hypergraph, full_state)
+    _write_checkpoint(deduped, directory / checkpoint_filename)
 
     return directory
 
@@ -116,20 +153,32 @@ def load_hypergraph(
     directory: str | Path,
     *,
     registry: Optional[Any] = None,
+    validate: bool = False,
+    config_filename: str = "config.json",
+    checkpoint_filename: str = "checkpoint.pkl",
+    load_checkpoint_flag: bool = True,
 ) -> Hypergraph:
     """Load <directory>/config.json + checkpoint.pkl, rebuild via registry."""
     from yggdrasill.foundation.registry import BlockRegistry
 
     directory = Path(directory)
-    config = load_config(directory / "config.json")
-    reg = registry or BlockRegistry.global_registry()
-    h = Hypergraph.from_config(config, registry=reg)
+    config = _read_json(directory / config_filename)
 
-    ckpt_path = directory / "checkpoint.pkl"
-    if ckpt_path.exists():
-        state = load_checkpoint(ckpt_path)
-        expanded = _expand_deduped_state(h, state)
-        h.load_state_dict(expanded, strict=False)
+    sv = config.get("schema_version")
+    if sv is not None and sv != SCHEMA_VERSION:
+        raise ValueError(
+            f"Unsupported schema_version '{sv}' (expected '{SCHEMA_VERSION}')"
+        )
+
+    reg = registry or BlockRegistry.global_registry()
+    h = Hypergraph.from_config(config, registry=reg, validate=validate)
+
+    if load_checkpoint_flag:
+        ckpt_path = directory / checkpoint_filename
+        if ckpt_path.exists():
+            state = _read_checkpoint(ckpt_path)
+            expanded = _expand_deduped_state(h, state)
+            h.load_state_dict(expanded, strict=False)
 
     return h
 
@@ -142,8 +191,8 @@ def _deduplicate_state(
     hypergraph: Hypergraph, state: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Collapse nodes with the same block_id into one checkpoint entry."""
-    seen_block_ids: Dict[str, str] = {}  # block_id -> first node_id
-    aliases: Dict[str, str] = {}  # node_id -> alias (first node_id with same block_id)
+    seen_block_ids: Dict[str, str] = {}
+    aliases: Dict[str, str] = {}
     deduped: Dict[str, Any] = {}
 
     for nid in sorted(state.keys()):
@@ -164,9 +213,13 @@ def _deduplicate_state(
 def _expand_deduped_state(
     hypergraph: Hypergraph, state: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Expand aliases back to per-node state dicts."""
-    aliases: Dict[str, str] = state.pop("_aliases", {})
-    expanded = dict(state)
+    """Expand aliases back to per-node state dicts.
+
+    IMPORTANT: operates on a *copy* so the original checkpoint dict is not
+    mutated (the ``_aliases`` key is not popped from ``state``).
+    """
+    aliases: Dict[str, str] = state.get("_aliases", {})
+    expanded = {k: v for k, v in state.items() if k != "_aliases"}
 
     for nid, alias_target in aliases.items():
         if alias_target in expanded:

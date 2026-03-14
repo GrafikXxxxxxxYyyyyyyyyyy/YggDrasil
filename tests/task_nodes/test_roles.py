@@ -1,4 +1,4 @@
-from yggdrasill.task_nodes.roles import Role, role_from_block_type, ALL_ROLES
+from yggdrasill.task_nodes.roles import Role, role_from_block_type, ALL_ROLES, KNOWN_ROLES
 
 
 class TestRoleEnum:
@@ -10,6 +10,13 @@ class TestRoleEnum:
             "inner_module", "outer_module",
             "helper", "converter",
         }
+
+
+class TestKnownRoles:
+    def test_known_roles_set(self):
+        assert isinstance(KNOWN_ROLES, set)
+        assert len(KNOWN_ROLES) == 7
+        assert "inner_module" in KNOWN_ROLES
 
 
 class TestRoleFromBlockType:
@@ -30,3 +37,12 @@ class TestRoleFromBlockType:
 
     def test_case_insensitive(self):
         assert role_from_block_type("BACKBONE/Identity") == Role.BACKBONE
+
+    def test_underscore_separator(self):
+        assert role_from_block_type("backbone_unet2d") == Role.BACKBONE
+
+    def test_inner_module_underscore(self):
+        assert role_from_block_type("inner_module_ddim") == Role.INNER_MODULE
+
+    def test_inner_module_slash(self):
+        assert role_from_block_type("inner_module/identity") == Role.INNER_MODULE
