@@ -1,0 +1,77 @@
+"""Tests for named template API."""
+from __future__ import annotations
+
+import pytest
+
+from yggdrasill.engine.structure import Hypergraph
+import yggdrasill.templates as templates
+from yggdrasill.templates import build_template, list_templates
+from yggdrasill.workflow.workflow import Workflow
+
+
+class TestTemplateRegistry:
+    def test_list_templates_contains_sdxl_shortcuts(self):
+        names = list_templates()
+        assert "sdxl_text2img" in names
+        assert "sdxl_img2img" in names
+        assert "sdxl_base_refiner" in names
+
+    def test_build_template_unknown_raises(self):
+        with pytest.raises(KeyError):
+            build_template("does_not_exist")
+
+
+class TestHypergraphFromTemplate:
+    def test_hypergraph_from_template_returns_graph(self, monkeypatch):
+        graph = Hypergraph(graph_id="stub_graph")
+
+        def _stub_builder(**kwargs):
+            assert kwargs["device"] == "cpu"
+            return graph
+
+        monkeypatch.setitem(
+            templates._TEMPLATE_BUILDERS,
+            "stub_graph",
+            _stub_builder,
+        )
+
+        built = Hypergraph.from_template("stub_graph", device="cpu")
+        assert built is graph
+
+    def test_hypergraph_from_template_rejects_workflow(self, monkeypatch):
+        workflow = Workflow(workflow_id="stub_workflow")
+
+        monkeypatch.setitem(
+            templates._TEMPLATE_BUILDERS,
+            "stub_workflow",
+            lambda **kwargs: workflow,
+        )
+
+        with pytest.raises(TypeError):
+            Hypergraph.from_template("stub_workflow")
+
+
+class TestWorkflowFromTemplate:
+    def test_workflow_from_template_returns_workflow(self, monkeypatch):
+        workflow = Workflow(workflow_id="stub_workflow")
+
+        monkeypatch.setitem(
+            templates._TEMPLATE_BUILDERS,
+            "stub_workflow_ok",
+            lambda **kwargs: workflow,
+        )
+
+        built = Workflow.from_template("stub_workflow_ok")
+        assert built is workflow
+
+    def test_workflow_from_template_rejects_graph(self, monkeypatch):
+        graph = Hypergraph(graph_id="stub_graph")
+
+        monkeypatch.setitem(
+            templates._TEMPLATE_BUILDERS,
+            "stub_graph_bad",
+            lambda **kwargs: graph,
+        )
+
+        with pytest.raises(TypeError):
+            Workflow.from_template("stub_graph_bad")

@@ -495,6 +495,20 @@ class Workflow:
 
         return w
 
+    @classmethod
+    def from_template(cls, template_name: str, **kwargs: Any) -> "Workflow":
+        """Build a workflow from a named high-level template."""
+        from yggdrasill.templates import build_template
+
+        structure = build_template(template_name, **kwargs)
+        if not isinstance(structure, cls):
+            raise TypeError(
+                f"Template '{template_name}' produced {type(structure).__name__}, "
+                f"expected {cls.__name__}. "
+                "Use Hypergraph.from_template(...) for graph templates."
+            )
+        return structure
+
     # --- save / load --------------------------------------------------------
 
     def save(

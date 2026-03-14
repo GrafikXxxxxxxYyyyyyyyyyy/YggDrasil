@@ -17,6 +17,9 @@ pip install -e ".[dev]"
 
 # With YAML config support:
 pip install -e ".[yaml]"
+
+# With diffusion dependencies:
+pip install -e ".[diffusion]"
 ```
 
 ## Running tests
@@ -66,6 +69,31 @@ result = w.run({"x": "input"})
 h.save("/tmp/my_graph")
 h2 = Hypergraph.load("/tmp/my_graph")
 assert h2.run({"x": "data", "t": 0}) == result
+```
+
+## SDXL Examples
+
+- `examples/diffusion/sdxl_text2img.py` builds an SDXL graph via `Hypergraph.from_template("sdxl_text2img", ...)`.
+- `examples/diffusion/sdxl_img2img.py` builds an SDXL graph via `Hypergraph.from_template("sdxl_img2img", ...)`.
+- `examples/diffusion/sdxl_base_refiner.py` builds the SDXL workflow via `Workflow.from_template("sdxl_base_refiner", ...)`.
+- `examples/diffusion/sdxl_manual_graph.py` shows manual SDXL assembly through `ModelStore` and presets.
+
+Shortest form:
+
+```python
+from yggdrasill.engine.structure import Hypergraph
+
+graph = Hypergraph.from_template(
+    "sdxl_text2img",
+    repo_id="stabilityai/stable-diffusion-xl-base-1.0",
+    device="cuda",
+)
+```
+
+Run any example with:
+
+```bash
+python examples/diffusion/sdxl_text2img.py
 ```
 
 ## Architecture

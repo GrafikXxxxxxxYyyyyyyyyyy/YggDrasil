@@ -674,6 +674,65 @@ metadata: { num_loop_steps: 20 }
 
 - Добавляется узел injector/lora с config (target_modules, rank, path to lora weights). В конфиге Backbone (unet) указывается использование инжектора (lora_node_id или injectors: [lora_node_id]). Condition для LoRA опционально; при обучении trainable только узел lora.
 
+### 11.3 Практические примеры SDXL
+
+В репозитории добавлены отдельные примеры для текущего SDXL-layer:
+
+- `examples/diffusion/sdxl_text2img.py` — high-level factory для `SDXL text2img`.
+- `examples/diffusion/sdxl_img2img.py` — high-level factory для `SDXL img2img`.
+- `examples/diffusion/sdxl_base_refiner.py` — двухстадийный `base -> refiner` workflow.
+- `examples/diffusion/sdxl_manual_graph.py` — ручная сборка SDXL-графа через `ModelStore` и preset builder.
+
+У всех примеров единая задача:
+
+- показать канонический graph-first API для SDXL;
+- показать, какие внешние порты и артефакты публикует граф;
+- сохранить `config.json` для дальнейшей сериализации и повторного поднятия структуры;
+- явно вывести результат `validate(...)`, чтобы пользователь видел текущее состояние графа до запуска.
+
+Минимальный high-level сценарий для SDXL text-to-image:
+
+```python
+from yggdrasill.engine.structure import Hypergraph
+from yggdrasill.integrations.diffusers.registry import register_diffusion_nodes
+
+register_diffusion_nodes()
+
+graph = Hypergraph.from_template(
+    "sdxl_text2img",
+    repo_id="stabilityai/stable-diffusion-xl-base-1.0",
+    device="cuda",
+    torch_dtype="float16",
+    config={
+        "height": 1024,
+        "width": 1024,
+        "guidance_scale": 7.5,
+        "num_inference_steps": 30,
+        "output_type": "pil",
+    },
+)
+```
+
+Минимальный сценарий для `base + refiner`:
+
+```python
+from yggdrasill.workflow.workflow import Workflow
+from yggdrasill.integrations.diffusers.registry import register_diffusion_nodes
+
+register_diffusion_nodes()
+
+workflow = Workflow.from_template(
+    "sdxl_base_refiner",
+    base_repo_id="stabilityai/stable-diffusion-xl-base-1.0",
+    refiner_repo_id="stabilityai/stable-diffusion-xl-refiner-1.0",
+    device="cuda",
+    torch_dtype="float16",
+    denoising_end=0.8,
+)
+```
+
+Важно: на текущем этапе эти примеры ориентированы на **сборку, инспекцию, валидацию и сериализацию SDXL-графов**. Они уже полезны как стартовые шаблоны для интеграции, но перед публикацией финального inference API нужно завершить полное loop-wiring для `timestep`/`scheduler-step` в реальном `run()`-сценарии.
+
 ---
 
 ## 12. Граничные случаи и варианты

@@ -393,6 +393,24 @@ class Hypergraph:
 
         return g
 
+    @classmethod
+    def from_template(cls, template_name: str, **kwargs: Any) -> "Hypergraph":
+        """Build a hypergraph from a named high-level template.
+
+        Example:
+            ``Hypergraph.from_template("sdxl_text2img", repo_id="...", device="cuda")``
+        """
+        from yggdrasill.templates import build_template
+
+        structure = build_template(template_name, **kwargs)
+        if not isinstance(structure, cls):
+            raise TypeError(
+                f"Template '{template_name}' produced {type(structure).__name__}, "
+                f"expected {cls.__name__}. "
+                "Use Workflow.from_template(...) for workflow templates."
+            )
+        return structure
+
     def to_config(self) -> Dict[str, Any]:
         """Export the structure as a JSON-serialisable dict (no weights)."""
         nodes = []

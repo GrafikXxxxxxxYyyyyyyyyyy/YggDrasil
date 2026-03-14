@@ -1,0 +1,80 @@
+"""SD1.5 mask preparation for inpainting."""
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+from yggdrasill.diffusion import contracts as C
+from yggdrasill.foundation.port import Port, PortDirection, PortType
+from yggdrasill.task_nodes.abstract import AbstractConverter
+
+
+class SD15MaskPrepNode(AbstractConverter):
+    """Prepares mask and masked-image latents for SD1.5 inpainting.
+
+    Supports both 9-channel (concat) and 4-channel (blend) UNet variants.
+    """
+
+    def __init__(
+        self,
+        node_id: str,
+        block_id: Optional[str] = None,
+        *,
+        config: Optional[Dict[str, Any]] = None,
+        vae: Any = None,
+    ) -> None:
+        super().__init__(node_id=node_id, block_id=block_id, config=config)
+        self._vae = vae
+
+    @property
+    def block_type(self) -> str:
+        return "sd15/mask_prep"
+
+    def declare_ports(self) -> List[Port]:
+        return [
+            Port(C.PORT_INIT_IMAGE, PortDirection.IN, PortType.IMAGE),
+            Port(C.PORT_MASK_IMAGE, PortDirection.IN, PortType.IMAGE),
+            Port(C.PORT_MASK_LATENTS, PortDirection.OUT, PortType.TENSOR),
+            Port(C.PORT_MASKED_IMAGE_LATENTS, PortDirection.OUT, PortType.TENSOR),
+        ]
+
+    def forward(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        import torch
+        from yggdrasill.integrations.diffusers.common.image_utils import (
+            preprocess_image,
+            preprocess_mask,
+        )
+
+        image = inputs[C.PORT_INIT_IMAGE]
+        mask = inputs[C.PORT_MASK_IMAGE]
+        height = self._config.get("height", 512)
+        width = self._config.get("width", 512)
+        device = self._config.get("device", "cpu")
+        dtype = getattr(self._vae, "dtype", None) if self._vae else None
+
+        mask_tensor = preprocess_mask(mask, height=height, width=width, dtype=dtype, device=device)
+        image_tensor = preprocess_image(image, height=height, width=width, dtype=dtype, device=device)
+
+        masked_image = image_tensor * (mask_tensor < 0.5)
+
+        if self._vae is not None:
+            with torch.no_grad():
+                masked_latents = self._vae.encode(masked_image).latent_dist.sample()
+            scaling = getattr(self._vae.config, "scaling_factor", 0.18215)
+            masked_latents = masked_latents * scaling
+        else:
+            masked_latents = masked_image
+
+        latent_h, latent_w = height // 8, width // 8
+        if mask_tensor.shape[-2:] != (latent_h, latent_w):
+            import torch.nn.functional as F
+            mask_tensor = F.interpolate(mask_tensor, size=(latent_h, latent_w), mode="nearest")
+
+        return {
+            C.PORT_MASK_LATENTS: mask_tensor,
+            C.PORT_MASKED_IMAGE_LATENTS: masked_latents,
+        }
+
+    def to(self, device: Any) -> "SD15MaskPrepNode":
+        if self._vae is not None:
+            self._vae.to(device)
+        return self
