@@ -34,6 +34,15 @@ def register_diffusion_nodes(registry: Optional[BlockRegistry] = None) -> None:
     from yggdrasill.integrations.diffusers.adapters.ip_adapter import IPAdapterNode
     from yggdrasill.integrations.diffusers.adapters.textual_inversion import TextualInversionNode
 
+    from yggdrasill.integrations.diffusers.flux.prompt_encoder import FluxPromptEncoderNode
+    from yggdrasill.integrations.diffusers.flux.transformer import FluxTransformerNode
+    from yggdrasill.integrations.diffusers.flux.scheduler import (
+        FluxSchedulerSetupNode, FluxSchedulerStepNode,
+    )
+    from yggdrasill.integrations.diffusers.flux.latent_init import FluxLatentInitNode
+    from yggdrasill.integrations.diffusers.flux.vae import FluxVAEEncodeNode, FluxVAEDecodeNode
+    from yggdrasill.integrations.diffusers.flux.controlnet import FluxControlNetNode
+
     nodes = {
         "sd15/prompt_encoder": SD15PromptEncoderNode,
         "sd15/unet": SD15UNetNode,
@@ -56,6 +65,14 @@ def register_diffusion_nodes(registry: Optional[BlockRegistry] = None) -> None:
         "adapter/controlnet": ControlNetNode,
         "adapter/ip_adapter": IPAdapterNode,
         "adapter/textual_inversion": TextualInversionNode,
+        "flux/prompt_encoder": FluxPromptEncoderNode,
+        "flux/transformer": FluxTransformerNode,
+        "flux/scheduler_setup": FluxSchedulerSetupNode,
+        "flux/scheduler_step": FluxSchedulerStepNode,
+        "flux/latent_init": FluxLatentInitNode,
+        "flux/vae_encode": FluxVAEEncodeNode,
+        "flux/vae_decode": FluxVAEDecodeNode,
+        "flux/controlnet": FluxControlNetNode,
     }
 
     for block_type, cls in nodes.items():

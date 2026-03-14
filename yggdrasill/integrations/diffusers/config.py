@@ -71,3 +71,20 @@ class SDXLPipelineConfig:
     enable_model_cpu_offload: bool = False
     enable_sequential_cpu_offload: bool = False
     force_zeros_for_empty_prompt: bool = True
+
+
+@dataclass
+class FluxPipelineConfig:
+    """Full configuration for a FLUX pipeline expressed as components."""
+
+    model: DiffusersComponentConfig = field(default_factory=lambda: DiffusersComponentConfig(
+        repo_id="black-forest-labs/FLUX.1-dev",
+    ))
+    scheduler_class: str = "FlowMatchEulerDiscreteScheduler"
+    device: str = "cuda"
+    torch_dtype: str = "bfloat16"
+    max_sequence_length: int = 512
+    enable_vae_slicing: bool = False
+    enable_vae_tiling: bool = False
+    enable_model_cpu_offload: bool = False
+    enable_sequential_cpu_offload: bool = False

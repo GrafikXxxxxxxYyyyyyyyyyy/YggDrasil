@@ -50,6 +50,30 @@ def _build_sdxl_base_refiner(**kwargs: Any) -> Any:
     return build_sdxl_base_refiner(**kwargs)
 
 
+def _build_flux_text2img(**kwargs: Any) -> Any:
+    from yggdrasill.integrations.diffusers.factory import build_flux_pipeline
+
+    return build_flux_pipeline(task="text2img", **kwargs)
+
+
+def _build_flux_img2img(**kwargs: Any) -> Any:
+    from yggdrasill.integrations.diffusers.factory import build_flux_pipeline
+
+    return build_flux_pipeline(task="img2img", **kwargs)
+
+
+def _build_flux_inpaint(**kwargs: Any) -> Any:
+    from yggdrasill.integrations.diffusers.factory import build_flux_pipeline
+
+    return build_flux_pipeline(task="inpaint", **kwargs)
+
+
+def _build_flux_controlnet_text2img(**kwargs: Any) -> Any:
+    from yggdrasill.integrations.diffusers.factory import build_flux_pipeline
+
+    return build_flux_pipeline(task="controlnet_text2img", **kwargs)
+
+
 _TEMPLATE_BUILDERS: Dict[str, Callable[..., Any]] = {
     "sd15_text2img": _build_sd15_text2img,
     "sd15_img2img": _build_sd15_img2img,
@@ -58,6 +82,10 @@ _TEMPLATE_BUILDERS: Dict[str, Callable[..., Any]] = {
     "sdxl_img2img": _build_sdxl_img2img,
     "sdxl_inpaint": _build_sdxl_inpaint,
     "sdxl_base_refiner": _build_sdxl_base_refiner,
+    "flux_text2img": _build_flux_text2img,
+    "flux_img2img": _build_flux_img2img,
+    "flux_inpaint": _build_flux_inpaint,
+    "flux_controlnet_text2img": _build_flux_controlnet_text2img,
 }
 
 GRAPH_TEMPLATES: Final[Tuple[str, ...]] = (
@@ -67,6 +95,10 @@ GRAPH_TEMPLATES: Final[Tuple[str, ...]] = (
     "sdxl_text2img",
     "sdxl_img2img",
     "sdxl_inpaint",
+    "flux_text2img",
+    "flux_img2img",
+    "flux_inpaint",
+    "flux_controlnet_text2img",
 )
 
 WORKFLOW_TEMPLATES: Final[Tuple[str, ...]] = ("sdxl_base_refiner",)

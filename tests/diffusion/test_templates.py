@@ -16,6 +16,13 @@ class TestTemplateRegistry:
         assert "sdxl_img2img" in names
         assert "sdxl_base_refiner" in names
 
+    def test_list_templates_contains_flux_shortcuts(self):
+        names = list_templates()
+        assert "flux_text2img" in names
+        assert "flux_img2img" in names
+        assert "flux_inpaint" in names
+        assert "flux_controlnet_text2img" in names
+
     def test_build_template_unknown_raises(self):
         with pytest.raises(KeyError):
             build_template("does_not_exist")

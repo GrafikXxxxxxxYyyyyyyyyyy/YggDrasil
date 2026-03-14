@@ -36,6 +36,14 @@ class TestDiffusionRegistry:
             "adapter/controlnet",
             "adapter/ip_adapter",
             "adapter/textual_inversion",
+            "flux/prompt_encoder",
+            "flux/transformer",
+            "flux/scheduler_setup",
+            "flux/scheduler_step",
+            "flux/latent_init",
+            "flux/vae_encode",
+            "flux/vae_decode",
+            "flux/controlnet",
         ]
 
         for bt in expected_types:
@@ -67,7 +75,7 @@ class TestDiffusionRegistry:
     def test_registered_types_count(self):
         from yggdrasill.integrations.diffusers.registry import register_diffusion_nodes
         register_diffusion_nodes(self.registry)
-        assert len(self.registry.registered_types) >= 21
+        assert len(self.registry.registered_types) >= 29
 
     def test_build_all_types_with_node_id(self):
         from yggdrasill.integrations.diffusers.registry import register_diffusion_nodes

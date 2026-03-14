@@ -80,6 +80,19 @@ PORT_IP_ADAPTER_IMAGE = "ip_adapter_image"
 PORT_LORA_SCALE = "lora_scale"
 
 # ---------------------------------------------------------------------------
+# Canonical port names — FLUX extras
+# ---------------------------------------------------------------------------
+
+PORT_GUIDANCE = "guidance"
+PORT_IMG_IDS = "img_ids"
+PORT_TXT_IDS = "txt_ids"
+PORT_PACKED_LATENTS = "packed_latents"
+PORT_POOLED_PROJECTIONS = "pooled_projections"
+PORT_CONTROLNET_BLOCK_SAMPLES = "controlnet_block_samples"
+PORT_CONTROLNET_SINGLE_BLOCK_SAMPLES = "controlnet_single_block_samples"
+PORT_MAX_SEQUENCE_LENGTH = "max_sequence_length"
+
+# ---------------------------------------------------------------------------
 # Config keys (used in node config dicts)
 # ---------------------------------------------------------------------------
 

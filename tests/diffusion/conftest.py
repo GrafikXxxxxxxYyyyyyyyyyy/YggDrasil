@@ -253,6 +253,151 @@ class FakeFeatureExtractor:
         return SimpleNamespace(pixel_values=FakeTensor((len(images) if isinstance(images, list) else 1, 3, 224, 224)))
 
 
+class FakeT5Tokenizer:
+    """Mock T5TokenizerFast."""
+    model_max_length = 512
+
+    def __call__(self, text, **kwargs):
+        max_len = kwargs.get("max_length", 512)
+        return SimpleNamespace(input_ids=FakeTensor((1, max_len)))
+
+
+class FakeT5Encoder:
+    """Mock T5EncoderModel (returns sequence embeddings, no pooler)."""
+    device = "cpu"
+
+    def __call__(self, input_ids, **kwargs):
+        bs = input_ids.shape[0] if hasattr(input_ids, 'shape') else 1
+        seq_len = input_ids.shape[1] if hasattr(input_ids, 'shape') and len(input_ids.shape) > 1 else 512
+        hidden = FakeTensor((bs, seq_len, 4096))
+        return (hidden,)
+
+    def to(self, *args, **kwargs):
+        return self
+
+
+class FakeCLIPEncoderWithPooler:
+    """Mock CLIPTextModel that returns pooler_output (for FLUX CLIP path)."""
+    device = "cpu"
+
+    def __call__(self, input_ids, output_hidden_states=False, **kwargs):
+        bs = input_ids.shape[0] if hasattr(input_ids, 'shape') else 1
+        hidden = FakeTensor((bs, 77, 768))
+        pooled = FakeTensor((bs, 768))
+        if output_hidden_states:
+            return SimpleNamespace(
+                hidden_states=[FakeTensor((bs, 77, 768)) for _ in range(13)],
+                pooler_output=pooled,
+            )
+        return SimpleNamespace(
+            last_hidden_state=hidden,
+            pooler_output=pooled,
+        )
+
+    def to(self, *args, **kwargs):
+        return self
+
+
+class FakeFluxTransformer:
+    """Mock FluxTransformer2DModel."""
+    device = "cpu"
+    dtype = "bfloat16"
+
+    def __init__(self, guidance_embeds: bool = True):
+        self.config = SimpleNamespace(guidance_embeds=guidance_embeds)
+
+    def __call__(self, hidden_states=None, **kwargs):
+        shape = hidden_states.shape if hasattr(hidden_states, 'shape') else (1, 4096, 64)
+        return (FakeTensor(shape),)
+
+    def to(self, *args, **kwargs):
+        return self
+
+
+class FakeFluxVAE:
+    """Mock AutoencoderKL for FLUX (16 latent channels)."""
+    device = "cpu"
+    dtype = "bfloat16"
+
+    def __init__(self):
+        self.config = SimpleNamespace(
+            scaling_factor=0.3611,
+            shift_factor=0.1159,
+        )
+
+    def encode(self, x):
+        b = x.shape[0] if hasattr(x, 'shape') else 1
+        return FakeVAEOutput(
+            latent_dist=FakeLatentDist(FakeTensor((b, 16, 128, 128)))
+        )
+
+    def decode(self, latents, return_dict=True):
+        b = latents.shape[0] if hasattr(latents, 'shape') else 1
+        image = FakeTensor((b, 3, 1024, 1024))
+        if return_dict:
+            return SimpleNamespace(sample=image)
+        return (image,)
+
+    def to(self, *args, **kwargs):
+        return self
+
+
+class FakeFlowMatchScheduler:
+    """Mock FlowMatchEulerDiscreteScheduler."""
+
+    def __init__(self):
+        self.timesteps = FakeTensor((28,))
+        self.init_noise_sigma = 1.0
+        self.order = 1
+        self.config = SimpleNamespace(
+            base_image_seq_len=256,
+            max_image_seq_len=4096,
+            base_shift=0.5,
+            max_shift=1.15,
+        )
+
+    def set_timesteps(self, num_steps, device=None, **kwargs):
+        self.timesteps = FakeTensor((num_steps,))
+
+    def scale_model_input(self, latents, timestep):
+        return latents
+
+    def step(self, noise_pred, timestep, latents, return_dict=False):
+        result = SimpleNamespace(prev_sample=FakeTensor(latents.shape))
+        if return_dict:
+            return result
+        return (FakeTensor(latents.shape),)
+
+    def scale_noise(self, sample, timestep, noise):
+        return sample
+
+
+class FakeFluxControlNet:
+    """Mock FluxControlNetModel."""
+    device = "cpu"
+
+    def __call__(self, hidden_states=None, **kwargs):
+        block_samples = [FakeTensor((1, 4096, 64)) for _ in range(19)]
+        single_samples = [FakeTensor((1, 4096, 64)) for _ in range(38)]
+        return (block_samples, single_samples)
+
+    def to(self, *args, **kwargs):
+        return self
+
+
+@pytest.fixture
+def flux_components():
+    return {
+        "tokenizer": FakeTokenizer(),
+        "tokenizer_2": FakeT5Tokenizer(),
+        "text_encoder": FakeCLIPEncoderWithPooler(),
+        "text_encoder_2": FakeT5Encoder(),
+        "transformer": FakeFluxTransformer(),
+        "vae": FakeFluxVAE(),
+        "scheduler": FakeFlowMatchScheduler(),
+    }
+
+
 @pytest.fixture
 def sd15_components():
     return {
