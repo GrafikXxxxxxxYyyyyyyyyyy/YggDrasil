@@ -91,3 +91,43 @@ class TestPortCompatibility:
         a = Port("a", PortDirection.OUT, PortType.ANY)
         b = Port("b", PortDirection.OUT, PortType.ANY)
         assert a.compatible_with(b) is False
+
+    def test_string_dtype_vs_enum(self):
+        src = Port("a", PortDirection.OUT, "tensor")
+        dst = Port("b", PortDirection.IN, PortType.TENSOR)
+        assert src.compatible_with(dst) is True
+
+    def test_string_any_wildcard(self):
+        src = Port("a", PortDirection.OUT, "any")
+        dst = Port("b", PortDirection.IN, PortType.TENSOR)
+        assert src.compatible_with(dst) is True
+
+    def test_custom_string_types_match(self):
+        src = Port("a", PortDirection.OUT, "embedding")
+        dst = Port("b", PortDirection.IN, "embedding")
+        assert src.compatible_with(dst) is True
+
+    def test_custom_string_types_mismatch(self):
+        src = Port("a", PortDirection.OUT, "embedding")
+        dst = Port("b", PortDirection.IN, "logits")
+        assert src.compatible_with(dst) is False
+
+    def test_string_any_case_insensitive(self):
+        src = Port("a", PortDirection.OUT, "Any")
+        dst = Port("b", PortDirection.IN, PortType.TENSOR)
+        assert src.compatible_with(dst) is True
+
+    def test_string_ANY_uppercase(self):
+        src = Port("a", PortDirection.OUT, PortType.TENSOR)
+        dst = Port("b", PortDirection.IN, "ANY")
+        assert src.compatible_with(dst) is True
+
+
+class TestPortAggregationCreation:
+    def test_sum_aggregation(self):
+        p = Port("in", PortDirection.IN, aggregation=PortAggregation.SUM)
+        assert p.aggregation == PortAggregation.SUM
+
+    def test_dict_aggregation(self):
+        p = Port("in", PortDirection.IN, aggregation=PortAggregation.DICT)
+        assert p.aggregation == PortAggregation.DICT

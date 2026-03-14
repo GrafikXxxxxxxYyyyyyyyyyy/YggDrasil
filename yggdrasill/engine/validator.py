@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, List
+from typing import Any, Dict, List, Set
 
 from yggdrasill.foundation.node import AbstractGraphNode
 from yggdrasill.foundation.port import PortDirection
@@ -66,7 +66,8 @@ def validate(structure: Any) -> ValidationResult:
         covered_ports = {e.target_port for e in in_edges}
         exposed_ports = set()
         for entry in structure.get_input_spec():
-            if entry.get("node_id") == nid:
+            entry_nid = entry.get("node_id") or entry.get("graph_id")
+            if entry_nid == nid:
                 exposed_ports.add(entry["port_name"])
 
         for port in node.get_input_ports():
@@ -77,7 +78,7 @@ def validate(structure: Any) -> ValidationResult:
                 )
 
     for entry in structure.get_input_spec():
-        nid = entry.get("node_id")
+        nid = entry.get("node_id") or entry.get("graph_id")
         pname = entry.get("port_name")
         if nid not in node_ids:
             result.errors.append(f"Exposed input references unknown node '{nid}'")
@@ -90,7 +91,7 @@ def validate(structure: Any) -> ValidationResult:
             )
 
     for entry in structure.get_output_spec():
-        nid = entry.get("node_id")
+        nid = entry.get("node_id") or entry.get("graph_id")
         pname = entry.get("port_name")
         if nid not in node_ids:
             result.errors.append(f"Exposed output references unknown node '{nid}'")
@@ -102,7 +103,69 @@ def validate(structure: Any) -> ValidationResult:
                 f"Exposed output port '{pname}' not found as output on node '{nid}'"
             )
 
+    _check_cycles(structure, result)
+
     return result
+
+
+def _check_cycles(structure: Any, result: ValidationResult) -> None:
+    """Detect cycles (including self-loops) via Tarjan SCC; warn if num_loop_steps is unset."""
+    node_ids = list(structure.node_ids)
+    edges = structure.get_edges()
+    adj: Dict[str, List[str]] = {nid: [] for nid in node_ids}
+    self_loop_nodes: Set[str] = set()
+    for edge in edges:
+        if edge.source_node in adj:
+            adj[edge.source_node].append(edge.target_node)
+        if edge.source_node == edge.target_node:
+            self_loop_nodes.add(edge.source_node)
+
+    index_counter = [0]
+    stack: List[str] = []
+    on_stack: Set[str] = set()
+    lowlink: Dict[str, int] = {}
+    index: Dict[str, int] = {}
+    sccs: List[List[str]] = []
+
+    def strongconnect(v: str) -> None:
+        index[v] = index_counter[0]
+        lowlink[v] = index_counter[0]
+        index_counter[0] += 1
+        stack.append(v)
+        on_stack.add(v)
+        for w in adj.get(v, []):
+            if w not in index:
+                strongconnect(w)
+                lowlink[v] = min(lowlink[v], lowlink[w])
+            elif w in on_stack:
+                lowlink[v] = min(lowlink[v], index[w])
+        if lowlink[v] == index[v]:
+            comp: List[str] = []
+            while True:
+                w = stack.pop()
+                on_stack.discard(w)
+                comp.append(w)
+                if w == v:
+                    break
+            if len(comp) > 1:
+                sccs.append(comp)
+
+    for nid in node_ids:
+        if nid not in index:
+            strongconnect(nid)
+
+    for nid in self_loop_nodes:
+        if not any(nid in scc for scc in sccs):
+            sccs.append([nid])
+
+    if sccs:
+        meta = getattr(structure, "metadata", {})
+        if meta.get("num_loop_steps") is None:
+            for scc in sccs:
+                result.warnings.append(
+                    f"Cycle detected among nodes {sorted(scc)} but "
+                    f"metadata['num_loop_steps'] is not set"
+                )
 
 
 def _find_port(node: Any, port_name: str, direction: PortDirection):

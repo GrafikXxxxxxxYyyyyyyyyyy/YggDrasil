@@ -21,6 +21,17 @@ from yggdrasill.task_nodes.abstract import (
     AbstractOuterModule,
 )
 from yggdrasill.task_nodes.stubs import register_all_stubs
+from yggdrasill.task_nodes.role_rules import (
+    ROLE_EDGE_RULES,
+    get_rule_edges,
+    suggest_edges_for_new_node,
+)
+from yggdrasill.task_nodes.auto_connect import (
+    apply_auto_connect,
+    use_task_node_auto_connect,
+)
+
+register_all_stubs()
 
 __all__ = [
     "Role",
@@ -42,4 +53,9 @@ __all__ = [
     "AbstractInnerModule",
     "AbstractOuterModule",
     "register_all_stubs",
+    "ROLE_EDGE_RULES",
+    "get_rule_edges",
+    "suggest_edges_for_new_node",
+    "apply_auto_connect",
+    "use_task_node_auto_connect",
 ]

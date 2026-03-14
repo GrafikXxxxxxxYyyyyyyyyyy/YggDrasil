@@ -127,3 +127,61 @@ class TestBlockGetConfig:
         assert cfg["block_type"] == "test/add"
         assert cfg["block_id"] == "a1"
         assert cfg["config"] == {"offset": 5}
+
+
+class TestBlockToDevice:
+    def test_to_returns_self(self):
+        b = IdentityBlock()
+        assert b.to("cpu") is b
+
+    def test_to_propagates_to_sub_blocks(self):
+        devices = []
+        original_to = IdentityBlock.to
+        IdentityBlock.to = lambda self, device: (devices.append(device), self)[1]
+        try:
+            b = BlockWithSub()
+            b.to("cuda")
+        finally:
+            IdentityBlock.to = original_to
+
+
+class TestBlockLoadStateStrictEmpty:
+    def test_load_empty_state_strict_on_stateless_block(self):
+        b = IdentityBlock()
+        b.load_state_dict({}, strict=True)
+
+    def test_load_extra_key_strict_on_stateless_block(self):
+        b = IdentityBlock()
+        with pytest.raises(KeyError):
+            b.load_state_dict({"foo": 1}, strict=True)
+
+
+class TestBlockTrainableParameters:
+    def test_default_empty(self):
+        b = IdentityBlock()
+        assert list(b.trainable_parameters()) == []
+
+
+class TestBlockFreezeUnfreeze:
+    def test_freeze_propagates_to_sub_blocks(self):
+        b = BlockWithSub()
+        b.freeze()
+        assert b.frozen is True
+        assert b.child.frozen is True
+
+    def test_unfreeze_propagates_to_sub_blocks(self):
+        b = BlockWithSub()
+        b.freeze()
+        b.unfreeze()
+        assert b.frozen is False
+        assert b.child.frozen is False
+
+
+class TestBlockDefaultBlockType:
+    def test_default_block_type_is_class_name(self):
+        from yggdrasill.foundation.block import AbstractBaseBlock
+        class RawBlock(AbstractBaseBlock):
+            def forward(self, inputs):
+                return inputs
+        b = RawBlock()
+        assert b.block_type == "RawBlock"

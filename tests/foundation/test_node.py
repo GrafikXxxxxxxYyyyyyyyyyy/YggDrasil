@@ -66,7 +66,29 @@ class TestNodeRun:
         assert n.block_id == "b1"
 
 
+class TestNodeRunWithoutForward:
+    def test_run_without_dual_inheritance_raises_type_error(self):
+        """A node that only inherits AbstractGraphNode (no forward) should raise TypeError."""
+        from yggdrasill.foundation.node import AbstractGraphNode
+        from yggdrasill.foundation.port import Port, PortDirection
+
+        class PureNode(AbstractGraphNode):
+            def declare_ports(self):
+                return [Port("x", PortDirection.IN)]
+
+        n = PureNode(node_id="test")
+        with pytest.raises(TypeError, match="forward"):
+            n.run({"x": 1})
+
+
 class TestNodeRepr:
     def test_repr_contains_node_id(self):
         n = IdentityTaskNode(node_id="X")
         assert "X" in repr(n)
+
+    def test_repr_contains_block_info(self):
+        n = IdentityTaskNode(node_id="X", block_id="b1")
+        r = repr(n)
+        assert "block_type=" in r
+        assert "block_id=" in r
+        assert "b1" in r

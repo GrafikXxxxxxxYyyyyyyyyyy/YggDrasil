@@ -58,6 +58,17 @@ class Port:
         """Check if this (output) port can connect to other (input) port."""
         if self.direction != PortDirection.OUT or other.direction != PortDirection.IN:
             return False
-        if self.dtype == PortType.ANY or other.dtype == PortType.ANY:
+        a, b = self.dtype, other.dtype
+        if a == PortType.ANY or b == PortType.ANY:
             return True
-        return self.dtype == other.dtype
+        ak, bk = _dtype_key(a), _dtype_key(b)
+        if ak == "any" or bk == "any":
+            return True
+        return ak == bk
+
+
+def _dtype_key(dtype: "PortType | str") -> str:
+    """Normalise PortType enum or plain string to a comparable key."""
+    if isinstance(dtype, PortType):
+        return dtype.value
+    return str(dtype).strip().lower()

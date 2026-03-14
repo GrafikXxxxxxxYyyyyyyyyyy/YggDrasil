@@ -120,6 +120,31 @@ class FakeRouter(AbstractInnerModule):
         return {"output": f"route({inputs.get('input')})"}
 
 
+class FakeAgentWithToolCalls(AbstractInnerModule):
+    """Agent node that returns tool_calls in its output, testing the contract."""
+
+    @property
+    def block_type(self) -> str:
+        return "agent/with_tool_calls"
+
+    def declare_ports(self) -> List[Port]:
+        return [
+            Port("input", PortDirection.IN, PortType.ANY),
+            Port("output", PortDirection.OUT, PortType.ANY),
+        ]
+
+    def forward(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "output": {
+                "response": f"thinking about {inputs.get('input')}",
+                "tool_calls": [
+                    {"tool_id": "search", "args": {"query": "test"}},
+                    {"tool_id": "calc", "args": {"expr": "2+2"}},
+                ],
+            }
+        }
+
+
 class FakeToolExecutor(AbstractConjector):
     @property
     def block_type(self) -> str:
@@ -152,6 +177,7 @@ def domain_registry():
     r.register("agent/router", FakeRouter)
     r.register("agent/tool_exec", FakeToolExecutor)
     r.register("agent/memory", FakeMemory)
+    r.register("agent/with_tool_calls", FakeAgentWithToolCalls)
     return r
 
 
@@ -290,6 +316,21 @@ class TestAgentLoop:
         assert "route" in out["answer"]
         assert "tool_result" in out["answer"]
         assert "mem" in out["answer"]
+
+    def test_agent_tool_calls_contract(self, domain_registry):
+        """Verify that an agent node can return tool_calls in its output dict."""
+        clear_plan_cache()
+        h = Hypergraph()
+        h.add_node_from_config("agent", "agent/with_tool_calls", registry=domain_registry)
+        h.expose_input("agent", "input", "query")
+        h.expose_output("agent", "output", "result")
+        out = h.run({"query": "what is 2+2?"}, validate_before=False)
+        result = out["result"]
+        assert isinstance(result, dict)
+        assert "tool_calls" in result
+        assert len(result["tool_calls"]) == 2
+        assert result["tool_calls"][0]["tool_id"] == "search"
+        assert result["tool_calls"][1]["tool_id"] == "calc"
 
     def test_agent_workflow_with_cycle(self, domain_registry):
         clear_plan_cache()

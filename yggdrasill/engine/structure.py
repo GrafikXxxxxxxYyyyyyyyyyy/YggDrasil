@@ -1,10 +1,38 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Set
+import itertools
+import json
+from pathlib import Path
+from typing import Any, Dict, Iterator, List, Optional, Set
 
 from yggdrasill.engine.edge import Edge
 from yggdrasill.foundation.node import AbstractGraphNode
 from yggdrasill.foundation.port import PortDirection
+
+_instance_counter = itertools.count()
+
+
+def _resolve_config_ref(config: Dict[str, Any]) -> Dict[str, Any]:
+    """If *config* is ``{"ref": "path/to/file"}`` load from that file."""
+    if set(config.keys()) == {"ref"}:
+        ref_path = Path(config["ref"])
+        if ref_path.suffix in (".yaml", ".yml"):
+            try:
+                import yaml  # type: ignore[import-untyped]
+                with open(ref_path, "r", encoding="utf-8") as f:
+                    return yaml.safe_load(f) or {}
+            except ImportError:
+                raise ImportError(
+                    f"PyYAML required to load YAML config ref: {ref_path}"
+                )
+        if ref_path.suffix not in (".json",):
+            raise ValueError(
+                f"Unsupported config ref file extension '{ref_path.suffix}'; "
+                f"expected .json, .yaml, or .yml"
+            )
+        with open(ref_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return config
 
 
 class Hypergraph:
@@ -17,6 +45,7 @@ class Hypergraph:
     """
 
     def __init__(self, graph_id: Optional[str] = None) -> None:
+        self._instance_id = next(_instance_counter)
         self._graph_id = graph_id or "graph"
         self._graph_kind: Optional[str] = None
         self._metadata: Dict[str, Any] = {}
@@ -48,7 +77,7 @@ class Hypergraph:
 
     @property
     def metadata(self) -> Dict[str, Any]:
-        return dict(self._metadata)
+        return self._metadata
 
     @metadata.setter
     def metadata(self, value: Dict[str, Any]) -> None:
@@ -260,6 +289,7 @@ class Hypergraph:
         pretrained: Optional[Dict[str, Any]] = None,
         trainable: bool = True,
         registry: Optional[Any] = None,
+        **kwargs: Any,
     ) -> str:
         """Create a task-node via the registry and add it to the graph."""
         from yggdrasill.foundation.registry import BlockRegistry
@@ -284,6 +314,9 @@ class Hypergraph:
         if pretrained is not None and isinstance(pretrained, dict):
             node.load_state_dict(pretrained, strict=False)
 
+        if kwargs.get("auto_connect") and hasattr(self, "_auto_connect_fn"):
+            self._auto_connect_fn(self, node_id, node)
+
         return node_id
 
     @classmethod
@@ -295,7 +328,17 @@ class Hypergraph:
         validate: bool = False,
     ) -> "Hypergraph":
         """Build a Hypergraph from a config dict."""
+        import warnings
+
         from yggdrasill.foundation.registry import BlockRegistry
+
+        sv = config.get("schema_version")
+        if sv is not None and sv != "1.0":
+            warnings.warn(
+                f"Config schema_version '{sv}' differs from supported '1.0'; "
+                f"loading may produce unexpected results",
+                stacklevel=2,
+            )
 
         reg = registry or BlockRegistry.global_registry()
         g = cls(graph_id=config.get("graph_id", "graph"))
@@ -305,7 +348,7 @@ class Hypergraph:
         for nc in config.get("nodes", []):
             nid = nc["node_id"]
             bt = nc["block_type"]
-            node_cfg = nc.get("config") or {}
+            node_cfg = _resolve_config_ref(nc.get("config") or {})
             bid = nc.get("block_id")
             build_cfg: Dict[str, Any] = {"block_type": bt, "node_id": nid}
             if bid is not None:
@@ -398,6 +441,7 @@ class Hypergraph:
             callbacks=callbacks,
             dry_run=dry_run,
             validate_before=validate_before,
+            **kwargs,
         )
 
     def infer_exposed_ports(self) -> None:
@@ -423,22 +467,41 @@ class Hypergraph:
     # --- state dict (preparation for Phase 5) ----------------------------
 
     def state_dict(self) -> Dict[str, Any]:
+        """Return state dict, deduplicated by block_id for shared blocks."""
         result: Dict[str, Any] = {}
-        for nid, node in self._nodes.items():
-            if hasattr(node, "state_dict"):
-                sd = node.state_dict()
-                if sd:
-                    result[nid] = sd
+        seen_block_ids: Dict[str, str] = {}
+        aliases: Dict[str, str] = {}
+        for nid in sorted(self._nodes.keys()):
+            node = self._nodes[nid]
+            if not hasattr(node, "state_dict"):
+                continue
+            sd = node.state_dict()
+            if not sd:
+                continue
+            bid = getattr(node, "block_id", nid)
+            if bid in seen_block_ids:
+                aliases[nid] = seen_block_ids[bid]
+            else:
+                seen_block_ids[bid] = nid
+                result[nid] = sd
+        if aliases:
+            result["_aliases"] = aliases
         return result
 
     def load_state_dict(self, state: Dict[str, Any], strict: bool = True) -> None:
+        aliases: Dict[str, str] = state.get("_aliases", {})
+        expanded = {k: v for k, v in state.items() if k != "_aliases"}
+        for nid, alias_target in aliases.items():
+            if alias_target in expanded:
+                expanded[nid] = expanded[alias_target]
+
         if strict:
-            extra = set(state.keys()) - set(self._nodes.keys())
+            extra = set(expanded.keys()) - set(self._nodes.keys())
             if extra:
                 raise KeyError(f"state_dict has keys not in graph: {extra}")
         for nid, node in self._nodes.items():
-            if nid in state and hasattr(node, "load_state_dict"):
-                node.load_state_dict(state[nid], strict=strict)
+            if nid in expanded and hasattr(node, "load_state_dict"):
+                node.load_state_dict(expanded[nid], strict=strict)
 
     # --- device / trainable ----------------------------------------------
 
@@ -452,6 +515,114 @@ class Hypergraph:
         if node_id not in self._nodes:
             raise ValueError(f"Node '{node_id}' not in graph")
         self._node_trainable[node_id] = trainable
+
+    def trainable_parameters(self) -> Iterator[Any]:
+        """Yield trainable parameters, deduplicated by block_id."""
+        seen_block_ids: Set[str] = set()
+        for nid, node in self._nodes.items():
+            if not self._node_trainable.get(nid, True):
+                continue
+            block_id = getattr(node, "block_id", nid)
+            if block_id in seen_block_ids:
+                continue
+            seen_block_ids.add(block_id)
+            if hasattr(node, "trainable_parameters") and callable(node.trainable_parameters):
+                yield from node.trainable_parameters()
+
+    # --- serialization (Phase 5) delegates to hypergraph.serialization ----
+
+    def save(
+        self,
+        directory: "str | Path",
+        *,
+        config_filename: str = "config.json",
+        checkpoint_filename: str = "checkpoint.pkl",
+    ) -> Path:
+        from yggdrasill.hypergraph.serialization import save_hypergraph
+        return save_hypergraph(
+            self, directory,
+            config_filename=config_filename,
+            checkpoint_filename=checkpoint_filename,
+        )
+
+    def save_config(
+        self,
+        directory: "str | Path",
+        *,
+        filename: str = "config.json",
+    ) -> Path:
+        from yggdrasill.hypergraph.serialization import save_config as _save_cfg
+        d = Path(directory)
+        d.mkdir(parents=True, exist_ok=True)
+        cfg = self.to_config()
+        cfg["schema_version"] = "1.0"
+        _save_cfg(cfg, d / filename)
+        return d
+
+    def save_checkpoint(
+        self,
+        directory: "str | Path",
+        *,
+        filename: str = "checkpoint.pkl",
+    ) -> Path:
+        from yggdrasill.hypergraph.serialization import save_checkpoint as _save_ckpt
+        d = Path(directory)
+        d.mkdir(parents=True, exist_ok=True)
+        from yggdrasill.hypergraph.serialization import _deduplicate_state
+        full_state = self.state_dict()
+        deduped = _deduplicate_state(self, full_state)
+        _save_ckpt(deduped, d / filename)
+        return d
+
+    @classmethod
+    def load(
+        cls,
+        directory: "str | Path",
+        *,
+        registry: Optional[Any] = None,
+        validate: bool = False,
+        config_filename: str = "config.json",
+        checkpoint_filename: str = "checkpoint.pkl",
+        load_checkpoint: bool = True,
+    ) -> "Hypergraph":
+        from yggdrasill.hypergraph.serialization import load_hypergraph
+        return load_hypergraph(
+            directory, registry=registry, validate=validate,
+            config_filename=config_filename,
+            checkpoint_filename=checkpoint_filename,
+            load_checkpoint_flag=load_checkpoint,
+        )
+
+    @classmethod
+    def load_config(
+        cls,
+        directory: "str | Path",
+        *,
+        registry: Optional[Any] = None,
+        validate: bool = False,
+        config_filename: str = "config.json",
+    ) -> "Hypergraph":
+        from yggdrasill.hypergraph.serialization import load_hypergraph
+        return load_hypergraph(
+            directory, registry=registry, validate=validate,
+            config_filename=config_filename,
+            load_checkpoint_flag=False,
+        )
+
+    def load_from_checkpoint(
+        self,
+        directory: "str | Path",
+        *,
+        checkpoint_filename: str = "checkpoint.pkl",
+    ) -> None:
+        """Load weights into an already-built hypergraph."""
+        from yggdrasill.hypergraph.serialization import (
+            _expand_deduped_state, _read_checkpoint,
+        )
+        p = Path(directory) / checkpoint_filename
+        state = _read_checkpoint(p)
+        expanded = _expand_deduped_state(self, state)
+        self.load_state_dict(expanded, strict=False)
 
     # --- helpers ---------------------------------------------------------
 

@@ -54,6 +54,34 @@ class TestRegistryErrors:
         with pytest.raises(KeyError, match="Unknown block_type"):
             registry.build({"block_type": "nonexistent"})
 
+    def test_register_empty_block_type_raises(self):
+        r = BlockRegistry()
+        with pytest.raises(ValueError):
+            r.register("", IdentityBlock)
+
+    def test_register_whitespace_block_type_raises(self):
+        r = BlockRegistry()
+        with pytest.raises(ValueError):
+            r.register("   ", IdentityBlock)
+
+
+class TestRegistryReRegister:
+    def test_re_register_overwrites(self, registry: BlockRegistry):
+        """Re-registering a block_type should silently overwrite the previous factory."""
+        registry.register("test/identity", AddBlock)
+        block = registry.build({"block_type": "test/identity", "offset": 0})
+        assert hasattr(block, "offset")
+
+    def test_whitespace_stripping_in_build(self, registry: BlockRegistry):
+        block = registry.build({"block_type": "  test/identity  "})
+        assert block.block_type == "test/identity"
+
+    def test_whitespace_stripping_in_get(self, registry: BlockRegistry):
+        assert registry.get("  test/identity  ") is IdentityBlock
+
+    def test_whitespace_stripping_in_contains(self, registry: BlockRegistry):
+        assert "  test/identity  " in registry
+
 
 class TestRegistryLookup:
     def test_get(self, registry: BlockRegistry):
@@ -78,6 +106,14 @@ class TestRegisterBlockDecorator:
         assert "my/block" in r
         b = r.build({"block_type": "my/block"})
         assert isinstance(b, MyBlock)
+
+
+class TestRegisteredTypes:
+    def test_registered_types(self, registry: BlockRegistry):
+        types = registry.registered_types
+        assert "test/identity" in types
+        assert "test/add" in types
+        assert types == sorted(types)
 
 
 class TestGlobalRegistry:

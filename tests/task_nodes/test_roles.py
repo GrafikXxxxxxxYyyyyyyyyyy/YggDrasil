@@ -1,4 +1,4 @@
-from yggdrasill.task_nodes.roles import Role, role_from_block_type, ALL_ROLES, KNOWN_ROLES
+from yggdrasill.task_nodes.roles import role_from_block_type, ALL_ROLES, KNOWN_ROLES
 
 
 class TestRoleEnum:
@@ -21,28 +21,33 @@ class TestKnownRoles:
 
 class TestRoleFromBlockType:
     def test_backbone(self):
-        assert role_from_block_type("backbone/identity") == Role.BACKBONE
+        assert role_from_block_type("backbone/identity") == "backbone"
 
     def test_injector(self):
-        assert role_from_block_type("injector/clip") == Role.INJECTOR
+        assert role_from_block_type("injector/clip") == "injector"
 
     def test_converter(self):
-        assert role_from_block_type("converter/vae_enc") == Role.CONVERTER
+        assert role_from_block_type("converter/vae_enc") == "converter"
 
     def test_unknown_prefix(self):
         assert role_from_block_type("unknown/foo") is None
 
     def test_no_slash(self):
-        assert role_from_block_type("backbone") == Role.BACKBONE
+        assert role_from_block_type("backbone") == "backbone"
 
     def test_case_insensitive(self):
-        assert role_from_block_type("BACKBONE/Identity") == Role.BACKBONE
+        assert role_from_block_type("BACKBONE/Identity") == "backbone"
 
     def test_underscore_separator(self):
-        assert role_from_block_type("backbone_unet2d") == Role.BACKBONE
+        assert role_from_block_type("backbone_unet2d") == "backbone"
 
     def test_inner_module_underscore(self):
-        assert role_from_block_type("inner_module_ddim") == Role.INNER_MODULE
+        assert role_from_block_type("inner_module_ddim") == "inner_module"
 
     def test_inner_module_slash(self):
-        assert role_from_block_type("inner_module/identity") == Role.INNER_MODULE
+        assert role_from_block_type("inner_module/identity") == "inner_module"
+
+    def test_returns_string_not_enum(self):
+        result = role_from_block_type("backbone")
+        assert isinstance(result, str)
+        assert result == "backbone"

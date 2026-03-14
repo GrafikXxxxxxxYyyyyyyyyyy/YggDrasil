@@ -112,3 +112,40 @@ class TestCanonicalPorts:
         names = {p.name: p for p in ports}
         assert "input" in names and names["input"].direction == PortDirection.IN
         assert "output" in names and names["output"].direction == PortDirection.OUT
+
+    def test_inner_module_control_port(self):
+        ports = self._port_info(AbstractInnerModule)
+        names = {p.name: p for p in ports}
+        assert "control" in names
+        assert names["control"].direction == PortDirection.IN
+        assert names["control"].optional is True
+
+    def test_inner_module_next_timestep_port(self):
+        ports = self._port_info(AbstractInnerModule)
+        names = {p.name: p for p in ports}
+        assert "next_timestep" in names
+        assert names["next_timestep"].direction == PortDirection.OUT
+        assert names["next_timestep"].optional is True
+
+    def test_injector_hidden_port(self):
+        ports = self._port_info(AbstractInjector)
+        names = {p.name: p for p in ports}
+        assert "hidden" in names
+        assert names["hidden"].direction == PortDirection.IN
+        assert names["hidden"].optional is True
+
+    def test_backbone_port_dtypes(self):
+        from yggdrasill.foundation.port import PortType
+        ports = self._port_info(AbstractBackbone)
+        names = {p.name: p for p in ports}
+        assert names["latent"].dtype == PortType.TENSOR
+        assert names["timestep"].dtype == PortType.TENSOR
+        assert names["pred"].dtype == PortType.TENSOR
+
+    def test_inner_module_port_dtypes(self):
+        from yggdrasill.foundation.port import PortType
+        ports = self._port_info(AbstractInnerModule)
+        names = {p.name: p for p in ports}
+        assert names["latent"].dtype == PortType.TENSOR
+        assert names["pred"].dtype == PortType.TENSOR
+        assert names["next_latent"].dtype == PortType.TENSOR

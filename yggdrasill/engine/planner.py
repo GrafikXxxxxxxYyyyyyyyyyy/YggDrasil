@@ -14,7 +14,8 @@ def build_plan(structure: Any) -> List[Tuple[str, Any]]:
       ("node", node_id)               -- execute one node once
       ("cycle", (rep, frozenset(ids))) -- execute nodes K times (K from options at run-time)
     """
-    cache_key = (id(structure), structure.execution_version)
+    instance_id = getattr(structure, "_instance_id", id(structure))
+    cache_key = (instance_id, structure.execution_version)
     if cache_key in _plan_cache:
         return _plan_cache[cache_key]
 

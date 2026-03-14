@@ -47,7 +47,10 @@ class AddBlock(AbstractBaseBlock):
 
 
 class BlockWithSub(AbstractBaseBlock):
-    """Block that owns a child AddBlock, for testing nested state_dict."""
+    """Block that owns a child AddBlock, for testing nested state_dict.
+
+    Uses the base-class auto-aggregation via get_sub_blocks().
+    """
 
     def __init__(self, block_id: str | None = None, *, config: dict | None = None) -> None:
         super().__init__(block_id=block_id, config=config)
@@ -62,19 +65,6 @@ class BlockWithSub(AbstractBaseBlock):
 
     def get_sub_blocks(self) -> Dict[str, AbstractBaseBlock]:
         return {"child": self.child}
-
-    def state_dict(self) -> Dict[str, Any]:
-        result: Dict[str, Any] = {}
-        for name, sub in self.get_sub_blocks().items():
-            for k, v in sub.state_dict().items():
-                result[f"{name}.{k}"] = v
-        return result
-
-    def load_state_dict(self, state: Dict[str, Any], strict: bool = True) -> None:
-        child_state = {
-            k.split(".", 1)[1]: v for k, v in state.items() if k.startswith("child.")
-        }
-        self.child.load_state_dict(child_state, strict=strict)
 
 
 class IdentityTaskNode(AbstractBaseBlock, AbstractGraphNode):
@@ -102,6 +92,38 @@ class IdentityTaskNode(AbstractBaseBlock, AbstractGraphNode):
 
     def forward(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         return {"out": inputs["in"]}
+
+
+class OptionalPortTaskNode(AbstractBaseBlock, AbstractGraphNode):
+    """Task-node with one required and one optional input port."""
+
+    def __init__(
+        self,
+        node_id: str,
+        block_id: str | None = None,
+        *,
+        config: dict | None = None,
+    ) -> None:
+        AbstractBaseBlock.__init__(self, block_id=block_id, config=config)
+        AbstractGraphNode.__init__(self, node_id=node_id)
+
+    @property
+    def block_type(self) -> str:
+        return "test/optional_port"
+
+    def declare_ports(self) -> List[Port]:
+        return [
+            Port("required_in", PortDirection.IN, PortType.ANY),
+            Port("optional_in", PortDirection.IN, PortType.ANY, optional=True),
+            Port("out", PortDirection.OUT, PortType.ANY),
+        ]
+
+    def forward(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        base = inputs["required_in"]
+        extra = inputs.get("optional_in")
+        if extra is not None:
+            return {"out": f"{base}+{extra}"}
+        return {"out": base}
 
 
 class AddTaskNode(AbstractBaseBlock, AbstractGraphNode):

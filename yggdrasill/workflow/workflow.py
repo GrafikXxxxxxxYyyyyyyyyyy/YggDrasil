@@ -6,6 +6,7 @@ Planner, Executor) runs the workflow without any changes.
 """
 from __future__ import annotations
 
+import itertools
 import json
 import pickle
 from pathlib import Path
@@ -14,12 +15,28 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Set
 from yggdrasill.engine.edge import Edge
 from yggdrasill.engine.structure import Hypergraph
 
+_wf_instance_counter = itertools.count()
+
+
+def _read_workflow_config(path: Path) -> Dict[str, Any]:
+    """Read a JSON or YAML config file."""
+    if path.suffix in (".yaml", ".yml"):
+        try:
+            import yaml  # type: ignore[import-untyped]
+        except ImportError:
+            raise ImportError(f"PyYAML required to load YAML config: {path}")
+        with open(path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
 
 class Workflow:
     """Hypergraph of hypergraphs -- implements the same structural protocol
     that the engine expects (node_ids, get_node, get_edges, etc.)."""
 
     def __init__(self, workflow_id: Optional[str] = None) -> None:
+        self._instance_id = next(_wf_instance_counter)
         self._workflow_id = workflow_id or "workflow"
         self._workflow_kind: Optional[str] = None
         self._metadata: Dict[str, Any] = {}
@@ -55,7 +72,7 @@ class Workflow:
 
     @property
     def metadata(self) -> Dict[str, Any]:
-        return dict(self._metadata)
+        return self._metadata
 
     @metadata.setter
     def metadata(self, value: Dict[str, Any]) -> None:
@@ -88,7 +105,8 @@ class Workflow:
         for entry in self._exposed_inputs:
             rec: Dict[str, Any] = dict(entry)
             if include_dtype:
-                graph = self._nodes.get(entry["node_id"])
+                gid = entry.get("graph_id") or entry.get("node_id")
+                graph = self._nodes.get(gid)
                 if graph is not None:
                     for sp in graph.get_input_spec(include_dtype=True):
                         if sp["port_name"] == entry["port_name"]:
@@ -103,7 +121,8 @@ class Workflow:
         for entry in self._exposed_outputs:
             rec: Dict[str, Any] = dict(entry)
             if include_dtype:
-                graph = self._nodes.get(entry["node_id"])
+                gid = entry.get("graph_id") or entry.get("node_id")
+                graph = self._nodes.get(gid)
                 if graph is not None:
                     for sp in graph.get_output_spec(include_dtype=True):
                         if sp["port_name"] == entry["port_name"]:
@@ -145,10 +164,12 @@ class Workflow:
                 e for e in self._out_edges[nid] if e.target_node != graph_id
             ]
         self._exposed_inputs = [
-            ei for ei in self._exposed_inputs if ei.get("node_id") != graph_id
+            ei for ei in self._exposed_inputs
+            if (ei.get("graph_id") or ei.get("node_id")) != graph_id
         ]
         self._exposed_outputs = [
-            eo for eo in self._exposed_outputs if eo.get("node_id") != graph_id
+            eo for eo in self._exposed_outputs
+            if (eo.get("graph_id") or eo.get("node_id")) != graph_id
         ]
         self._node_trainable.pop(graph_id, None)
         self._execution_version += 1
@@ -236,11 +257,12 @@ class Workflow:
             raise ValueError(
                 f"Port '{port_name}' not in input spec of graph '{graph_id}'"
             )
-        entry: Dict[str, Any] = {"node_id": graph_id, "port_name": port_name}
+        entry: Dict[str, Any] = {"graph_id": graph_id, "port_name": port_name}
         if name is not None:
             entry["name"] = name
         for existing in self._exposed_inputs:
-            if existing.get("node_id") == graph_id and existing.get("port_name") == port_name:
+            eid = existing.get("graph_id") or existing.get("node_id")
+            if eid == graph_id and existing.get("port_name") == port_name:
                 return
         self._exposed_inputs.append(entry)
         self._execution_version += 1
@@ -256,11 +278,12 @@ class Workflow:
             raise ValueError(
                 f"Port '{port_name}' not in output spec of graph '{graph_id}'"
             )
-        entry: Dict[str, Any] = {"node_id": graph_id, "port_name": port_name}
+        entry: Dict[str, Any] = {"graph_id": graph_id, "port_name": port_name}
         if name is not None:
             entry["name"] = name
         for existing in self._exposed_outputs:
-            if existing.get("node_id") == graph_id and existing.get("port_name") == port_name:
+            eid = existing.get("graph_id") or existing.get("node_id")
+            if eid == graph_id and existing.get("port_name") == port_name:
                 return
         self._exposed_outputs.append(entry)
         self._execution_version += 1
@@ -278,7 +301,7 @@ class Workflow:
             for sp in graph.get_input_spec():
                 if sp["port_name"] not in covered_in:
                     self._exposed_inputs.append({
-                        "node_id": graph_id,
+                        "graph_id": graph_id,
                         "port_name": sp["port_name"],
                     })
 
@@ -287,7 +310,7 @@ class Workflow:
             for sp in graph.get_output_spec():
                 if sp["port_name"] not in covered_out:
                     self._exposed_outputs.append({
-                        "node_id": graph_id,
+                        "graph_id": graph_id,
                         "port_name": sp["port_name"],
                     })
 
@@ -316,6 +339,7 @@ class Workflow:
             callbacks=callbacks,
             dry_run=dry_run,
             validate_before=validate_before,
+            **kwargs,
         )
 
     # --- state dict ---------------------------------------------------------
@@ -398,14 +422,37 @@ class Workflow:
         config: Dict[str, Any],
         *,
         registry: Optional[Any] = None,
+        validate: bool = False,
     ) -> "Workflow":
+        import warnings
+        sv = config.get("schema_version")
+        if sv is not None and sv != "1.0":
+            warnings.warn(
+                f"Workflow config schema_version='{sv}' differs from expected '1.0'",
+                stacklevel=2,
+            )
+
         w = cls(workflow_id=config.get("workflow_id", "workflow"))
         w.workflow_kind = config.get("workflow_kind")
         w.metadata = dict(config.get("metadata", {}))
 
         for gc in config.get("graphs", []):
             gid = gc["graph_id"]
-            hg = Hypergraph.from_config(gc["config"], registry=registry)
+            if "ref" in gc and "config" not in gc:
+                ref_path = Path(gc["ref"])
+                if ref_path.suffix in (".yaml", ".yml"):
+                    try:
+                        import yaml  # type: ignore[import-untyped]
+                    except ImportError:
+                        raise ImportError(f"PyYAML required to load YAML ref: {ref_path}")
+                    with open(ref_path, "r", encoding="utf-8") as f:
+                        graph_config = yaml.safe_load(f) or {}
+                else:
+                    with open(ref_path, "r", encoding="utf-8") as f:
+                        graph_config = json.load(f)
+            else:
+                graph_config = gc["config"]
+            hg = Hypergraph.from_config(graph_config, registry=registry)
             w.add_node(gid, hg)
             if "trainable" in gc:
                 w._node_trainable[gid] = gc["trainable"]
@@ -431,6 +478,12 @@ class Workflow:
                 eo["port_name"],
                 eo.get("name"),
             )
+
+        if validate:
+            from yggdrasill.engine.validator import validate as _validate
+            result = _validate(w)
+            if not result.valid:
+                raise ValueError(f"Workflow validation failed: {result.errors}")
 
         return w
 
@@ -488,24 +541,38 @@ class Workflow:
         directory: str | Path,
         *,
         registry: Optional[Any] = None,
+        validate: bool = False,
         config_filename: str = "config.json",
         checkpoint_filename: str = "checkpoint.pkl",
         load_checkpoint_flag: bool = True,
     ) -> "Workflow":
         directory = Path(directory)
-        with open(directory / config_filename, "r", encoding="utf-8") as f:
-            config = json.load(f)
+        config = _read_workflow_config(directory / config_filename)
 
-        w = cls.from_config(config, registry=registry)
+        w = cls.from_config(config, registry=registry, validate=validate)
 
         if load_checkpoint_flag:
             ckpt_path = directory / checkpoint_filename
             if ckpt_path.exists():
                 with open(ckpt_path, "rb") as f:
-                    state = pickle.load(f)
+                    state = pickle.load(f)  # noqa: S301 -- trusted checkpoint
                 w.load_state_dict(state, strict=False)
 
         return w
+
+    @classmethod
+    def load_config(
+        cls,
+        directory: str | Path,
+        *,
+        registry: Optional[Any] = None,
+        validate: bool = False,
+        config_filename: str = "config.json",
+    ) -> "Workflow":
+        """Load only the workflow config (no checkpoint)."""
+        directory = Path(directory)
+        config = _read_workflow_config(directory / config_filename)
+        return cls.from_config(config, registry=registry, validate=validate)
 
     def load_from_checkpoint(
         self,
@@ -513,8 +580,13 @@ class Workflow:
         *,
         checkpoint_filename: str = "checkpoint.pkl",
     ) -> None:
+        """Load checkpoint from disk.
+
+        Warning: uses ``pickle.load`` internally -- only load checkpoints
+        from trusted sources.
+        """
         directory = Path(directory)
         ckpt_path = directory / checkpoint_filename
         with open(ckpt_path, "rb") as f:
-            state = pickle.load(f)
+            state = pickle.load(f)  # noqa: S301 -- trusted checkpoint
         self.load_state_dict(state, strict=False)

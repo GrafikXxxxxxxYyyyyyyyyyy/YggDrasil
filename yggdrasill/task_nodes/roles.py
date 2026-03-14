@@ -29,21 +29,22 @@ KNOWN_ROLES: Set[str] = {
 
 ALL_ROLES = list(Role)
 
-_PREFIX_TO_ROLE = {r.value: r for r in Role}
 
-
-def role_from_block_type(block_type: str) -> Optional[Role]:
-    """Extract the role from a block_type string.
+def role_from_block_type(block_type: str) -> Optional[str]:
+    """Extract the role string from a *block_type*.
 
     Recognises exact match (``backbone``), slash-separated subtypes
     (``backbone/identity``), and underscore-separated subtypes
     (``backbone_unet2d``).  For multi-word roles like ``inner_module``,
     longer prefixes are tried first.
+
+    Returns the canonical role **string** (e.g. ``"backbone"``), not the
+    ``Role`` enum, per spec PHASE_4 §6.2.
     """
     bt = block_type.strip().lower()
     for role_str in sorted(KNOWN_ROLES, key=len, reverse=True):
         if bt == role_str:
-            return _PREFIX_TO_ROLE[role_str]
+            return role_str
         if bt.startswith(role_str + "/") or bt.startswith(role_str + "_"):
-            return _PREFIX_TO_ROLE[role_str]
+            return role_str
     return None

@@ -153,6 +153,147 @@ class TestDeduplication:
 # Roundtrip: save -> load -> run == original run
 # ---------------------------------------------------------------------------
 
+class TestMissingCheckpoint:
+    """Spec PHASE_5 §9.2: loading with missing checkpoint returns graph without weights."""
+
+    def test_load_missing_checkpoint_no_error(self, tmp_path, registry, chain_config):
+        h = Hypergraph.from_config(chain_config, registry=registry)
+        save_hypergraph(h, tmp_path / "hg")
+        (tmp_path / "hg" / "checkpoint.pkl").unlink()
+        h2 = load_hypergraph(tmp_path / "hg", registry=registry)
+        assert h2.node_ids == h.node_ids
+
+    def test_load_flag_false_skips_checkpoint(self, tmp_path, registry, chain_config):
+        h = Hypergraph.from_config(chain_config, registry=registry)
+        save_hypergraph(h, tmp_path / "hg")
+        h2 = load_hypergraph(
+            tmp_path / "hg", registry=registry, load_checkpoint_flag=False,
+        )
+        assert h2.node_ids == h.node_ids
+
+
+class TestHypergraphSaveLoadMethods:
+    """Test save/load/save_config/load_config/load_from_checkpoint ON Hypergraph."""
+
+    def test_save_load_roundtrip(self, tmp_path, registry, chain_config):
+        clear_plan_cache()
+        h1 = Hypergraph.from_config(chain_config, registry=registry)
+        out1 = h1.run({"x": 1, "b": 2}, validate_before=False)
+        h1.save(tmp_path / "hg_m")
+        h2 = Hypergraph.load(tmp_path / "hg_m", registry=registry)
+        out2 = h2.run({"x": 1, "b": 2}, validate_before=False)
+        assert out1 == out2
+
+    def test_save_config_load_config(self, tmp_path, registry, chain_config):
+        h1 = Hypergraph.from_config(chain_config, registry=registry)
+        h1.save_config(tmp_path / "hg_c")
+        h2 = Hypergraph.load_config(tmp_path / "hg_c", registry=registry)
+        assert h2.node_ids == h1.node_ids
+
+    def test_load_from_checkpoint(self, tmp_path, registry, chain_config):
+        clear_plan_cache()
+        h1 = Hypergraph.from_config(chain_config, registry=registry)
+        h1.save(tmp_path / "hg_fc")
+        h2 = Hypergraph.load_config(tmp_path / "hg_fc", registry=registry)
+        h2.load_from_checkpoint(tmp_path / "hg_fc")
+        out1 = h1.run({"x": 1, "b": 2}, validate_before=False)
+        out2 = h2.run({"x": 1, "b": 2}, validate_before=False)
+        assert out1 == out2
+
+
+class TestYAMLImportError:
+    def test_read_config_yaml_without_pyyaml(self, tmp_path, monkeypatch):
+        import builtins
+        real_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "yaml":
+                raise ImportError("no yaml")
+            return real_import(name, *args, **kwargs)
+
+        yaml_path = tmp_path / "config.yaml"
+        yaml_path.write_text("{}")
+        monkeypatch.setattr(builtins, "__import__", mock_import)
+        from yggdrasill.hypergraph.serialization import _read_config
+        with pytest.raises(ImportError, match="PyYAML"):
+            _read_config(yaml_path)
+
+
+class TestYAMLConfigIO:
+    def test_read_yaml_config(self, tmp_path):
+        yaml = pytest.importorskip("yaml")
+        data = {"foo": 1, "bar": [1, 2]}
+        yaml_path = tmp_path / "config.yaml"
+        yaml_path.write_text(yaml.dump(data))
+        from yggdrasill.hypergraph.serialization import _read_config
+        loaded = _read_config(yaml_path)
+        assert loaded == data
+
+    def test_read_yml_extension(self, tmp_path):
+        yaml = pytest.importorskip("yaml")
+        data = {"key": "value"}
+        yml_path = tmp_path / "config.yml"
+        yml_path.write_text(yaml.dump(data))
+        from yggdrasill.hypergraph.serialization import _read_config
+        loaded = _read_config(yml_path)
+        assert loaded == data
+
+
+class TestSerializationDeduplicateState:
+    def test_deduplicate_shared_block_ids(self, tmp_path, registry):
+        from tests.foundation.helpers import AddTaskNode
+        from yggdrasill.hypergraph.serialization import _deduplicate_state, _expand_deduped_state
+        h = Hypergraph()
+        n1 = AddTaskNode(node_id="X", block_id="shared", config={"offset": 10})
+        n2 = AddTaskNode(node_id="Y", block_id="shared", config={"offset": 10})
+        h.add_node("X", n1)
+        h.add_node("Y", n2)
+        raw_state = {"X": n1.state_dict(), "Y": n2.state_dict()}
+        deduped = _deduplicate_state(h, raw_state)
+        assert "_aliases" in deduped
+        assert "Y" not in {k for k in deduped if k != "_aliases"}
+        expanded = _expand_deduped_state(h, deduped)
+        assert "X" in expanded
+        assert "Y" in expanded
+        assert expanded["X"] == expanded["Y"]
+
+    def test_load_checkpoint_public(self, tmp_path, registry):
+        from yggdrasill.hypergraph.serialization import save_checkpoint, load_checkpoint
+        save_checkpoint({"A": {"offset": 7}}, tmp_path / "ckpt.pkl")
+        loaded = load_checkpoint(tmp_path / "ckpt.pkl")
+        assert loaded == {"A": {"offset": 7}}
+
+
+class TestSerializationSchemaVersionWarning:
+    def test_load_block_warns_on_mismatched_schema(self, tmp_path, registry):
+        import warnings
+        node = registry.build({"block_type": "test/identity_task", "node_id": "N"})
+        save_block(node, tmp_path / "block")
+        cfg = load_config(tmp_path / "block" / "config.json")
+        cfg["schema_version"] = "9.9"
+        from yggdrasill.hypergraph.serialization import save_config as _sc
+        _sc(cfg, tmp_path / "block" / "config.json")
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            load_block(tmp_path / "block", registry=registry)
+            schema_warnings = [x for x in w if "schema_version" in str(x.message)]
+            assert len(schema_warnings) >= 1
+
+    def test_load_hypergraph_warns_on_mismatched_schema(self, tmp_path, registry, chain_config):
+        import warnings
+        h = Hypergraph.from_config(chain_config, registry=registry)
+        save_hypergraph(h, tmp_path / "hg")
+        cfg = load_config(tmp_path / "hg" / "config.json")
+        cfg["schema_version"] = "9.9"
+        from yggdrasill.hypergraph.serialization import save_config as _sc
+        _sc(cfg, tmp_path / "hg" / "config.json")
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            load_hypergraph(tmp_path / "hg", registry=registry)
+            schema_warnings = [x for x in w if "schema_version" in str(x.message)]
+            assert len(schema_warnings) >= 1
+
+
 class TestRoundtripFullPipeline:
     def test_full_roundtrip(self, tmp_path):
         clear_plan_cache()

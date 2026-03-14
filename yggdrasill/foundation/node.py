@@ -43,7 +43,17 @@ class AbstractGraphNode(ABC):
 
     def run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Engine-facing entry point. Delegates to self.forward() (Block side)."""
+        if not hasattr(self, "forward"):
+            raise TypeError(
+                f"{type(self).__name__} does not implement forward(). "
+                f"Dual-inherit from AbstractBaseBlock to get forward()."
+            )
         return self.forward(inputs)  # type: ignore[attr-defined]
 
     def __repr__(self) -> str:
-        return f"<{type(self).__name__} node_id={self._node_id!r}>"
+        parts = [f"node_id={self._node_id!r}"]
+        if hasattr(self, "block_type"):
+            parts.append(f"block_type={self.block_type!r}")
+        if hasattr(self, "block_id"):
+            parts.append(f"block_id={self.block_id!r}")
+        return f"<{type(self).__name__} {' '.join(parts)}>"

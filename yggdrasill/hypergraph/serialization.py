@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import pickle
+import warnings
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -31,9 +32,21 @@ def _write_json(data: Dict[str, Any], path: Path) -> None:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
-def _read_json(path: Path) -> Dict[str, Any]:
+def _read_config(path: Path) -> Dict[str, Any]:
+    """Read a JSON or YAML config file."""
+    if path.suffix in (".yaml", ".yml"):
+        try:
+            import yaml  # type: ignore[import-untyped]
+        except ImportError:
+            raise ImportError(f"PyYAML required to load YAML config: {path}")
+        with open(path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def _read_json(path: Path) -> Dict[str, Any]:
+    return _read_config(path)
 
 
 def _write_checkpoint(state: Dict[str, Any], path: Path) -> None:
@@ -43,8 +56,13 @@ def _write_checkpoint(state: Dict[str, Any], path: Path) -> None:
 
 
 def _read_checkpoint(path: Path) -> Dict[str, Any]:
+    """Load checkpoint from pickle file.
+
+    Warning: ``pickle.load`` can execute arbitrary code. Only load
+    checkpoints from trusted sources.
+    """
     with open(path, "rb") as f:
-        return pickle.load(f)
+        return pickle.load(f)  # noqa: S301
 
 
 # ---------------------------------------------------------------------------
@@ -108,8 +126,9 @@ def load_block(
 
     sv = config.get("schema_version")
     if sv is not None and sv != SCHEMA_VERSION:
-        raise ValueError(
-            f"Unsupported schema_version '{sv}' (expected '{SCHEMA_VERSION}')"
+        warnings.warn(
+            f"Block config schema_version='{sv}' differs from expected '{SCHEMA_VERSION}'",
+            stacklevel=2,
         )
 
     reg = registry or BlockRegistry.global_registry()
@@ -166,8 +185,9 @@ def load_hypergraph(
 
     sv = config.get("schema_version")
     if sv is not None and sv != SCHEMA_VERSION:
-        raise ValueError(
-            f"Unsupported schema_version '{sv}' (expected '{SCHEMA_VERSION}')"
+        warnings.warn(
+            f"Hypergraph config schema_version='{sv}' differs from expected '{SCHEMA_VERSION}'",
+            stacklevel=2,
         )
 
     reg = registry or BlockRegistry.global_registry()

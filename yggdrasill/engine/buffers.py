@@ -1,31 +1,46 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from yggdrasill.foundation.port import PortAggregation
 
 
 class EdgeBuffers:
-    """Per-run storage keyed by (node_id, port_name)."""
+    """Per-run storage keyed by (node_id, port_name).
+
+    Supports single-value writes, multi-edge appends with source tracking,
+    and aggregation according to ``PortAggregation`` policy.
+    """
 
     def __init__(self) -> None:
         self._data: Dict[Tuple[str, str], Any] = {}
-        self._multi: Dict[Tuple[str, str], List[Any]] = {}
+        self._multi: Dict[Tuple[str, str], List[Tuple[Optional[str], Any]]] = {}
+
+    # --- single-value operations ---
 
     def write(self, node_id: str, port_name: str, value: Any) -> None:
         key = (node_id, port_name)
         self._data[key] = value
-
-    def append(self, node_id: str, port_name: str, value: Any) -> None:
-        """Append a value (for multi-edge aggregation)."""
-        key = (node_id, port_name)
-        self._multi.setdefault(key, []).append(value)
 
     def read(self, node_id: str, port_name: str) -> Any:
         return self._data.get((node_id, port_name))
 
     def has(self, node_id: str, port_name: str) -> bool:
         return (node_id, port_name) in self._data
+
+    # --- multi-edge operations ---
+
+    def append(
+        self,
+        node_id: str,
+        port_name: str,
+        value: Any,
+        *,
+        source_node: Optional[str] = None,
+    ) -> None:
+        """Append a value for multi-edge aggregation, optionally tracking the source."""
+        key = (node_id, port_name)
+        self._multi.setdefault(key, []).append((source_node, value))
 
     def aggregate(
         self,
@@ -37,11 +52,42 @@ class EdgeBuffers:
         multi = self._multi.get(key, [])
         if not multi:
             return self._data.get(key)
+        values = [v for _, v in multi]
         if policy == PortAggregation.FIRST:
-            return multi[0]
+            return values[0]
         if policy == PortAggregation.CONCAT:
-            return multi
+            return values
         if policy == PortAggregation.SUM:
-            return sum(multi)
-        # SINGLE or DICT -- just return the last written
-        return multi[-1] if multi else self._data.get(key)
+            return sum(values)
+        if policy == PortAggregation.DICT:
+            return {src: val for src, val in multi}
+        # SINGLE -- return the last written
+        return values[-1] if values else self._data.get(key)
+
+    def clear_multi(self, node_id: str, port_name: str) -> None:
+        """Remove accumulated multi-edge entries for a key (needed between cycle iterations)."""
+        self._multi.pop((node_id, port_name), None)
+
+    def has_multi(self, node_id: str, port_name: str) -> bool:
+        return bool(self._multi.get((node_id, port_name)))
+
+    # --- bulk initialisation ---
+
+    @classmethod
+    def init_from_inputs(
+        cls,
+        spec: List[Dict[str, Any]],
+        inputs: Dict[str, Any],
+    ) -> "EdgeBuffers":
+        """Create a buffer pre-populated from *spec* (exposed_inputs) and *inputs*."""
+        buf = cls()
+        for entry in spec:
+            nid = entry.get("node_id") or entry.get("graph_id")
+            pname = entry["port_name"]
+            name = entry.get("name")
+            key = name if name is not None else f"{nid}:{pname}"
+            if key in inputs:
+                buf.write(nid, pname, inputs[key])
+            elif (nid, pname) in inputs:
+                buf.write(nid, pname, inputs[(nid, pname)])
+        return buf

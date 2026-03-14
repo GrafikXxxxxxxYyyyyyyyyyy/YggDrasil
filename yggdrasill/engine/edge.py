@@ -15,6 +15,8 @@ class Edge:
     def __post_init__(self) -> None:
         for field in ("source_node", "source_port", "target_node", "target_port"):
             val = getattr(self, field)
+            if not isinstance(val, str):
+                raise TypeError(f"Edge.{field} must be a string, got {type(val).__name__}")
             if not val or not val.strip():
                 raise ValueError(f"Edge.{field} must be a non-empty string")
             stripped = val.strip()

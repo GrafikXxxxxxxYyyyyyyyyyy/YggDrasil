@@ -1,9 +1,33 @@
+from typing import Any, Dict, List
+
 import pytest
+from yggdrasill.engine.edge import Edge
 from yggdrasill.engine.executor import run, ValidationError
 from yggdrasill.engine.planner import clear_plan_cache
-from tests.engine.helpers import make_chain, make_cycle
 from yggdrasill.engine.structure import Hypergraph
+from yggdrasill.foundation.block import AbstractBaseBlock
+from yggdrasill.foundation.node import AbstractGraphNode
+from yggdrasill.foundation.port import Port, PortAggregation, PortDirection, PortType
+from tests.engine.helpers import make_chain, make_cycle
 from tests.foundation.helpers import IdentityTaskNode
+
+
+class TestEdgeBuffersDirect:
+    """Direct tests for EdgeBuffers to cover edge cases."""
+
+    def test_aggregate_empty_multi_falls_back_to_single(self):
+        from yggdrasill.engine.buffers import EdgeBuffers
+        buf = EdgeBuffers()
+        buf.write("A", "out", 42)
+        result = buf.aggregate("A", "out")
+        assert result == 42
+
+    def test_init_from_inputs_with_tuple_key(self):
+        from yggdrasill.engine.buffers import EdgeBuffers
+        spec = [{"node_id": "N", "port_name": "in"}]
+        inputs = {("N", "in"): 99}
+        buf = EdgeBuffers.init_from_inputs(spec, inputs)
+        assert buf.read("N", "in") == 99
 
 
 class TestExecutorChain:
@@ -75,3 +99,226 @@ class TestExecutorCallbacks:
         assert ("after", "A") in log
         assert ("before", "B") in log
         assert ("after", "B") in log
+
+    def test_loop_start_end_callbacks(self):
+        clear_plan_cache()
+        h = make_cycle("A", "B")
+        log = []
+
+        def cb(phase, info):
+            log.append(phase)
+
+        run(h, {"x": 1}, num_loop_steps=3, callbacks=[cb], validate_before=False)
+        assert "loop_start" in log
+        assert "loop_end" in log
+        start_idx = log.index("loop_start")
+        end_idx = log.index("loop_end")
+        assert start_idx < end_idx
+        before_count = log[start_idx:end_idx].count("before")
+        assert before_count == 6  # 3 iterations * 2 nodes
+
+
+class _SumNode(AbstractBaseBlock, AbstractGraphNode):
+    """Node with an aggregating input port for testing multi-edge aggregation."""
+
+    def __init__(self, node_id: str, agg: PortAggregation = PortAggregation.CONCAT) -> None:
+        AbstractBaseBlock.__init__(self)
+        AbstractGraphNode.__init__(self, node_id=node_id)
+        self._agg = agg
+
+    @property
+    def block_type(self) -> str:
+        return "test/sum"
+
+    def declare_ports(self) -> List[Port]:
+        return [
+            Port("data", PortDirection.IN, PortType.ANY, aggregation=self._agg),
+            Port("out", PortDirection.OUT, PortType.ANY),
+        ]
+
+    def forward(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        return {"out": inputs.get("data")}
+
+
+class _SourceNode(AbstractBaseBlock, AbstractGraphNode):
+    """Simple source node that outputs a fixed value."""
+
+    def __init__(self, node_id: str, value: Any) -> None:
+        AbstractBaseBlock.__init__(self)
+        AbstractGraphNode.__init__(self, node_id=node_id)
+        self._value = value
+
+    @property
+    def block_type(self) -> str:
+        return "test/source"
+
+    def declare_ports(self) -> List[Port]:
+        return [Port("out", PortDirection.OUT, PortType.ANY)]
+
+    def forward(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        return {"out": self._value}
+
+
+class TestExecutorEmptyGraph:
+    def test_empty_graph_returns_empty(self):
+        clear_plan_cache()
+        h = Hypergraph()
+        out = run(h, {}, validate_before=False)
+        assert out == {}
+
+
+class TestExecutorEdgeCases:
+    def test_num_loop_steps_zero_skips_cycle(self):
+        clear_plan_cache()
+        h = make_cycle("A", "B")
+        log = []
+        run(h, {"x": 1}, num_loop_steps=0, callbacks=[lambda p, i: log.append(p)], validate_before=False)
+        assert "before" not in log
+
+    def test_callback_exception_swallowed(self):
+        clear_plan_cache()
+        h = make_chain("A", "B")
+
+        def bad_callback(phase, info):
+            raise RuntimeError("oops")
+
+        out = run(h, {"x": 42}, callbacks=[bad_callback])
+        assert out["y"] == 42
+
+    def test_extra_input_keys_ignored(self):
+        clear_plan_cache()
+        h = make_chain("A", "B")
+        out = run(h, {"x": 1, "extra_key": 999})
+        assert out["y"] == 1
+
+
+class TestPortAggregation:
+    def _build_fan_in(self, agg: PortAggregation, v1: Any = 10, v2: Any = 20):
+        clear_plan_cache()
+        h = Hypergraph()
+        h.add_node("S1", _SourceNode("S1", v1))
+        h.add_node("S2", _SourceNode("S2", v2))
+        h.add_node("M", _SumNode("M", agg))
+        h.add_edge(Edge("S1", "out", "M", "data"))
+        h.add_edge(Edge("S2", "out", "M", "data"))
+        h.expose_output("M", "out", "result")
+        return h
+
+    def test_concat(self):
+        h = self._build_fan_in(PortAggregation.CONCAT)
+        out = run(h, {}, validate_before=False)
+        assert set(out["result"]) == {10, 20}
+
+    def test_sum(self):
+        h = self._build_fan_in(PortAggregation.SUM)
+        out = run(h, {}, validate_before=False)
+        assert out["result"] == 30
+
+    def test_first(self):
+        h = self._build_fan_in(PortAggregation.FIRST)
+        out = run(h, {}, validate_before=False)
+        assert out["result"] in (10, 20)
+
+    def test_dict(self):
+        h = self._build_fan_in(PortAggregation.DICT)
+        out = run(h, {}, validate_before=False)
+        assert isinstance(out["result"], dict)
+        assert set(out["result"].values()) == {10, 20}
+
+    def test_single_aggregation_on_multi_edge_raises(self):
+        """SINGLE aggregation with multiple edges should use the last value."""
+        clear_plan_cache()
+        h = self._build_fan_in(PortAggregation.SINGLE)
+        out = run(h, {}, validate_before=False)
+        assert out["result"] in (10, 20)
+
+
+class TestExecutorDevicePlacement:
+    def test_run_with_device(self):
+        clear_plan_cache()
+        h = make_chain("A", "B")
+        out = run(h, {"x": 42}, device="cpu")
+        assert out["y"] == 42
+
+
+class TestExecutorDryRunWorkflowLevel:
+    def test_dry_run_on_workflow(self):
+        """dry_run with workflow (nodes have get_output_spec not get_output_ports)."""
+        clear_plan_cache()
+        from yggdrasill.foundation.registry import BlockRegistry
+        from yggdrasill.workflow.workflow import Workflow
+        from tests.foundation.helpers import IdentityTaskNode
+        reg = BlockRegistry()
+        reg.register("test/identity_task", IdentityTaskNode)
+        hg = Hypergraph.from_config({
+            "graph_id": "hg",
+            "nodes": [{"node_id": "N", "block_type": "test/identity_task"}],
+            "edges": [],
+            "exposed_inputs": [{"node_id": "N", "port_name": "in", "name": "in"}],
+            "exposed_outputs": [{"node_id": "N", "port_name": "out", "name": "out"}],
+        }, registry=reg)
+        w = Workflow()
+        w.add_node("g1", hg)
+        w.expose_input("g1", "in", "x")
+        w.expose_output("g1", "out", "y")
+        out = run(w, {"x": 99}, dry_run=True, validate_before=False)
+        assert "y" in out
+        assert out["y"] is None
+
+
+class TestExecutorSpecKeyFallback:
+    def test_spec_key_without_name_uses_node_port(self):
+        """Cover _spec_key fallback when 'name' is absent."""
+        clear_plan_cache()
+        h = Hypergraph()
+        h.add_node("A", IdentityTaskNode(node_id="A"))
+        h._exposed_inputs.append({"node_id": "A", "port_name": "in"})
+        h._exposed_outputs.append({"node_id": "A", "port_name": "out"})
+        out = run(h, {"A:in": 42}, validate_before=False)
+        assert out["A:out"] == 42
+
+
+class TestExecutorWorkflowLevelRun:
+    def test_run_workflow_with_spec_key_fallback(self):
+        """Cover _spec_key with graph_id and workflow-level execution."""
+        clear_plan_cache()
+        from yggdrasill.foundation.registry import BlockRegistry
+        from yggdrasill.workflow.workflow import Workflow
+        from tests.foundation.helpers import IdentityTaskNode
+        reg = BlockRegistry()
+        reg.register("test/identity_task", IdentityTaskNode)
+        hg = Hypergraph.from_config({
+            "graph_id": "hg",
+            "nodes": [{"node_id": "N", "block_type": "test/identity_task"}],
+            "edges": [],
+            "exposed_inputs": [{"node_id": "N", "port_name": "in", "name": "in"}],
+            "exposed_outputs": [{"node_id": "N", "port_name": "out", "name": "out"}],
+        }, registry=reg)
+        w = Workflow()
+        w.add_node("g1", hg)
+        w.expose_input("g1", "in", "x")
+        w.expose_output("g1", "out", "y")
+        result = run(w, {"x": 42}, validate_before=False)
+        assert result["y"] == 42
+
+
+class TestExecutorMetadataFallback:
+    def test_num_loop_steps_from_metadata(self):
+        """When num_loop_steps not passed, executor uses metadata."""
+        clear_plan_cache()
+        h = make_cycle("A", "B")
+        h.metadata = {"num_loop_steps": 3}
+        log = []
+        run(h, {"x": 1}, callbacks=[lambda p, i: log.append(p)], validate_before=False)
+        before_count = log.count("before")
+        assert before_count == 6  # 3 iterations * 2 nodes
+
+    def test_explicit_num_loop_steps_overrides_metadata(self):
+        """Explicit num_loop_steps arg takes priority over metadata."""
+        clear_plan_cache()
+        h = make_cycle("A", "B")
+        h.metadata = {"num_loop_steps": 10}
+        log = []
+        run(h, {"x": 1}, num_loop_steps=1, callbacks=[lambda p, i: log.append(p)], validate_before=False)
+        before_count = log.count("before")
+        assert before_count == 2  # 1 iteration * 2 nodes

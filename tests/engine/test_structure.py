@@ -1,6 +1,11 @@
+from typing import Any, Dict, List
+
 import pytest
 from yggdrasill.engine.edge import Edge
 from yggdrasill.engine.structure import Hypergraph
+from yggdrasill.foundation.block import AbstractBaseBlock
+from yggdrasill.foundation.node import AbstractGraphNode
+from yggdrasill.foundation.port import Port, PortDirection, PortType
 from tests.foundation.helpers import IdentityTaskNode
 
 
@@ -99,6 +104,43 @@ class TestHypergraphExposed:
         assert "dtype" in spec[0]
 
 
+class TestAddEdgeIncompatiblePorts:
+    """Verify that add_edge rejects edges between incompatible port types."""
+
+    class _TypedNode(AbstractBaseBlock, AbstractGraphNode):
+        def __init__(self, nid: str, in_dt: PortType, out_dt: PortType) -> None:
+            AbstractBaseBlock.__init__(self)
+            AbstractGraphNode.__init__(self, node_id=nid)
+            self._in_dt, self._out_dt = in_dt, out_dt
+
+        @property
+        def block_type(self) -> str:
+            return "test/typed"
+
+        def declare_ports(self) -> List[Port]:
+            return [
+                Port("in", PortDirection.IN, self._in_dt),
+                Port("out", PortDirection.OUT, self._out_dt),
+            ]
+
+        def forward(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+            return {"out": inputs.get("in")}
+
+    def test_incompatible_raises(self):
+        h = Hypergraph()
+        h.add_node("A", self._TypedNode("A", PortType.ANY, PortType.TENSOR))
+        h.add_node("B", self._TypedNode("B", PortType.IMAGE, PortType.ANY))
+        with pytest.raises(ValueError, match="Incompatible"):
+            h.add_edge(Edge("A", "out", "B", "in"))
+
+    def test_compatible_ok(self):
+        h = Hypergraph()
+        h.add_node("A", self._TypedNode("A", PortType.ANY, PortType.TENSOR))
+        h.add_node("B", self._TypedNode("B", PortType.TENSOR, PortType.ANY))
+        h.add_edge(Edge("A", "out", "B", "in"))
+        assert len(h.get_edges()) == 1
+
+
 class TestExecutionVersion:
     def test_increments(self):
         h = Hypergraph()
@@ -111,3 +153,187 @@ class TestExecutionVersion:
         v2 = h.execution_version
         h.add_edge(Edge("A", "out", "B", "in"))
         assert h.execution_version > v2
+
+    def test_increments_on_remove_edge(self):
+        h = Hypergraph()
+        h.add_node("A", IdentityTaskNode(node_id="A"))
+        h.add_node("B", IdentityTaskNode(node_id="B"))
+        e = Edge("A", "out", "B", "in")
+        h.add_edge(e)
+        v = h.execution_version
+        h.remove_edge(e)
+        assert h.execution_version > v
+
+    def test_increments_on_remove_node(self):
+        h = Hypergraph()
+        h.add_node("A", IdentityTaskNode(node_id="A"))
+        v = h.execution_version
+        h.remove_node("A")
+        assert h.execution_version > v
+
+
+class TestMetadataMutability:
+    def test_metadata_in_place_mutation(self):
+        h = Hypergraph()
+        h.metadata["num_loop_steps"] = 5
+        assert h.metadata.get("num_loop_steps") == 5
+
+    def test_metadata_full_replacement(self):
+        h = Hypergraph()
+        h.metadata = {"key": "value"}
+        assert h.metadata["key"] == "value"
+
+
+class TestHypergraphAddEdgeDirectionChecks:
+    def test_add_edge_source_port_wrong_direction(self):
+        h = Hypergraph()
+        h.add_node("A", IdentityTaskNode(node_id="A"))
+        h.add_node("B", IdentityTaskNode(node_id="B"))
+        with pytest.raises(ValueError, match="not an output"):
+            h.add_edge(Edge("A", "in", "B", "in"))
+
+    def test_add_edge_target_port_wrong_direction(self):
+        h = Hypergraph()
+        h.add_node("A", IdentityTaskNode(node_id="A"))
+        h.add_node("B", IdentityTaskNode(node_id="B"))
+        with pytest.raises(ValueError, match="not an input"):
+            h.add_edge(Edge("A", "out", "B", "out"))
+
+    def test_add_edge_target_port_not_found(self):
+        h = Hypergraph()
+        h.add_node("A", IdentityTaskNode(node_id="A"))
+        h.add_node("B", IdentityTaskNode(node_id="B"))
+        with pytest.raises(ValueError, match="not found"):
+            h.add_edge(Edge("A", "out", "B", "nonexistent"))
+
+    def test_add_edge_source_not_in_graph(self):
+        h = Hypergraph()
+        h.add_node("B", IdentityTaskNode(node_id="B"))
+        with pytest.raises(ValueError, match="Source node"):
+            h.add_edge(Edge("GHOST", "out", "B", "in"))
+
+
+class TestHypergraphExposeValidation:
+    def test_expose_input_unknown_node(self):
+        h = Hypergraph()
+        with pytest.raises(ValueError, match="not in graph"):
+            h.expose_input("GHOST", "in")
+
+    def test_expose_input_unknown_port(self):
+        h = Hypergraph()
+        h.add_node("A", IdentityTaskNode(node_id="A"))
+        with pytest.raises(ValueError, match="not found"):
+            h.expose_input("A", "nonexistent")
+
+    def test_expose_input_wrong_direction(self):
+        h = Hypergraph()
+        h.add_node("A", IdentityTaskNode(node_id="A"))
+        with pytest.raises(ValueError, match="not an input"):
+            h.expose_input("A", "out")
+
+    def test_expose_output_unknown_node(self):
+        h = Hypergraph()
+        with pytest.raises(ValueError, match="not in graph"):
+            h.expose_output("GHOST", "out")
+
+    def test_expose_output_unknown_port(self):
+        h = Hypergraph()
+        h.add_node("A", IdentityTaskNode(node_id="A"))
+        with pytest.raises(ValueError, match="not found"):
+            h.expose_output("A", "nonexistent")
+
+    def test_expose_output_wrong_direction(self):
+        h = Hypergraph()
+        h.add_node("A", IdentityTaskNode(node_id="A"))
+        with pytest.raises(ValueError, match="not an output"):
+            h.expose_output("A", "in")
+
+    def test_expose_output_duplicate_ignored(self):
+        h = Hypergraph()
+        h.add_node("A", IdentityTaskNode(node_id="A"))
+        h.expose_output("A", "out", "y")
+        v = h.execution_version
+        h.expose_output("A", "out", "y")
+        assert h.execution_version == v
+
+
+class TestHypergraphRemoveEdge:
+    def test_remove_nonexistent_edge_no_error(self):
+        h = Hypergraph()
+        h.add_node("A", IdentityTaskNode(node_id="A"))
+        h.add_node("B", IdentityTaskNode(node_id="B"))
+        h.remove_edge(Edge("A", "out", "B", "in"))
+
+    def test_remove_nonexistent_node_no_error(self):
+        h = Hypergraph()
+        h.remove_node("GHOST")
+
+
+class TestHypergraphGraphKind:
+    def test_graph_kind_setter_getter(self):
+        h = Hypergraph()
+        assert h.graph_kind is None
+        h.graph_kind = "diffusion"
+        assert h.graph_kind == "diffusion"
+
+
+class TestHypergraphSaveCheckpoint:
+    def test_save_checkpoint(self, tmp_path):
+        from yggdrasill.foundation.registry import BlockRegistry
+        from tests.foundation.helpers import AddTaskNode
+        r = BlockRegistry()
+        r.register("test/add_task", AddTaskNode)
+        h = Hypergraph()
+        h.add_node("A", AddTaskNode(node_id="A", config={"offset": 10}))
+        h.expose_input("A", "a", "a")
+        h.expose_input("A", "b", "b")
+        h.expose_output("A", "out", "y")
+        h.save_checkpoint(tmp_path / "ckpt")
+        assert (tmp_path / "ckpt" / "checkpoint.pkl").exists()
+
+
+class TestHypergraphLoadStateStrictError:
+    def test_extra_key_raises(self):
+        h = Hypergraph()
+        h.add_node("A", IdentityTaskNode(node_id="A"))
+        with pytest.raises(KeyError, match="not in graph"):
+            h.load_state_dict({"GHOST": {}}, strict=True)
+
+
+class TestHypergraphInferExposedWithNonNode:
+    def test_non_graph_node_skipped_by_infer(self):
+        """infer_exposed_ports skips nodes not inheriting AbstractGraphNode."""
+        h = Hypergraph()
+
+        class PlainObj:
+            def run(self, inputs):
+                return inputs
+
+        h.add_node("plain", PlainObj())
+        h.add_node("A", IdentityTaskNode(node_id="A"))
+        h.infer_exposed_ports()
+        exposed_nids = {e["node_id"] for e in h.get_input_spec()}
+        assert "plain" not in exposed_nids
+        assert "A" in exposed_nids
+
+
+class TestHypergraphStateDictNoMethod:
+    def test_node_without_state_dict_skipped(self):
+        """state_dict skips nodes that don't have state_dict method."""
+        h = Hypergraph()
+
+        class Bare:
+            pass
+
+        h.add_node("bare", Bare())
+        h.add_node("A", IdentityTaskNode(node_id="A"))
+        sd = h.state_dict()
+        assert "bare" not in sd
+
+
+class TestHypergraphSpecKey:
+    def test_spec_key_with_name(self):
+        assert Hypergraph._spec_key({"node_id": "A", "port_name": "in", "name": "x"}) == "x"
+
+    def test_spec_key_without_name(self):
+        assert Hypergraph._spec_key({"node_id": "A", "port_name": "in"}) == "A:in"

@@ -7,6 +7,7 @@ name = "yggdrasill"
 version = "0.1.0"
 description = "Yggdrasill — hypergraph framework from block to universe"
 requires-python = ">=3.10"
+readme = "README.md"
 license = {text = "Apache-2.0"}
 authors = [
     {name = "Yggdrasill Contributors"}
@@ -30,6 +31,9 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
+yaml = [
+    "pyyaml>=6.0",
+]
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",

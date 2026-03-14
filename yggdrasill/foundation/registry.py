@@ -39,6 +39,7 @@ class BlockRegistry:
                 "config must contain 'block_type' or 'type'. "
                 f"Registered types: {sorted(self._factories.keys())}"
             )
+        block_type = block_type.strip()
         factory = self._factories.get(block_type)
         if factory is None:
             raise KeyError(
@@ -67,10 +68,10 @@ class BlockRegistry:
         return factory(**kwargs)
 
     def get(self, block_type: str) -> Optional[Factory]:
-        return self._factories.get(block_type)
+        return self._factories.get(block_type.strip())
 
     def __contains__(self, block_type: str) -> bool:
-        return block_type in self._factories
+        return block_type.strip() in self._factories
 
     @property
     def registered_types(self) -> list[str]:
