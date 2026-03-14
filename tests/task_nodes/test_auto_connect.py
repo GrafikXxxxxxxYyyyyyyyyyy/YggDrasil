@@ -166,6 +166,26 @@ class TestApplyAutoConnectEdgeCases:
         assert added == 0
 
 
+class TestHelperToHelperAutoConnect:
+    @pytest.fixture(autouse=True)
+    def _clear(self):
+        clear_plan_cache()
+
+    def test_helper_to_helper_uses_result_query(self):
+        """B-2: HELPER→HELPER should connect result→query."""
+        from yggdrasill.task_nodes.stubs import IdentityHelper
+        h = Hypergraph()
+        h1 = IdentityHelper(node_id="h1")
+        h2 = IdentityHelper(node_id="h2")
+        h.add_node("h1", h1)
+        h.add_node("h2", h2)
+        added = apply_auto_connect(h, "h2", h2)
+        assert added >= 1
+        edges = h.get_edges()
+        edge_tuples = [(e.source_node, e.source_port, e.target_node, e.target_port) for e in edges]
+        assert ("h1", "result", "h2", "query") in edge_tuples
+
+
 class TestAutoConnectIncompatiblePorts:
     @pytest.fixture(autouse=True)
     def _clear(self):
@@ -218,7 +238,7 @@ class TestAutoConnectIncompatiblePorts:
         cj = TypedConjector(node_id="cj")
         h.add_node("cj", cj)
         added = apply_auto_connect(h, "cj", cj)
-        assert added >= 0
+        assert added == 0
 
 
 class TestUseTaskNodeAutoConnect:

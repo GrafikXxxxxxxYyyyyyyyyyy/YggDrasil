@@ -101,3 +101,54 @@ class TestHypergraphWithRoles:
             "helper/identity", "converter/identity",
         ]:
             assert role in reg, f"{role} not registered"
+
+    def test_all_seven_roles_integration(self):
+        """T-3: Build a graph using all 7 roles and execute it."""
+        cfg = {
+            "graph_id": "all_roles",
+            "nodes": [
+                {"node_id": "conv_in", "block_type": "converter/identity"},
+                {"node_id": "cj", "block_type": "conjector/identity"},
+                {"node_id": "inj", "block_type": "injector/identity"},
+                {"node_id": "bb", "block_type": "backbone/identity"},
+                {"node_id": "im", "block_type": "inner_module/identity"},
+                {"node_id": "om", "block_type": "outer_module/identity"},
+                {"node_id": "hlp", "block_type": "helper/identity"},
+            ],
+            "edges": [
+                {"source_node": "conv_in", "source_port": "output",
+                 "target_node": "bb", "target_port": "latent"},
+                {"source_node": "cj", "source_port": "condition",
+                 "target_node": "bb", "target_port": "condition"},
+                {"source_node": "inj", "source_port": "adapted",
+                 "target_node": "im", "target_port": "control"},
+                {"source_node": "bb", "source_port": "pred",
+                 "target_node": "im", "target_port": "pred"},
+                {"source_node": "hlp", "source_port": "result",
+                 "target_node": "om", "target_port": "input"},
+            ],
+            "exposed_inputs": [
+                {"node_id": "conv_in", "port_name": "input", "name": "data"},
+                {"node_id": "cj", "port_name": "input", "name": "prompt"},
+                {"node_id": "inj", "port_name": "condition", "name": "ctrl"},
+                {"node_id": "bb", "port_name": "timestep", "name": "t"},
+                {"node_id": "im", "port_name": "latent", "name": "im_lat"},
+                {"node_id": "im", "port_name": "timestep", "name": "im_t"},
+                {"node_id": "hlp", "port_name": "query", "name": "q"},
+            ],
+            "exposed_outputs": [
+                {"node_id": "im", "port_name": "next_latent", "name": "out_lat"},
+                {"node_id": "om", "port_name": "output", "name": "om_out"},
+            ],
+        }
+        reg = BlockRegistry.global_registry()
+        h = Hypergraph.from_config(cfg, registry=reg, validate=False)
+        out = h.run(
+            {
+                "data": "x", "prompt": "p", "ctrl": "c", "t": 0,
+                "im_lat": "z", "im_t": 1, "q": "help",
+            },
+            validate_before=False,
+        )
+        assert "out_lat" in out
+        assert "om_out" in out

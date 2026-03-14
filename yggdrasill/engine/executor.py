@@ -34,7 +34,8 @@ def run(
 
     K = num_loop_steps
     if K is None:
-        K = structure.metadata.get("num_loop_steps", 1)
+        meta = getattr(structure, "metadata", {}) or {}
+        K = meta.get("num_loop_steps", 1)
 
     input_spec = structure.get_input_spec()
     output_spec = structure.get_output_spec()

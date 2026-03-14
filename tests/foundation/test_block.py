@@ -135,14 +135,15 @@ class TestBlockToDevice:
         assert b.to("cpu") is b
 
     def test_to_propagates_to_sub_blocks(self):
+        b = BlockWithSub()
         devices = []
-        original_to = IdentityBlock.to
-        IdentityBlock.to = lambda self, device: (devices.append(device), self)[1]
+        original_to = AddBlock.to
+        AddBlock.to = lambda self, device: (devices.append(device), self)[1]
         try:
-            b = BlockWithSub()
             b.to("cuda")
+            assert "cuda" in devices
         finally:
-            IdentityBlock.to = original_to
+            AddBlock.to = original_to
 
 
 class TestBlockLoadStateStrictEmpty:

@@ -839,3 +839,151 @@ class TestWorkflowAutoConnect:
         assert len(matching) >= 1
         added = apply_auto_connect(w)
         assert added >= 1
+
+
+class TestWorkflowAddNodeFromConfig:
+    """S-2: Workflow.add_node_from_config builds Hypergraph from config dict."""
+
+    def test_add_node_from_config_dict(self, registry):
+        clear_plan_cache()
+        w = Workflow()
+        cfg = {
+            "graph_id": "g1",
+            "nodes": [{"node_id": "N", "block_type": "test/identity_task"}],
+            "edges": [],
+            "exposed_inputs": [{"node_id": "N", "port_name": "in", "name": "in"}],
+            "exposed_outputs": [{"node_id": "N", "port_name": "out", "name": "out"}],
+        }
+        gid = w.add_node_from_config("g1", cfg, registry=registry)
+        assert gid == "g1"
+        assert "g1" in w.node_ids
+        hg = w.get_node("g1")
+        assert "N" in hg.node_ids
+
+    def test_add_node_from_config_ref(self, registry, tmp_path):
+        clear_plan_cache()
+        cfg = {
+            "graph_id": "ref_graph",
+            "nodes": [{"node_id": "N", "block_type": "test/identity_task"}],
+            "edges": [],
+            "exposed_inputs": [{"node_id": "N", "port_name": "in", "name": "in"}],
+            "exposed_outputs": [{"node_id": "N", "port_name": "out", "name": "out"}],
+        }
+        ref_file = tmp_path / "graph.json"
+        ref_file.write_text(json.dumps(cfg))
+        w = Workflow()
+        gid = w.add_node_from_config("g1", {"ref": str(ref_file)}, registry=registry)
+        assert gid == "g1"
+        assert "N" in w.get_node("g1").node_ids
+
+    def test_add_node_from_config_trainable(self, registry):
+        w = Workflow()
+        cfg = {
+            "graph_id": "g1",
+            "nodes": [{"node_id": "N", "block_type": "test/identity_task"}],
+            "edges": [],
+            "exposed_inputs": [{"node_id": "N", "port_name": "in", "name": "in"}],
+            "exposed_outputs": [{"node_id": "N", "port_name": "out", "name": "out"}],
+        }
+        w.add_node_from_config("g1", cfg, registry=registry, trainable=False)
+        assert w._node_trainable["g1"] is False
+
+
+class TestWorkflowSaveLoadRunRoundtrip:
+    """T-1: Full workflow save → load → run roundtrip."""
+
+    def test_save_load_run_produces_same_output(self, registry, tmp_path):
+        clear_plan_cache()
+        hg1 = _make_identity_hg("g1", registry)
+        hg2 = _make_identity_hg("g2", registry)
+        w = Workflow(workflow_id="rt_wf")
+        w.add_node("g1", hg1)
+        w.add_node("g2", hg2)
+        w.add_edge("g1", "out", "g2", "in")
+        w.expose_input("g1", "in", "x")
+        w.expose_output("g2", "out", "y")
+
+        out1 = w.run({"x": 42}, validate_before=False)
+        w.save(tmp_path / "wf")
+        w2 = Workflow.load(tmp_path / "wf", registry=registry)
+        clear_plan_cache()
+        out2 = w2.run({"x": 42}, validate_before=False)
+        assert out1 == out2
+
+    def test_save_config_load_config_roundtrip(self, registry, tmp_path):
+        clear_plan_cache()
+        hg = _make_identity_hg("g1", registry)
+        w = Workflow(workflow_id="cfg_wf")
+        w.add_node("g1", hg)
+        w.expose_input("g1", "in", "x")
+        w.expose_output("g1", "out", "y")
+        w.save_config(tmp_path / "wf_cfg")
+        w2 = Workflow.load_config(tmp_path / "wf_cfg", registry=registry)
+        assert w2.workflow_id == "cfg_wf"
+        assert "g1" in w2.node_ids
+
+
+class TestWorkflowDiamond:
+    """T-2: Diamond (fan-out) workflow topology."""
+
+    def test_diamond_fan_out_fan_in(self, registry):
+        clear_plan_cache()
+        hg_src = _make_identity_hg("src", registry)
+        hg_mid1 = _make_identity_hg("m1", registry)
+        hg_mid2 = _make_identity_hg("m2", registry)
+
+        hg_sink = Hypergraph.from_config({
+            "graph_id": "sink",
+            "nodes": [{"node_id": "A", "block_type": "test/add_task"}],
+            "edges": [],
+            "exposed_inputs": [
+                {"node_id": "A", "port_name": "a", "name": "a"},
+                {"node_id": "A", "port_name": "b", "name": "b"},
+            ],
+            "exposed_outputs": [{"node_id": "A", "port_name": "out", "name": "out"}],
+        }, registry=registry)
+
+        w = Workflow()
+        w.add_node("src", hg_src)
+        w.add_node("m1", hg_mid1)
+        w.add_node("m2", hg_mid2)
+        w.add_node("sink", hg_sink)
+        w.add_edge("src", "out", "m1", "in")
+        w.add_edge("src", "out", "m2", "in")
+        w.add_edge("m1", "out", "sink", "a")
+        w.add_edge("m2", "out", "sink", "b")
+        w.expose_input("src", "in", "x")
+        w.expose_output("sink", "out", "y")
+
+        out = w.run({"x": 5}, validate_before=False)
+        assert out["y"] == 10  # 5 + 5 + 0 offset
+
+
+class TestWorkflowCycleFromMetadata:
+    """T-5: Workflow cycle where num_loop_steps comes from metadata."""
+
+    def test_cycle_from_metadata(self, registry):
+        clear_plan_cache()
+        hg1 = _make_identity_hg("g1", registry)
+        hg2 = _make_identity_hg("g2", registry)
+
+        w = Workflow(workflow_id="cycle_meta")
+        w.add_node("g1", hg1)
+        w.add_node("g2", hg2)
+        w.add_edge("g1", "out", "g2", "in")
+        w.add_edge("g2", "out", "g1", "in")
+        w.expose_input("g1", "in", "x")
+        w.expose_output("g2", "out", "y")
+        w.metadata = {"num_loop_steps": 3}
+
+        log = []
+
+        def cb(phase, info):
+            log.append(phase)
+
+        out = w.run({"x": 7}, callbacks=[cb], validate_before=False)
+        assert out["y"] == 7
+        assert log.count("loop_start") == 1
+        assert log.count("loop_end") == 1
+        before_count = log.count("before")
+        assert before_count == 6  # 3 iterations * 2 graphs

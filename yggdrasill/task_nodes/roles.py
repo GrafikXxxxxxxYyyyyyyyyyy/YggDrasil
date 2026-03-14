@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional, Set
+from typing import Optional, Set, Tuple
 
 
 class Role(Enum):
@@ -27,7 +27,7 @@ KNOWN_ROLES: Set[str] = {
     OUTER_MODULE, HELPER, CONVERTER,
 }
 
-ALL_ROLES = list(Role)
+ALL_ROLES: Tuple[Role, ...] = tuple(Role)
 
 
 def role_from_block_type(block_type: str) -> Optional[str]:

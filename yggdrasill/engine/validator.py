@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Set
 
 from yggdrasill.foundation.node import AbstractGraphNode
-from yggdrasill.foundation.port import PortDirection
+from yggdrasill.foundation.port import Port, PortDirection, PortType
 
 
 @dataclass
@@ -110,49 +110,20 @@ def validate(structure: Any) -> ValidationResult:
 
 def _check_cycles(structure: Any, result: ValidationResult) -> None:
     """Detect cycles (including self-loops) via Tarjan SCC; warn if num_loop_steps is unset."""
-    node_ids = list(structure.node_ids)
+    from yggdrasill.engine.planner import _tarjan
+
+    node_ids = sorted(structure.node_ids)
     edges = structure.get_edges()
-    adj: Dict[str, List[str]] = {nid: [] for nid in node_ids}
+    adj: Dict[str, Set[str]] = {nid: set() for nid in node_ids}
     self_loop_nodes: Set[str] = set()
     for edge in edges:
         if edge.source_node in adj:
-            adj[edge.source_node].append(edge.target_node)
+            adj[edge.source_node].add(edge.target_node)
         if edge.source_node == edge.target_node:
             self_loop_nodes.add(edge.source_node)
 
-    index_counter = [0]
-    stack: List[str] = []
-    on_stack: Set[str] = set()
-    lowlink: Dict[str, int] = {}
-    index: Dict[str, int] = {}
-    sccs: List[List[str]] = []
-
-    def strongconnect(v: str) -> None:
-        index[v] = index_counter[0]
-        lowlink[v] = index_counter[0]
-        index_counter[0] += 1
-        stack.append(v)
-        on_stack.add(v)
-        for w in adj.get(v, []):
-            if w not in index:
-                strongconnect(w)
-                lowlink[v] = min(lowlink[v], lowlink[w])
-            elif w in on_stack:
-                lowlink[v] = min(lowlink[v], index[w])
-        if lowlink[v] == index[v]:
-            comp: List[str] = []
-            while True:
-                w = stack.pop()
-                on_stack.discard(w)
-                comp.append(w)
-                if w == v:
-                    break
-            if len(comp) > 1:
-                sccs.append(comp)
-
-    for nid in node_ids:
-        if nid not in index:
-            strongconnect(nid)
+    all_sccs = _tarjan(node_ids, adj)
+    sccs = [list(scc) for scc in all_sccs if len(scc) > 1]
 
     for nid in self_loop_nodes:
         if not any(nid in scc for scc in sccs):
@@ -185,7 +156,6 @@ def _find_port(node: Any, port_name: str, direction: PortDirection):
     for entry in spec:
         key = entry.get("port_name") or entry.get("name", "")
         if key == port_name:
-            from yggdrasill.foundation.port import Port, PortType
             dtype_str = entry.get("dtype", "any")
             try:
                 dtype = PortType(dtype_str)

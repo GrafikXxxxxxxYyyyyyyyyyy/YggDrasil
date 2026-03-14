@@ -47,6 +47,18 @@ class TestEdge:
         with pytest.raises(TypeError, match="must be a string"):
             Edge("A", None, "B", "in")  # type: ignore[arg-type]
 
+    def test_empty_source_port_raises(self):
+        with pytest.raises(ValueError, match="source_port"):
+            Edge("A", "", "B", "in")
+
+    def test_empty_target_node_raises(self):
+        with pytest.raises(ValueError, match="target_node"):
+            Edge("A", "out", "", "in")
+
+    def test_whitespace_only_port_raises(self):
+        with pytest.raises(ValueError, match="source_port"):
+            Edge("A", "  ", "B", "in")
+
     def test_whitespace_stripped(self):
         e = Edge("  A  ", "out", "B", "in")
         assert e.source_node == "A"

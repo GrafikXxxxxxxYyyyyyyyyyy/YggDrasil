@@ -18,6 +18,7 @@ class AbstractGraphNode(ABC):
         if not node_id or not node_id.strip():
             raise ValueError("node_id must be a non-empty string")
         self._node_id = node_id.strip()
+        self._ports_cache: List[Port] | None = None
 
     @property
     def node_id(self) -> str:
@@ -28,15 +29,24 @@ class AbstractGraphNode(ABC):
         """Declare the ports of this node (inputs and outputs for hyperedges)."""
         ...
 
+    def _get_ports(self) -> List[Port]:
+        if self._ports_cache is None:
+            self._ports_cache = self.declare_ports()
+        return self._ports_cache
+
+    def invalidate_ports_cache(self) -> None:
+        """Clear cached ports (call if declare_ports() result changes at runtime)."""
+        self._ports_cache = None
+
     def get_input_ports(self) -> List[Port]:
-        return [p for p in self.declare_ports() if p.direction == PortDirection.IN]
+        return [p for p in self._get_ports() if p.direction == PortDirection.IN]
 
     def get_output_ports(self) -> List[Port]:
-        return [p for p in self.declare_ports() if p.direction == PortDirection.OUT]
+        return [p for p in self._get_ports() if p.direction == PortDirection.OUT]
 
     def get_port(self, name: str) -> Port | None:
         """Look up a port by name, or return None."""
-        for p in self.declare_ports():
+        for p in self._get_ports():
             if p.name == name:
                 return p
         return None

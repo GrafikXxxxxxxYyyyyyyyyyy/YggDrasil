@@ -337,3 +337,69 @@ class TestHypergraphSpecKey:
 
     def test_spec_key_without_name(self):
         assert Hypergraph._spec_key({"node_id": "A", "port_name": "in"}) == "A:in"
+
+    def test_spec_key_with_graph_id(self):
+        assert Hypergraph._spec_key({"graph_id": "g1", "port_name": "out"}) == "g1:out"
+
+    def test_spec_key_name_none_falls_back(self):
+        assert Hypergraph._spec_key({"node_id": "A", "port_name": "in", "name": None}) == "A:in"
+
+
+class TestHypergraphDuplicateNodeId:
+    def test_add_node_from_config_duplicate_raises(self):
+        h = Hypergraph()
+        h.add_node("A", IdentityTaskNode(node_id="A"))
+        with pytest.raises(ValueError, match="already exists"):
+            h.add_node_from_config("A", "test/identity_task")
+
+
+class TestHypergraphFromConfigKeyShadowing:
+    """B-3: Config keys don't shadow block_type/node_id/block_id."""
+
+    def test_config_with_shadowing_keys(self):
+        from yggdrasill.foundation.registry import BlockRegistry
+        reg = BlockRegistry()
+        reg.register("test/identity_task", IdentityTaskNode)
+        cfg = {
+            "graph_id": "g",
+            "nodes": [{
+                "node_id": "A",
+                "block_type": "test/identity_task",
+                "config": {"block_type": "malicious", "node_id": "evil"},
+            }],
+            "edges": [],
+            "exposed_inputs": [{"node_id": "A", "port_name": "in", "name": "x"}],
+            "exposed_outputs": [{"node_id": "A", "port_name": "out", "name": "y"}],
+        }
+        h = Hypergraph.from_config(cfg, registry=reg)
+        node = h.get_node("A")
+        assert node.block_type == "test/identity_task"
+        assert node._node_id == "A"
+
+
+class TestHypergraphPretrainedPath:
+    """S-1: pretrained accepts both dict and string path."""
+
+    def test_pretrained_dict(self):
+        from yggdrasill.foundation.registry import BlockRegistry
+        from tests.foundation.helpers import AddTaskNode
+        reg = BlockRegistry()
+        reg.register("test/add_task", AddTaskNode)
+        h = Hypergraph()
+        h.add_node_from_config("A", "test/add_task", registry=reg, pretrained={"offset": 42})
+        node = h.get_node("A")
+        assert node.offset == 42
+
+    def test_pretrained_path(self, tmp_path):
+        import pickle
+        from yggdrasill.foundation.registry import BlockRegistry
+        from tests.foundation.helpers import AddTaskNode
+        reg = BlockRegistry()
+        reg.register("test/add_task", AddTaskNode)
+        ckpt = tmp_path / "weights.pkl"
+        with open(ckpt, "wb") as f:
+            pickle.dump({"offset": 99}, f)
+        h = Hypergraph()
+        h.add_node_from_config("A", "test/add_task", registry=reg, pretrained=str(ckpt))
+        node = h.get_node("A")
+        assert node.offset == 99

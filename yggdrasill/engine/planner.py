@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import bisect
 from collections import OrderedDict
 from typing import Any, Dict, List, Set, Tuple
 
 _MAX_CACHE_SIZE = 256
-_plan_cache: OrderedDict[Tuple[int, int], List[Tuple[str, Any]]] = OrderedDict()
+_plan_cache: OrderedDict[Tuple[str, int, int], List[Tuple[str, Any]]] = OrderedDict()
 
 
 def build_plan(structure: Any) -> List[Tuple[str, Any]]:
@@ -15,7 +16,8 @@ def build_plan(structure: Any) -> List[Tuple[str, Any]]:
       ("cycle", (rep, frozenset(ids))) -- execute nodes K times (K from options at run-time)
     """
     instance_id = getattr(structure, "_instance_id", id(structure))
-    cache_key = (instance_id, structure.execution_version)
+    type_tag = type(structure).__name__
+    cache_key = (type_tag, instance_id, structure.execution_version)
     if cache_key in _plan_cache:
         return _plan_cache[cache_key]
 
@@ -134,7 +136,6 @@ def _topo_sort_sccs(
         for nxt in sorted(scc_adj[cur]):
             in_deg[nxt] -= 1
             if in_deg[nxt] == 0:
-                queue.append(nxt)
-                queue.sort()
+                bisect.insort(queue, nxt)
 
     return [sccs[i] for i in order]

@@ -31,8 +31,6 @@ from yggdrasill.task_nodes.auto_connect import (
     use_task_node_auto_connect,
 )
 
-register_all_stubs()
-
 __all__ = [
     "Role",
     "role_from_block_type",

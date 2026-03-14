@@ -145,6 +145,22 @@ class Workflow:
         self._execution_version += 1
         return graph_id
 
+    def add_node_from_config(
+        self,
+        graph_id: str,
+        config: Dict[str, Any],
+        *,
+        registry: Optional[Any] = None,
+        trainable: bool = True,
+    ) -> str:
+        """Build a Hypergraph from *config* (or ``{"ref": "path"}``) and add it."""
+        from yggdrasill.engine.structure import _resolve_config_ref
+        resolved = _resolve_config_ref(config)
+        hg = Hypergraph.from_config(resolved, registry=registry)
+        self.add_node(graph_id, hg)
+        self._node_trainable[graph_id] = trainable
+        return graph_id
+
     def remove_node(self, graph_id: str) -> None:
         if graph_id not in self._nodes:
             return
@@ -436,20 +452,12 @@ class Workflow:
         w.workflow_kind = config.get("workflow_kind")
         w.metadata = dict(config.get("metadata", {}))
 
+        from yggdrasill.engine.structure import _resolve_config_ref
+
         for gc in config.get("graphs", []):
             gid = gc["graph_id"]
             if "ref" in gc and "config" not in gc:
-                ref_path = Path(gc["ref"])
-                if ref_path.suffix in (".yaml", ".yml"):
-                    try:
-                        import yaml  # type: ignore[import-untyped]
-                    except ImportError:
-                        raise ImportError(f"PyYAML required to load YAML ref: {ref_path}")
-                    with open(ref_path, "r", encoding="utf-8") as f:
-                        graph_config = yaml.safe_load(f) or {}
-                else:
-                    with open(ref_path, "r", encoding="utf-8") as f:
-                        graph_config = json.load(f)
+                graph_config = _resolve_config_ref({"ref": gc["ref"]})
             else:
                 graph_config = gc["config"]
             hg = Hypergraph.from_config(graph_config, registry=registry)

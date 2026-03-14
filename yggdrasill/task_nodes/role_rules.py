@@ -35,7 +35,7 @@ ROLE_EDGE_RULES: Dict[RolePair, List[PortPair]] = {
     (OUTER_MODULE, OUTER_MODULE): [("output", "input")],
     # Helper chains
     (HELPER, CONVERTER): [("result", "input")],
-    (HELPER, HELPER): [("result", "input")],
+    (HELPER, HELPER): [("result", "query")],
 }
 
 

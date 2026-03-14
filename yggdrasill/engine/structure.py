@@ -286,7 +286,7 @@ class Hypergraph:
         *,
         config: Optional[Dict[str, Any]] = None,
         block_id: Optional[str] = None,
-        pretrained: Optional[Dict[str, Any]] = None,
+        pretrained: Optional[Any] = None,
         trainable: bool = True,
         registry: Optional[Any] = None,
         **kwargs: Any,
@@ -305,14 +305,22 @@ class Hypergraph:
         if block_id is not None:
             build_cfg["block_id"] = block_id
         if config:
-            build_cfg.update(config)
+            safe_cfg = {
+                k: v for k, v in config.items()
+                if k not in ("block_type", "node_id", "block_id")
+            }
+            build_cfg.update(safe_cfg)
 
         node = reg.build(build_cfg)
         self.add_node(node_id, node)
         self._node_trainable[node_id] = trainable
 
-        if pretrained is not None and isinstance(pretrained, dict):
-            node.load_state_dict(pretrained, strict=False)
+        if pretrained is not None:
+            if isinstance(pretrained, (str, Path)):
+                from yggdrasill.hypergraph.serialization import _read_checkpoint
+                pretrained = _read_checkpoint(Path(pretrained))
+            if isinstance(pretrained, dict):
+                node.load_state_dict(pretrained, strict=False)
 
         if kwargs.get("auto_connect") and hasattr(self, "_auto_connect_fn"):
             self._auto_connect_fn(self, node_id, node)
@@ -354,7 +362,11 @@ class Hypergraph:
             if bid is not None:
                 build_cfg["block_id"] = bid
             if node_cfg:
-                build_cfg.update(node_cfg)
+                safe_cfg = {
+                    k: v for k, v in node_cfg.items()
+                    if k not in ("block_type", "node_id", "block_id")
+                }
+                build_cfg.update(safe_cfg)
             node = reg.build(build_cfg)
             g.add_node(nid, node)
             g._node_trainable[nid] = nc.get("trainable", True)
@@ -628,4 +640,7 @@ class Hypergraph:
 
     @staticmethod
     def _spec_key(entry: Dict[str, Any]) -> str:
-        return entry.get("name") or f"{entry['node_id']}:{entry['port_name']}"
+        if "name" in entry and entry["name"] is not None:
+            return entry["name"]
+        nid = entry.get("node_id") or entry.get("graph_id", "")
+        return f"{nid}:{entry['port_name']}"

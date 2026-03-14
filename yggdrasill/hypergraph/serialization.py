@@ -45,10 +45,6 @@ def _read_config(path: Path) -> Dict[str, Any]:
         return json.load(f)
 
 
-def _read_json(path: Path) -> Dict[str, Any]:
-    return _read_config(path)
-
-
 def _write_checkpoint(state: Dict[str, Any], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as f:
@@ -74,7 +70,7 @@ def save_config(config: Dict[str, Any], path: str | Path) -> None:
 
 
 def load_config(path: str | Path) -> Dict[str, Any]:
-    return _read_json(Path(path))
+    return _read_config(Path(path))
 
 
 def save_checkpoint(state: Dict[str, Any], path: str | Path) -> None:
@@ -122,7 +118,7 @@ def load_block(
     from yggdrasill.foundation.registry import BlockRegistry
 
     directory = Path(directory)
-    config = _read_json(directory / config_filename)
+    config = _read_config(directory / config_filename)
 
     sv = config.get("schema_version")
     if sv is not None and sv != SCHEMA_VERSION:
@@ -181,7 +177,7 @@ def load_hypergraph(
     from yggdrasill.foundation.registry import BlockRegistry
 
     directory = Path(directory)
-    config = _read_json(directory / config_filename)
+    config = _read_config(directory / config_filename)
 
     sv = config.get("schema_version")
     if sv is not None and sv != SCHEMA_VERSION:
@@ -216,6 +212,8 @@ def _deduplicate_state(
     deduped: Dict[str, Any] = {}
 
     for nid in sorted(state.keys()):
+        if nid == "_aliases":
+            continue
         node = hypergraph.get_node(nid)
         block_id = getattr(node, "block_id", nid) if node is not None else nid
         if block_id in seen_block_ids:

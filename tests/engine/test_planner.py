@@ -139,3 +139,65 @@ class TestPlannerCache:
         finally:
             planner._MAX_CACHE_SIZE = old_max
             clear_plan_cache()
+
+
+class TestPlannerCacheTypeCollision:
+    """B-1: Hypergraph and Workflow with same _instance_id must not collide."""
+
+    def test_hypergraph_and_workflow_same_id_no_collision(self):
+        from yggdrasill.workflow.workflow import Workflow
+        from yggdrasill.foundation.registry import BlockRegistry
+
+        clear_plan_cache()
+        reg = BlockRegistry()
+        reg.register("test/identity_task", IdentityTaskNode)
+
+        h = Hypergraph.from_config({
+            "graph_id": "h1",
+            "nodes": [{"node_id": "N", "block_type": "test/identity_task"}],
+            "edges": [],
+            "exposed_inputs": [{"node_id": "N", "port_name": "in", "name": "x"}],
+            "exposed_outputs": [{"node_id": "N", "port_name": "out", "name": "y"}],
+        }, registry=reg)
+
+        w = Workflow()
+        hg = Hypergraph.from_config({
+            "graph_id": "inner",
+            "nodes": [{"node_id": "N", "block_type": "test/identity_task"}],
+            "edges": [],
+            "exposed_inputs": [{"node_id": "N", "port_name": "in", "name": "in"}],
+            "exposed_outputs": [{"node_id": "N", "port_name": "out", "name": "out"}],
+        }, registry=reg)
+        w.add_node("g1", hg)
+        w.expose_input("g1", "in", "x")
+        w.expose_output("g1", "out", "y")
+
+        w._instance_id = h._instance_id
+        w._execution_version = h._execution_version
+
+        plan_h = build_plan(h)
+        plan_w = build_plan(w)
+        assert plan_h[0][1] == "N"
+        assert plan_w[0][1] == "g1"
+
+
+class TestPlannerDiamondDAG:
+    """Diamond topology: A -> B, A -> C, B -> D, C -> D."""
+
+    def test_diamond_order(self):
+        clear_plan_cache()
+        h = Hypergraph()
+        for nid in ("A", "B", "C", "D"):
+            h.add_node(nid, IdentityTaskNode(node_id=nid))
+        h.add_edge(Edge("A", "out", "B", "in"))
+        h.add_edge(Edge("A", "out", "C", "in"))
+        h.add_edge(Edge("B", "out", "D", "in"))
+        h.add_edge(Edge("C", "out", "D", "in"))
+        h.expose_input("A", "in", "x")
+        h.expose_output("D", "out", "y")
+        plan = build_plan(h)
+        ids = [s[1] for s in plan]
+        assert ids.index("A") < ids.index("B")
+        assert ids.index("A") < ids.index("C")
+        assert ids.index("B") < ids.index("D")
+        assert ids.index("C") < ids.index("D")

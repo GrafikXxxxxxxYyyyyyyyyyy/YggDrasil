@@ -322,3 +322,72 @@ class TestExecutorMetadataFallback:
         run(h, {"x": 1}, num_loop_steps=1, callbacks=[lambda p, i: log.append(p)], validate_before=False)
         before_count = log.count("before")
         assert before_count == 2  # 1 iteration * 2 nodes
+
+
+class TestExecutorForwardException:
+    """If node.run raises, it propagates out of the executor."""
+
+    def test_forward_exception_propagates(self):
+
+        class FailNode(AbstractBaseBlock, AbstractGraphNode):
+            def __init__(self, node_id):
+                AbstractBaseBlock.__init__(self)
+                AbstractGraphNode.__init__(self, node_id=node_id)
+
+            @property
+            def block_type(self):
+                return "test/fail"
+
+            def declare_ports(self):
+                return [
+                    Port("in", PortDirection.IN, PortType.ANY),
+                    Port("out", PortDirection.OUT, PortType.ANY),
+                ]
+
+            def forward(self, inputs):
+                raise RuntimeError("intentional failure")
+
+        clear_plan_cache()
+        h = Hypergraph()
+        h.add_node("F", FailNode("F"))
+        h.expose_input("F", "in", "x")
+        h.expose_output("F", "out", "y")
+        with pytest.raises(RuntimeError, match="intentional failure"):
+            run(h, {"x": 1}, validate_before=False)
+
+
+class TestExecutorDiamondDAG:
+    """Diamond fan-in: S1→M, S2→M (CONCAT aggregation)."""
+
+    def test_diamond_fan_in_concat(self):
+        clear_plan_cache()
+        h = Hypergraph()
+        h.add_node("S1", _SourceNode("S1", 10))
+        h.add_node("S2", _SourceNode("S2", 20))
+        h.add_node("M", _SumNode("M", PortAggregation.CONCAT))
+        h.add_edge(Edge("S1", "out", "M", "data"))
+        h.add_edge(Edge("S2", "out", "M", "data"))
+        h.expose_output("M", "out", "result")
+        out = run(h, {}, validate_before=False)
+        assert sorted(out["result"]) == [10, 20]
+
+
+class TestExecutorDictAggregation:
+    """DICT aggregation produces {source_node: value} mapping."""
+
+    def test_dict_agg_keys(self):
+        clear_plan_cache()
+        h = Hypergraph()
+        h.add_node("S1", _SourceNode("S1", "val_a"))
+        h.add_node("S2", _SourceNode("S2", "val_b"))
+        h.add_node("M", _SumNode("M", PortAggregation.DICT))
+        h.add_edge(Edge("S1", "out", "M", "data"))
+        h.add_edge(Edge("S2", "out", "M", "data"))
+        h.expose_output("M", "out", "result")
+        out = run(h, {}, validate_before=False)
+        result = out["result"]
+        assert isinstance(result, dict)
+        assert "S1" in result
+        assert "S2" in result
+        assert result["S1"] == "val_a"
+        assert result["S2"] == "val_b"
