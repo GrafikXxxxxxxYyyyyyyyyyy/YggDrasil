@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Generator, List, Optional
 
 from yggdrasill.engine.buffers import EdgeBuffers
 from yggdrasill.engine.planner import build_plan
@@ -15,6 +16,15 @@ class ValidationError(Exception):
         super().__init__(f"Validation failed: {errors}")
 
 
+@dataclass
+class RunResult:
+    """Extended result from :func:`run` when interrupt/resume is active."""
+
+    outputs: Dict[str, Any]
+    suspended: bool = False
+    run_data: Optional[Dict[str, Dict[str, Any]]] = None
+
+
 def run(
     structure: Any,
     inputs: Dict[str, Any],
@@ -25,8 +35,20 @@ def run(
     callbacks: Optional[List[Callable[..., None]]] = None,
     dry_run: bool = False,
     validate_before: bool = True,
-) -> Dict[str, Any]:
-    """Execute the structure (Hypergraph, Workflow, etc.) and return outputs."""
+    max_steps: Optional[int] = None,
+    pin_data: Optional[Dict[str, Dict[str, Any]]] = None,
+    seed: Optional[int] = None,
+    run_data: Optional[Dict[str, Dict[str, Any]]] = None,
+    destination_node_id: Optional[str] = None,
+    dirty_node_ids: Optional[List[str]] = None,
+    interrupt_on: Optional[List[str]] = None,
+) -> Dict[str, Any] | RunResult:
+    """Execute the structure (Hypergraph, Workflow, etc.) and return outputs.
+
+    Returns a plain ``dict`` unless *interrupt_on* fires, in which case a
+    :class:`RunResult` is returned with ``suspended=True`` and a *run_data*
+    snapshot that can be fed back to resume execution.
+    """
     if validate_before:
         result = validate(structure)
         if not result.valid:
@@ -37,39 +59,145 @@ def run(
         meta = getattr(structure, "metadata", {}) or {}
         K = meta.get("num_loop_steps", 1)
 
+    agent_max = max_steps
+    if agent_max is None:
+        meta = getattr(structure, "metadata", {}) or {}
+        agent_max = meta.get("max_steps", 10)
+
     input_spec = structure.get_input_spec()
     output_spec = structure.get_output_spec()
 
     buf = EdgeBuffers.init_from_inputs(input_spec, inputs)
 
-    _prepare_nodes(structure, training, device)
+    if run_data:
+        for nid, port_values in run_data.items():
+            if isinstance(port_values, dict):
+                for pname, val in port_values.items():
+                    buf.write(nid, pname, val)
+
+    _prepare_nodes(structure, training, device, seed)
 
     plan = build_plan(structure)
 
+    skip = _compute_skip_set(structure, plan, run_data, dirty_node_ids)
+
     cbs = callbacks or []
+    pin = pin_data or {}
+    interrupt_set = set(interrupt_on) if interrupt_on else set()
 
     for step_type, step_data in plan:
         if step_type == "node":
-            _execute_node(structure, step_data, buf, input_spec, dry_run, cbs)
+            nid = step_data
+            if nid in skip:
+                continue
+            if nid in interrupt_set:
+                return _make_suspended(buf, output_spec)
+            _execute_node(structure, nid, buf, input_spec, dry_run, cbs, pin)
+            if destination_node_id and nid == destination_node_id:
+                break
+
         elif step_type == "cycle":
             rep, comp = step_data
             node_order = sorted(comp)
             _fire_callbacks(cbs, "loop_start", {"nodes": node_order, "steps": K})
-            for _iteration in range(K):
+            for _it in range(K):
                 for nid in node_order:
-                    _execute_node(structure, nid, buf, input_spec, dry_run, cbs)
+                    if nid in skip:
+                        continue
+                    if nid in interrupt_set:
+                        return _make_suspended(buf, output_spec)
+                    _execute_node(structure, nid, buf, input_spec, dry_run, cbs, pin)
             _fire_callbacks(cbs, "loop_end", {"nodes": node_order, "steps": K})
 
-    outputs: Dict[str, Any] = {}
-    for entry in output_spec:
-        key = _spec_key(entry)
-        nid = entry.get("node_id") or entry.get("graph_id")
-        pname = entry["port_name"]
-        outputs[key] = buf.read(nid, pname)
-    return outputs
+        elif step_type == "agent_loop":
+            nid = step_data
+            if nid in skip:
+                continue
+            if nid in interrupt_set:
+                return _make_suspended(buf, output_spec)
+            _execute_agent_loop(
+                structure, nid, buf, input_spec, dry_run, cbs, agent_max, pin,
+            )
+            if destination_node_id and nid == destination_node_id:
+                break
+
+    return _collect_outputs(output_spec, buf)
 
 
-def _prepare_nodes(structure: Any, training: bool, device: Any) -> None:
+def run_stream(
+    structure: Any,
+    inputs: Dict[str, Any],
+    *,
+    training: bool = False,
+    num_loop_steps: Optional[int] = None,
+    device: Optional[Any] = None,
+    callbacks: Optional[List[Callable[..., None]]] = None,
+    dry_run: bool = False,
+    validate_before: bool = True,
+    max_steps: Optional[int] = None,
+    pin_data: Optional[Dict[str, Dict[str, Any]]] = None,
+    seed: Optional[int] = None,
+) -> Generator[Dict[str, Any], None, None]:
+    """Streaming variant of :func:`run`.
+
+    Yields intermediate output snapshots after each executed step.
+    The **last** yielded value equals the normal ``run()`` return.
+    """
+    if validate_before:
+        result = validate(structure)
+        if not result.valid:
+            raise ValidationError(result.errors)
+
+    K = num_loop_steps
+    if K is None:
+        meta = getattr(structure, "metadata", {}) or {}
+        K = meta.get("num_loop_steps", 1)
+
+    agent_max = max_steps
+    if agent_max is None:
+        meta = getattr(structure, "metadata", {}) or {}
+        agent_max = meta.get("max_steps", 10)
+
+    input_spec = structure.get_input_spec()
+    output_spec = structure.get_output_spec()
+
+    buf = EdgeBuffers.init_from_inputs(input_spec, inputs)
+    _prepare_nodes(structure, training, device, seed)
+
+    plan = build_plan(structure)
+    cbs = callbacks or []
+    pin = pin_data or {}
+
+    for step_type, step_data in plan:
+        if step_type == "node":
+            _execute_node(structure, step_data, buf, input_spec, dry_run, cbs, pin)
+            yield _collect_outputs(output_spec, buf)
+
+        elif step_type == "cycle":
+            rep, comp = step_data
+            node_order = sorted(comp)
+            _fire_callbacks(cbs, "loop_start", {"nodes": node_order, "steps": K})
+            for _it in range(K):
+                for nid in node_order:
+                    _execute_node(structure, nid, buf, input_spec, dry_run, cbs, pin)
+                yield _collect_outputs(output_spec, buf)
+            _fire_callbacks(cbs, "loop_end", {"nodes": node_order, "steps": K})
+
+        elif step_type == "agent_loop":
+            _execute_agent_loop(
+                structure, step_data, buf, input_spec, dry_run, cbs, agent_max, pin,
+            )
+            yield _collect_outputs(output_spec, buf)
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _prepare_nodes(
+    structure: Any, training: bool, device: Any, seed: Optional[int] = None,
+) -> None:
     for nid in structure.node_ids:
         node = structure.get_node(nid)
         if node is None:
@@ -78,19 +206,23 @@ def _prepare_nodes(structure: Any, training: bool, device: Any) -> None:
             node.train(training)
         if device is not None and hasattr(node, "to") and callable(node.to):
             node.to(device)
+        if seed is not None and hasattr(node, "seed"):
+            try:
+                node.seed = seed
+            except (AttributeError, TypeError):
+                pass
 
 
-def _execute_node(
+def _gather_node_inputs(
     structure: Any,
     node_id: str,
     buf: EdgeBuffers,
     input_spec: List[Dict[str, Any]],
-    dry_run: bool,
-    callbacks: List[Callable[..., None]],
-) -> None:
+) -> Dict[str, Any]:
+    """Collect all inputs for *node_id* from edge buffers and exposed input spec."""
     node = structure.get_node(node_id)
     if node is None:
-        return
+        return {}
 
     node_inputs: Dict[str, Any] = {}
 
@@ -128,6 +260,30 @@ def _execute_node(
                 if buf.has(nid, pname):
                     node_inputs[pname] = buf.read(nid, pname)
 
+    return node_inputs
+
+
+def _execute_node(
+    structure: Any,
+    node_id: str,
+    buf: EdgeBuffers,
+    input_spec: List[Dict[str, Any]],
+    dry_run: bool,
+    callbacks: List[Callable[..., None]],
+    pin_data: Dict[str, Dict[str, Any]],
+) -> None:
+    node = structure.get_node(node_id)
+    if node is None:
+        return
+
+    if node_id in pin_data:
+        for pname, val in pin_data[node_id].items():
+            buf.write(node_id, pname, val)
+        _fire_callbacks(callbacks, "pinned", {"node_id": node_id})
+        return
+
+    node_inputs = _gather_node_inputs(structure, node_id, buf, input_spec)
+
     _fire_callbacks(callbacks, "before", {"node_id": node_id})
 
     if dry_run:
@@ -145,6 +301,142 @@ def _execute_node(
         buf.write(node_id, port_name, value)
 
     _fire_callbacks(callbacks, "after", {"node_id": node_id})
+
+
+def _execute_agent_loop(
+    structure: Any,
+    node_id: str,
+    buf: EdgeBuffers,
+    input_spec: List[Dict[str, Any]],
+    dry_run: bool,
+    callbacks: List[Callable[..., None]],
+    max_steps: int,
+    pin_data: Dict[str, Dict[str, Any]],
+) -> None:
+    """Run an agent node in a tool_calls sub-loop."""
+    meta = getattr(structure, "metadata", {}) or {}
+    tool_map: Dict[str, str] = meta.get("tool_id_to_node_id", {})
+
+    node = structure.get_node(node_id)
+    if node is None:
+        return
+
+    if node_id in pin_data:
+        for pname, val in pin_data[node_id].items():
+            buf.write(node_id, pname, val)
+        _fire_callbacks(callbacks, "pinned", {"node_id": node_id})
+        return
+
+    base_inputs = _gather_node_inputs(structure, node_id, buf, input_spec)
+
+    steps_taken = 0
+    for step in range(max_steps):
+        steps_taken += 1
+        _fire_callbacks(callbacks, "agent_step", {"node_id": node_id, "step": step})
+
+        if dry_run:
+            outputs: Dict[str, Any] = {}
+            if hasattr(node, "get_output_ports"):
+                for port in node.get_output_ports():
+                    outputs[port.name] = None
+        else:
+            outputs = node.run(base_inputs)
+
+        for pname, val in outputs.items():
+            buf.write(node_id, pname, val)
+
+        tool_calls = outputs.get("tool_calls")
+        if not tool_calls:
+            break
+
+        tool_results: List[Dict[str, Any]] = []
+        for tc in tool_calls:
+            tid = tc.get("tool_id") or tc.get("function", {}).get("name", "")
+            tool_nid = tool_map.get(tid)
+            if tool_nid is None:
+                continue
+            tool_node = structure.get_node(tool_nid)
+            if tool_node is None:
+                continue
+            tool_args = tc.get("arguments") or tc.get("args", {})
+
+            _fire_callbacks(callbacks, "tool_call", {"tool_id": tid, "node_id": tool_nid})
+
+            if dry_run:
+                tool_out: Dict[str, Any] = {}
+            else:
+                tool_out = tool_node.run(tool_args)
+
+            tool_results.append({
+                "tool_call_id": tc.get("id", tid),
+                "content": tool_out,
+            })
+
+        base_inputs["tool_results"] = tool_results
+
+    _fire_callbacks(callbacks, "agent_loop_done", {
+        "node_id": node_id, "steps": steps_taken,
+    })
+
+
+def _compute_skip_set(
+    structure: Any,
+    plan: List[tuple],
+    run_data: Optional[Dict[str, Dict[str, Any]]],
+    dirty_node_ids: Optional[List[str]],
+) -> set:
+    """Determine which nodes to skip during partial run."""
+    if dirty_node_ids is None:
+        return set()
+
+    dirty = set(dirty_node_ids)
+    edges = structure.get_edges()
+    adj: Dict[str, set] = {nid: set() for nid in structure.node_ids}
+    for edge in edges:
+        adj.setdefault(edge.source_node, set()).add(edge.target_node)
+
+    to_run: set = set()
+    queue = list(dirty)
+    while queue:
+        nid = queue.pop()
+        if nid in to_run:
+            continue
+        to_run.add(nid)
+        for dep in adj.get(nid, ()):
+            if dep not in to_run:
+                queue.append(dep)
+
+    all_plan_nodes: set = set()
+    for _, data in plan:
+        if isinstance(data, str):
+            all_plan_nodes.add(data)
+        elif isinstance(data, tuple) and len(data) == 2:
+            _, comp = data
+            if isinstance(comp, frozenset):
+                all_plan_nodes |= comp
+
+    return all_plan_nodes - to_run
+
+
+def _make_suspended(buf: EdgeBuffers, output_spec: List[Dict[str, Any]]) -> RunResult:
+    """Create a suspended RunResult with buffer snapshot."""
+    return RunResult(
+        outputs=_collect_outputs(output_spec, buf),
+        suspended=True,
+        run_data=buf.snapshot(),
+    )
+
+
+def _collect_outputs(
+    output_spec: List[Dict[str, Any]], buf: EdgeBuffers,
+) -> Dict[str, Any]:
+    outputs: Dict[str, Any] = {}
+    for entry in output_spec:
+        key = _spec_key(entry)
+        nid = entry.get("node_id") or entry.get("graph_id")
+        pname = entry["port_name"]
+        outputs[key] = buf.read(nid, pname)
+    return outputs
 
 
 def _get_aggregation(node: Any, port_name: str) -> PortAggregation:

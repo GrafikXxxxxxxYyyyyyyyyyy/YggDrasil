@@ -2,26 +2,69 @@ from __future__ import annotations
 
 import bisect
 from collections import OrderedDict
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 _MAX_CACHE_SIZE = 256
 _plan_cache: OrderedDict[Tuple[str, int, int], List[Tuple[str, Any]]] = OrderedDict()
 
 
-def build_plan(structure: Any) -> List[Tuple[str, Any]]:
+def build_plan(
+    structure: Any,
+    *,
+    subgraph_node_ids: Optional[Set[str]] = None,
+) -> List[Tuple[str, Any]]:
     """Build an execution plan for the given structure.
 
     Returns a list of steps:
       ("node", node_id)               -- execute one node once
       ("cycle", (rep, frozenset(ids))) -- execute nodes K times (K from options at run-time)
+      ("agent_loop", node_id)          -- agent with tool_calls sub-loop
+
+    Agent nodes are detected from three sources (any match is sufficient):
+      1. ``metadata["agent_node_ids"]`` — explicit list.
+      2. Per-node ``is_agent`` attribute (duck-typed).
+      3. ``graph_kind == "agent"`` on the structure — backbone-role nodes
+         become agents automatically.
+
+    If *subgraph_node_ids* is provided the plan is restricted to that subset.
+    Subgraph plans are **not** cached.
     """
+    use_cache = subgraph_node_ids is None
+
     instance_id = getattr(structure, "_instance_id", id(structure))
     type_tag = type(structure).__name__
     cache_key = (type_tag, instance_id, structure.execution_version)
-    if cache_key in _plan_cache:
+    if use_cache and cache_key in _plan_cache:
         return _plan_cache[cache_key]
 
-    node_ids = sorted(structure.node_ids)
+    meta = getattr(structure, "metadata", {}) or {}
+
+    tool_map: Dict[str, str] = meta.get("tool_id_to_node_id", {})
+    tool_nids = set(tool_map.values())
+
+    agent_ids = set(meta.get("agent_node_ids", []))
+
+    graph_kind = getattr(structure, "graph_kind", None) or meta.get("graph_kind")
+
+    for nid in structure.node_ids:
+        if nid in tool_nids:
+            continue
+        node = structure.get_node(nid)
+        if node is None:
+            continue
+        if getattr(node, "is_agent", False):
+            agent_ids.add(nid)
+        if graph_kind == "agent":
+            role = getattr(node, "role", None)
+            if role is not None and getattr(role, "value", None) == "backbone":
+                agent_ids.add(nid)
+
+    node_ids = sorted(nid for nid in structure.node_ids if nid not in tool_nids)
+
+    if subgraph_node_ids is not None:
+        allowed = subgraph_node_ids - tool_nids
+        node_ids = [nid for nid in node_ids if nid in allowed]
+
     edges = structure.get_edges()
 
     adj: Dict[str, Set[str]] = {nid: set() for nid in node_ids}
@@ -42,7 +85,9 @@ def build_plan(structure: Any) -> List[Tuple[str, Any]]:
     for comp in scc_order:
         if len(comp) == 1:
             nid = next(iter(comp))
-            if nid in has_self_loop:
+            if nid in agent_ids:
+                plan.append(("agent_loop", nid))
+            elif nid in has_self_loop:
                 plan.append(("cycle", (nid, frozenset(comp))))
             else:
                 plan.append(("node", nid))
@@ -50,9 +95,10 @@ def build_plan(structure: Any) -> List[Tuple[str, Any]]:
             rep = sorted(comp)[0]
             plan.append(("cycle", (rep, frozenset(comp))))
 
-    if len(_plan_cache) >= _MAX_CACHE_SIZE:
-        _plan_cache.popitem(last=False)
-    _plan_cache[cache_key] = plan
+    if use_cache:
+        if len(_plan_cache) >= _MAX_CACHE_SIZE:
+            _plan_cache.popitem(last=False)
+        _plan_cache[cache_key] = plan
     return plan
 
 

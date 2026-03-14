@@ -71,6 +71,15 @@ class EdgeBuffers:
     def has_multi(self, node_id: str, port_name: str) -> bool:
         return bool(self._multi.get((node_id, port_name)))
 
+    # --- snapshot ---
+
+    def snapshot(self) -> Dict[str, Dict[str, Any]]:
+        """Return a snapshot of buffer data grouped by node_id."""
+        result: Dict[str, Dict[str, Any]] = {}
+        for (nid, pname), val in self._data.items():
+            result.setdefault(nid, {})[pname] = val
+        return result
+
     # --- bulk initialisation ---
 
     @classmethod
